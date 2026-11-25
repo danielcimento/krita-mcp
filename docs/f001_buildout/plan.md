@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phase 1 in progress: P1.1–P1.2 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phase 1 in progress: P1.1–P1.3 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -128,7 +128,7 @@ roots, larger canvases, handles, and `list_documents` / `get_document_info`.
   extensions. These tests pin the current behaviour before it changes.
   Move token creation out of import time into extension startup, so the
   headless suite can import the package without side effects.
-- [ ] **P1.3 Dispatch registry, error envelope, protocol version.**
+- [x] **P1.3 Dispatch registry, error envelope, protocol version.**
   `dispatch.py` + `errors.py`; handlers return payloads and raise
   `CommandError(code, …)`. The envelope and HTTP codes follow D2. `/health` reports
   `protocol: 2`. In `server.py`, `client.call()` checks the protocol once per process,

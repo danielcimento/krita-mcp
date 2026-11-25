@@ -4,6 +4,8 @@ from krita import Krita, ManagedColor
 from PyQt5.QtGui import QColor
 
 from ..config import COORD, MAX_BRUSH_SIZE, MAX_CANVAS_DIM, MAX_LIMIT, MAX_STROKE_POINTS
+from ..dispatch import LONG_TIMEOUT, command
+from ..errors import CommandError
 from ..params import float_param, int_param
 from ._active import get_active_document, get_active_layer, get_active_view
 
@@ -11,22 +13,32 @@ from ._active import get_active_document, get_active_layer, get_active_view
 current_brush_size = 20
 current_opacity = 1.0
 
+# set_color and set_brush change UI state (the view's foreground color and
+# brush), not a document, so they are registered as non-mutating.
 
+
+def _no_view():
+    # Headless, or no window open: the state doesn't allow it.
+    return CommandError("conflict", "No active view")
+
+
+@command("set_color")
 def cmd_set_color(params):
     """Set foreground color."""
     color_hex = params.get("color", "#ffffff")
 
     view = get_active_view()
     if not view:
-        return {"error": "No active view"}
+        raise _no_view()
 
     color = QColor(color_hex)
     mc = ManagedColor.fromQColor(color, view.canvas())
     view.setForeGroundColor(mc)
 
-    return {"status": "ok", "color": color_hex}
+    return {"color": color_hex}
 
 
+@command("set_brush")
 def cmd_set_brush(params):
     """Set brush preset and size."""
     global current_brush_size, current_opacity
@@ -36,7 +48,7 @@ def cmd_set_brush(params):
 
     view = get_active_view()
     if not view:
-        return {"error": "No active view"}
+        raise _no_view()
 
     if preset_name:
         # Find brush preset
@@ -49,7 +61,7 @@ def cmd_set_brush(params):
         if found:
             view.setCurrentBrushPreset(found)
         else:
-            return {"error": f"Brush preset not found: {preset_name}"}
+            raise CommandError("not_found", f"Brush preset not found: {preset_name}")
 
     if size is not None:
         size = int_param(params, "size", None, 1, MAX_BRUSH_SIZE)
@@ -61,9 +73,10 @@ def cmd_set_brush(params):
         current_opacity = opacity
         # Opacity is set per-stroke, store for later
 
-    return {"status": "ok", "preset": preset_name, "size": size, "opacity": opacity}
+    return {"preset": preset_name, "size": size, "opacity": opacity}
 
 
+@command("stroke", mutating=True)
 def cmd_stroke(params):
     """Paint a stroke along points using pixel-level drawing with soft edges."""
     points = params.get("points", [])
@@ -72,24 +85,24 @@ def cmd_stroke(params):
     opacity = float_param(params, "opacity", 1.0, 0.0, 1.0)
 
     if not isinstance(points, list) or len(points) < 2:
-        return {"error": "Need at least 2 points for a stroke"}
+        raise CommandError("bad_request", "Need at least 2 points for a stroke")
     if len(points) > MAX_STROKE_POINTS:
-        return {"error": f"Too many points (max {MAX_STROKE_POINTS})"}
+        raise CommandError("bad_request", f"Too many points (max {MAX_STROKE_POINTS})")
     for p in points:
         if (not isinstance(p, list) or len(p) != 2
                 or not all(isinstance(c, (int, float)) and not isinstance(c, bool)
                            and -COORD <= c <= COORD for c in p)):
-            return {"error": "Each point must be an [x, y] pair of numbers"}
+            raise CommandError("bad_request", "Each point must be an [x, y] pair of numbers")
 
     layer = get_active_layer()
     if not layer:
-        return {"error": "No active layer"}
+        raise CommandError("not_found", "No active layer")
 
     doc = get_active_document()
     view = get_active_view()
 
     if not view:
-        return {"error": "No active view"}
+        raise _no_view()
 
     # Get current foreground color
     fg = view.foregroundColor()
@@ -110,7 +123,7 @@ def cmd_stroke(params):
     h = max_y - min_y
 
     if w <= 0 or h <= 0:
-        return {"error": "Stroke out of bounds"}
+        raise CommandError("bad_request", "Stroke out of bounds")
 
     # Get existing pixel data for the affected region
     existing = layer.pixelData(min_x, min_y, w, h)
@@ -186,9 +199,10 @@ def cmd_stroke(params):
     layer.setPixelData(bytes(pixels), min_x, min_y, w, h)
     doc.refreshProjection()
 
-    return {"status": "ok", "points_count": len(points), "hardness": hardness}
+    return {"points_count": len(points), "hardness": hardness}
 
 
+@command("fill", mutating=True)
 def cmd_fill(params):
     """Fill a circular area with current color."""
     x = int_param(params, "x", 0, -COORD, COORD)
@@ -197,13 +211,13 @@ def cmd_fill(params):
 
     layer = get_active_layer()
     if not layer:
-        return {"error": "No active layer"}
+        raise CommandError("not_found", "No active layer")
 
     doc = get_active_document()
     view = get_active_view()
 
     if not view:
-        return {"error": "No active view"}
+        raise _no_view()
 
     # Get current foreground color
     fg = view.foregroundColor()
@@ -220,7 +234,7 @@ def cmd_fill(params):
     h = y2 - y1
 
     if w <= 0 or h <= 0:
-        return {"error": "Fill area out of bounds"}
+        raise CommandError("bad_request", "Fill area out of bounds")
 
     # Get existing pixel data
     existing = layer.pixelData(x1, y1, w, h)
@@ -242,9 +256,10 @@ def cmd_fill(params):
     layer.setPixelData(bytes(pixels), x1, y1, w, h)
     doc.refreshProjection()
 
-    return {"status": "ok", "x": x, "y": y, "radius": radius}
+    return {"x": x, "y": y, "radius": radius}
 
 
+@command("draw_shape", mutating=True)
 def cmd_draw_shape(params):
     """Draw a shape (rectangle, ellipse, line)."""
     shape = params.get("shape", "rectangle")
@@ -256,13 +271,13 @@ def cmd_draw_shape(params):
 
     layer = get_active_layer()
     if not layer:
-        return {"error": "No active layer"}
+        raise CommandError("not_found", "No active layer")
 
     doc = get_active_document()
     view = get_active_view()
 
     if not view:
-        return {"error": "No active view"}
+        raise _no_view()
 
     # Get current foreground color
     fg = view.foregroundColor()
@@ -353,18 +368,20 @@ def cmd_draw_shape(params):
 
             layer.setPixelData(bytes(pixels), x1, y1, w, h)
     else:
-        return {"error": f"Shape '{shape}' with current options not supported"}
+        raise CommandError("bad_request", f"Shape '{shape}' with current options not supported")
 
     doc.refreshProjection()
 
-    return {"status": "ok", "shape": shape}
+    return {"shape": shape}
 
 
+# clear writes a full-canvas buffer, so it gets the long timeout.
+@command("clear", timeout=LONG_TIMEOUT, mutating=True)
 def cmd_clear(params):
     """Clear the canvas."""
     layer = get_active_layer()
     if not layer:
-        return {"error": "No active layer"}
+        raise CommandError("not_found", "No active layer")
 
     doc = get_active_document()
 
@@ -383,9 +400,10 @@ def cmd_clear(params):
 
     doc.refreshProjection()
 
-    return {"status": "ok", "color": bg_color}
+    return {"color": bg_color}
 
 
+@command("get_color_at")
 def cmd_get_color_at(params):
     """Get color at specific pixel (eyedropper)."""
     x = int_param(params, "x", 0, 0, MAX_CANVAS_DIM)
@@ -393,7 +411,7 @@ def cmd_get_color_at(params):
 
     doc = get_active_document()
     if not doc:
-        return {"error": "No active document"}
+        raise CommandError("not_found", "No active document")
 
     # Get projection pixel data at point
     layer = doc.rootNode()
@@ -403,11 +421,12 @@ def cmd_get_color_at(params):
         # RGBA
         b, g, r, a = pixel_data[0], pixel_data[1], pixel_data[2], pixel_data[3]
         hex_color = "#{:02x}{:02x}{:02x}".format(r, g, b)
-        return {"status": "ok", "color": hex_color, "r": r, "g": g, "b": b, "a": a}
+        return {"color": hex_color, "r": r, "g": g, "b": b, "a": a}
 
-    return {"error": "Could not read pixel"}
+    raise CommandError("krita_error", "Could not read pixel")
 
 
+@command("list_brushes")
 def cmd_list_brushes(params):
     """List available brush presets."""
     filter_str = str(params.get("filter", ""))
@@ -422,4 +441,4 @@ def cmd_list_brushes(params):
             if len(brush_list) >= limit:
                 break
 
-    return {"status": "ok", "brushes": brush_list, "count": len(brush_list)}
+    return {"brushes": brush_list, "count": len(brush_list)}

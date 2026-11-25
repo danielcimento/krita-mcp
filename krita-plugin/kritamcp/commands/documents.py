@@ -1,4 +1,4 @@
-"""Document commands: new canvas, open, save/export."""
+"""Document commands: new canvas, open, save/export (all long-timeout, D9)."""
 
 import os
 
@@ -6,18 +6,39 @@ from krita import InfoObject, Krita
 from PyQt5.QtGui import QColor
 
 from ..config import CANVAS_OUTPUT_DIR, MAX_CANVAS_DIM, MAX_CANVAS_PIXELS
+from ..dispatch import LONG_TIMEOUT, command
 from ..errors import CommandError
 from ..params import int_param
 from ..paths import resolve_allowed_path
 from ._active import get_active_document
 
 
+def _export(doc, filepath):
+    """exportImage with batch mode on (no dialogs), always reset afterwards."""
+    doc.setBatchmode(True)
+    try:
+        ok = doc.exportImage(filepath, InfoObject())
+    finally:
+        doc.setBatchmode(False)
+    if not ok:
+        raise CommandError("krita_error", f"Krita failed to export to {filepath}")
+
+
+def _active_document():
+    doc = get_active_document()
+    if not doc:
+        raise CommandError("not_found", "No active document")
+    return doc
+
+
+# new_canvas writes a full-canvas buffer, so it gets the long timeout too.
+@command("new_canvas", timeout=LONG_TIMEOUT, mutating=True)
 def cmd_new_canvas(params):
     """Create a new canvas."""
     width = int_param(params, "width", 800, 1, MAX_CANVAS_DIM)
     height = int_param(params, "height", 600, 1, MAX_CANVAS_DIM)
     if width * height > MAX_CANVAS_PIXELS:
-        raise CommandError(f"Canvas too large (max {MAX_CANVAS_PIXELS} pixels)")
+        raise CommandError("too_large", f"Canvas too large (max {MAX_CANVAS_PIXELS} pixels)")
     name = str(params.get("name", "New Canvas"))[:200]
     bg_color = str(params.get("background", "#1a1a2e"))
 
@@ -45,18 +66,17 @@ def cmd_new_canvas(params):
 
     doc.refreshProjection()
 
-    return {"status": "ok", "width": width, "height": height, "name": name}
+    return {"width": width, "height": height, "name": name}
 
 
+@command("get_canvas", timeout=LONG_TIMEOUT)
 def cmd_get_canvas(params):
     """Export current canvas to file and return path."""
     filename = params.get("filename", "canvas.png")
     if not isinstance(filename, str) or not filename:
-        return {"error": "Invalid filename"}
+        raise CommandError("bad_request", "Invalid filename")
 
-    doc = get_active_document()
-    if not doc:
-        return {"error": "No active document"}
+    doc = _active_document()
 
     # Strip any directory components so the export stays in the output dir
     filename = os.path.basename(filename)
@@ -65,30 +85,24 @@ def cmd_get_canvas(params):
 
     filepath = resolve_allowed_path(os.path.join(CANVAS_OUTPUT_DIR, filename))
 
-    # Export image (batch mode suppresses export dialog)
-    doc.setBatchmode(True)
-    doc.exportImage(filepath, InfoObject())
-    doc.setBatchmode(False)
+    _export(doc, filepath)
 
-    return {"status": "ok", "path": filepath}
+    return {"path": filepath}
 
 
+@command("save", timeout=LONG_TIMEOUT)
 def cmd_save(params):
     """Save to specific path."""
     filepath = resolve_allowed_path(params.get("path"))
 
-    doc = get_active_document()
-    if not doc:
-        return {"error": "No active document"}
+    doc = _active_document()
 
-    # Batch mode suppresses export dialog
-    doc.setBatchmode(True)
-    doc.exportImage(filepath, InfoObject())
-    doc.setBatchmode(False)
+    _export(doc, filepath)
 
-    return {"status": "ok", "path": filepath}
+    return {"path": filepath}
 
 
+@command("open_file", timeout=LONG_TIMEOUT, mutating=True)
 def cmd_open_file(params):
     """Open an existing file in Krita."""
     filepath = resolve_allowed_path(params.get("path"), must_exist=True)
@@ -98,11 +112,11 @@ def cmd_open_file(params):
     # Open the document
     doc = app.openDocument(filepath)
     if not doc:
-        return {"error": f"Failed to open: {filepath}"}
+        raise CommandError("krita_error", f"Failed to open: {filepath}")
 
     # Add view to active window
     window = app.activeWindow()
     if window:
         window.addView(doc)
 
-    return {"status": "ok", "path": filepath, "name": doc.name(), "width": doc.width(), "height": doc.height()}
+    return {"path": filepath, "name": doc.name(), "width": doc.width(), "height": doc.height()}

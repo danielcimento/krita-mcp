@@ -1,5 +1,12 @@
 """HTTP bridge: request handler, auth, command queue, server thread.
 
+POST answers with the command's envelope (D2): HTTP 200 when ``ok``, else
+the status for its error code (``errors.HTTP_STATUS``). Requests refused
+before a command runs (auth, Host/browser, body size, Content-Type, bad
+JSON, unknown endpoint) keep the plain ``{"error": "<string>"}`` form.
+
+The HTTP thread never calls libkis (``krita``); only the main thread does.
+
 Nothing here has side effects at import. The shared token is loaded by
 ``ensure_token()``, which the extension calls at startup; until then
 ``AUTH_TOKEN`` is None and every token-protected request gets a 401.
@@ -15,10 +22,15 @@ from urllib.parse import urlparse
 
 from PyQt5.QtCore import QThread
 
-from . import config
+from . import config, dispatch, version
+from .errors import HTTP_STATUS
 
 # Set by ensure_token() at extension startup. None = refuse authenticated requests.
 AUTH_TOKEN = None
+
+# How long do_POST waits for the main thread. (P1.5 replaces this with the
+# per-command timeouts from the dispatch registry.)
+RESULT_TIMEOUT_S = 120
 
 
 def load_or_create_token():
@@ -70,8 +82,8 @@ class CommandQueue:
 
         The default timeout of 120s is important — canvas export and save
         operations can take a long time on large canvases. The original 30s
-        default caused frequent timeouts. The MCP server's send_command()
-        timeout must match or exceed this value.
+        default caused frequent timeouts. The MCP server's httpx timeout
+        (krita_mcp_server/client.py) must match or exceed this value.
         """
         start = threading.Event()
         for _ in range(int(timeout * 10)):  # Check every 100ms
@@ -81,11 +93,22 @@ class CommandQueue:
                     return result
             self.result_event.wait(0.1)
             self.result_event.clear()
-        return {"error": "Timeout waiting for command execution"}
+        return {"ok": False, "error": {
+            "code": "timeout",
+            "message": f"Timed out after {timeout:g} s waiting for the command to run; "
+                       "it may still finish later"}}
 
 # Global command queue
 command_queue = CommandQueue()
 command_counter = 0
+
+def envelope_status(envelope):
+    """HTTP status for a command envelope: 200 if ok, else per its error code."""
+    if envelope.get("ok"):
+        return 200
+    code = (envelope.get("error") or {}).get("code")
+    return HTTP_STATUS.get(code, 500)
+
 
 class PaintRequestHandler(BaseHTTPRequestHandler):
     """HTTP request handler for paint commands."""
@@ -122,6 +145,25 @@ class PaintRequestHandler(BaseHTTPRequestHandler):
                 return True
         return False
 
+    def discard_body(self):
+        """Read and drop an unread request body after an early refusal.
+
+        Closing the socket with unread data in it makes the OS send a TCP
+        reset, and the client then sees "connection reset" instead of our
+        401/403/415 reply. Bodies over the size limit are not read.
+        """
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+        except ValueError:
+            return
+        if not 0 < length <= config.MAX_BODY_BYTES:
+            return
+        try:
+            self.connection.settimeout(2.0)
+            self.rfile.read(length)
+        except OSError:
+            pass
+
     def do_GET(self):
         """Handle GET requests - mainly for health check."""
         parsed = urlparse(self.path)
@@ -129,18 +171,20 @@ class PaintRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == '/health':
             if self.reject_untrusted(require_token=False):
                 return
-            self.send_json_response({"status": "ok", "plugin": "kritamcp"})
+            self.send_json_response({
+                "status": "ok",
+                "plugin": "kritamcp",
+                "protocol": version.PROTOCOL,
+                "version": version.PLUGIN_VERSION,
+                "krita_version": version.KRITA_VERSION,  # cached at startup
+            })
         elif parsed.path == '/info':
             if self.reject_untrusted():
                 return
             self.send_json_response({
                 "status": "ok",
-                "commands": [
-                    "new_canvas", "set_color", "set_brush", "stroke",
-                    "fill", "draw_shape", "get_canvas", "undo", "redo",
-                    "clear", "save", "get_color_at", "list_brushes",
-                    "open_file"
-                ]
+                "protocol": version.PROTOCOL,
+                "commands": dispatch.actions(),
             })
         else:
             self.send_json_response({"error": "Unknown endpoint"}, 404)
@@ -150,11 +194,13 @@ class PaintRequestHandler(BaseHTTPRequestHandler):
         global command_counter
 
         if self.reject_untrusted():
+            self.discard_body()
             return
 
         content_type = self.headers.get('Content-Type', '')
         if content_type.split(';')[0].strip().lower() != 'application/json':
             self.send_json_response({"error": "Content-Type must be application/json"}, 415)
+            self.discard_body()
             return
 
         try:
@@ -182,12 +228,8 @@ class PaintRequestHandler(BaseHTTPRequestHandler):
         command_queue.push(command_id, command)
 
         # Wait for result from main thread
-        result = command_queue.get_result(command_id)
-
-        if "error" in result:
-            self.send_json_response(result, 500)
-        else:
-            self.send_json_response(result)
+        result = command_queue.get_result(command_id, timeout=RESULT_TIMEOUT_S)
+        self.send_json_response(result, envelope_status(result))
 
 
 class ServerThread(QThread):

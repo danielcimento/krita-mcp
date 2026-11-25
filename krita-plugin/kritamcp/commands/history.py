@@ -1,23 +1,26 @@
-"""History commands: undo, redo."""
+"""History commands: undo, redo (Krita's UI undo stack; D6 changes this)."""
 
 from krita import Krita
 
+from ..dispatch import command
+from ..errors import CommandError
 
+
+def _trigger(action_name, what):
+    action = Krita.instance().action(action_name)
+    if not action:
+        raise CommandError("krita_error", f"Could not trigger {what}")
+    action.trigger()
+    return {}
+
+
+@command("undo", mutating=True)
 def cmd_undo(params):
     """Undo last action."""
-    app = Krita.instance()
-    action = app.action('edit_undo')
-    if action:
-        action.trigger()
-        return {"status": "ok"}
-    return {"error": "Could not trigger undo"}
+    return _trigger("edit_undo", "undo")
 
 
+@command("redo", mutating=True)
 def cmd_redo(params):
     """Redo last undone action."""
-    app = Krita.instance()
-    action = app.action('edit_redo')
-    if action:
-        action.trigger()
-        return {"status": "ok"}
-    return {"error": "Could not trigger redo"}
+    return _trigger("edit_redo", "redo")

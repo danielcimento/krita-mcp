@@ -2,10 +2,10 @@
 
 import os
 
-from krita import Extension
+from krita import Extension, Krita
 from PyQt5.QtCore import QTimer
 
-from . import bridge, config, dispatch
+from . import bridge, config, dispatch, version
 
 
 class KritaMCPExtension(Extension):
@@ -22,6 +22,14 @@ class KritaMCPExtension(Extension):
 
     def createActions(self, window):
         """Called when a new window is created."""
+        # Cache Krita's version on the main thread; /health reports it from
+        # the HTTP thread, which must not call libkis.
+        if version.KRITA_VERSION is None:
+            try:
+                version.KRITA_VERSION = str(Krita.instance().version())
+            except Exception as e:
+                print(f"[KritaMCP] could not read Krita's version: {e}")
+
         # Ensure output directory exists
         os.makedirs(config.CANVAS_OUTPUT_DIR, exist_ok=True)
 
@@ -47,5 +55,5 @@ class KritaMCPExtension(Extension):
             return
 
         command_id, command = item
-        result = dispatch.execute(command)
-        bridge.command_queue.set_result(command_id, result)
+        # execute() never raises; it returns the D2 envelope.
+        bridge.command_queue.set_result(command_id, dispatch.execute(command))

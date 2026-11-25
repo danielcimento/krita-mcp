@@ -103,9 +103,9 @@ The fix is applied in two places:
 
 **MCP Server (`server.py`)** — Extended timeout for export/save commands:
 ```python
-# In krita_get_canvas and krita_save:
-result = send_command("get_canvas", {"filename": filename}, timeout=120.0)
-result = send_command("save", {"path": path}, timeout=120.0)
+# In krita_get_canvas and krita_save (LONG_TIMEOUT = 120.0):
+result = client.call("get_canvas", {"filename": filename}, timeout=LONG_TIMEOUT)
+result = client.call("save", {"path": path}, timeout=LONG_TIMEOUT)
 ```
 
 **Krita Plugin (`bridge.py`)** — Matching timeout in the command queue:

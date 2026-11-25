@@ -25,6 +25,17 @@ resolved absolute path.
 
 **Result envelope.** Tool-specific fields plus `summary` (one line) and
 `elapsed_ms`. Errors raise `ToolError("<code>: <message>")` (D2).
+Besides the plugin's D2 codes, the server's client
+(`krita_mcp_server/client.py`) uses these for failures before a command
+runs: `unavailable` (Krita not reachable), `unauthorized` (HTTP 401; the
+message names the token file), `forbidden` (403 Host/browser check),
+`too_large` (413 body size), `bad_request` (400/415), `not_found` (404
+endpoint), `timeout` (no HTTP answer in time), `krita_error` (a reply that
+isn't the expected JSON), and `protocol_mismatch` (the plugin's `/health`
+`protocol` isn't the server's; checked once per process, before the first
+command). `krita_health` never raises: when Krita can't be reached it
+returns `{"running": false, "summary": …}`, otherwise the `/health` fields
+plus `running: true` and `protocol_ok`.
 
 **Units.** Opacity is `0.0–1.0` in the API (Krita uses 0–255 inside; the
 plugin converts with `round(v * 255)`). Coordinates are canvas pixels, and
@@ -440,7 +451,7 @@ of both bounds). The two documents must be the same size for pixel diffs.
 
 | Tool | Change |
 |---|---|
-| `krita_health` | Adds `version`, `krita_version`, `allowed_dirs`, `config_errors`, `busy` |
+| `krita_health` | Adds `protocol`, `version`, `krita_version` (done in P1.3, with `running` and `protocol_ok` added server-side), then `allowed_dirs`, `config_errors`, `busy` |
 | `krita_new_canvas`, `krita_open_file`, `krita_save` | As above |
 | `krita_get_canvas` | Becomes a shortcut for `render` into the output dir |
 | `krita_set_color` | Also stored plugin-side (D15). Accepts `doc` |
