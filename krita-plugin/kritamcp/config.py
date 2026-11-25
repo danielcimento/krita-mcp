@@ -4,6 +4,8 @@ The module constants below are the fixed settings. The user-editable part
 (allowed roots, limit overrides, journal size) comes from ``load()``, which
 reads ``~/.krita-mcp-config.json`` and ``KRITA_MCP_ALLOWED_DIRS``, and from
 ``current()``, which caches that and re-loads when the inputs change.
+Commands read ``current()`` at call time: ``roots`` and ``output_dir`` for
+paths, ``limits`` for the canvas size.
 
 Bad user config never raises: every problem goes into ``Settings.errors``,
 which ``/health`` reports.
@@ -17,29 +19,24 @@ import threading
 import types
 
 SERVER_PORT = 5678
+# The default output dir and always the first allowed root. Commands use
+# current().output_dir (realpath'd), not this.
 CANVAS_OUTPUT_DIR = os.path.expanduser("~/krita-mcp-output")
-
-# Directories that save/open_file may touch. Paths outside these are refused.
-# (Superseded by current().roots; kept until every caller has moved.)
-ALLOWED_DIRS = [CANVAS_OUTPUT_DIR]
 
 # Shared secret; the MCP server reads the same file. Created on first run
 # (by the extension at startup, not at import).
 TOKEN_FILE = os.path.expanduser("~/.krita-mcp-token")
 TOKEN_HEADER = "X-Krita-MCP-Token"
 
-# Resource limits
+# Resource limits. The canvas size limits are configurable: see
+# DEFAULT_LIMITS below and current().limits.
 MAX_BODY_BYTES = 5 * 1024 * 1024
-MAX_CANVAS_DIM = 8192
-MAX_CANVAS_PIXELS = 4096 * 4096
 MAX_BRUSH_SIZE = 1000
 MAX_STROKE_POINTS = 10000
 MAX_LIMIT = 1000
 
 ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".kra", ".webp", ".tif", ".tiff", ".bmp", ".gif", ".ora", ".psd"}
 ALLOWED_HOSTS = {f"localhost:{SERVER_PORT}", f"127.0.0.1:{SERVER_PORT}"}
-
-COORD = 10 * MAX_CANVAS_DIM  # generous bound for coordinates
 
 # --- User config (D7) ---------------------------------------------------
 
@@ -49,6 +46,10 @@ ALLOWED_DIRS_ENV = "KRITA_MCP_ALLOWED_DIRS"  # os.pathsep-separated
 
 DEFAULT_LIMITS = {"max_canvas_dim": 16384, "max_canvas_pixels": 67108864}  # D8
 DEFAULT_JOURNAL = {"max_actions": 20, "max_bytes": 1073741824}  # D6
+
+# Static sanity bound for coordinates and radii in the painting tools, ten
+# times the default per-side limit. Not affected by the config file.
+COORD = 10 * DEFAULT_LIMITS["max_canvas_dim"]
 KNOWN_KEYS = ("allowed_dirs", "limits", "journal")
 
 

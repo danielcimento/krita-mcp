@@ -3,7 +3,7 @@
 from krita import Krita, ManagedColor
 from PyQt5.QtGui import QColor
 
-from ..config import COORD, MAX_BRUSH_SIZE, MAX_CANVAS_DIM, MAX_LIMIT, MAX_STROKE_POINTS
+from ..config import COORD, MAX_BRUSH_SIZE, MAX_LIMIT, MAX_STROKE_POINTS
 from ..dispatch import LONG_TIMEOUT, command
 from ..errors import CommandError
 from ..params import float_param, int_param
@@ -207,7 +207,7 @@ def cmd_fill(params):
     """Fill a circular area with current color."""
     x = int_param(params, "x", 0, -COORD, COORD)
     y = int_param(params, "y", 0, -COORD, COORD)
-    radius = int_param(params, "radius", 50, 1, MAX_CANVAS_DIM)
+    radius = int_param(params, "radius", 50, 1, COORD)  # the box is clipped to the document
 
     layer = get_active_layer()
     if not layer:
@@ -334,7 +334,7 @@ def cmd_draw_shape(params):
         h = y2 - y1
 
         if w > 0 and h > 0:
-            pixel_data = bytes([b, g, r, 255] * (w * h))
+            pixel_data = bytes((b, g, r, 255)) * (w * h)
             layer.setPixelData(pixel_data, x1, y1, w, h)
     elif shape == "ellipse" and fill:
         # Draw filled ellipse using pixel data
@@ -395,7 +395,7 @@ def cmd_clear(params):
     r, g, b = color.red(), color.green(), color.blue()
 
     # Fill entire layer with color
-    pixel_data = bytes([b, g, r, 255] * (width * height))
+    pixel_data = bytes((b, g, r, 255)) * (width * height)
     layer.setPixelData(pixel_data, 0, 0, width, height)
 
     doc.refreshProjection()
@@ -406,8 +406,9 @@ def cmd_clear(params):
 @command("get_color_at")
 def cmd_get_color_at(params):
     """Get color at specific pixel (eyedropper)."""
-    x = int_param(params, "x", 0, 0, MAX_CANVAS_DIM)
-    y = int_param(params, "y", 0, 0, MAX_CANVAS_DIM)
+    # A static bound only (P1.6 checks against the document's size).
+    x = int_param(params, "x", 0, 0, COORD)
+    y = int_param(params, "y", 0, 0, COORD)
 
     doc = get_active_document()
     if not doc:

@@ -13,6 +13,7 @@ import time
 import unittest
 from http.server import HTTPServer
 
+from helpers import temp_config
 from kritamcp import bridge, config, dispatch, version
 
 TOKEN = "test-token"
@@ -81,11 +82,50 @@ class BridgeTestBase(unittest.TestCase):
 class HandlerAuthTest(BridgeTestBase):
     def test_health_needs_no_token(self):
         bridge.AUTH_TOKEN = None
+        settings = config.current()  # the runner's: no config file, so defaults
         self.assertEqual(self.request("GET", "/health"), (200, {
             "status": "ok", "plugin": "kritamcp", "protocol": 2,
             "version": version.PLUGIN_VERSION,
             "krita_version": None,  # cached by createActions, which never runs headless
+            "allowed_dirs": [settings.output_dir],
+            "config_file": settings.config_file,
+            "config_loaded": False,
+            "limits": config.DEFAULT_LIMITS,
+            "config_errors": [],
         }))
+
+    def test_health_reports_config(self):
+        bridge.AUTH_TOKEN = None
+        with temp_config({"allowed_dirs": ["/definitely/not/here", "relative"],
+                          "limits": {"max_canvas_pixels": 4096}, "colour": 1}) as path:
+            status, body = self.request("GET", "/health")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["config_file"], path)
+        self.assertIs(body["config_loaded"], True)
+        self.assertEqual(body["allowed_dirs"], [config.current().output_dir])
+        self.assertEqual(body["limits"], {"max_canvas_dim": 16384, "max_canvas_pixels": 4096})
+        errors = body["config_errors"]
+        self.assertEqual(len(errors), 3, errors)
+        self.assertTrue(any("'colour'" in e for e in errors), errors)
+        self.assertTrue(any("'/definitely/not/here' skipped: does not exist" in e for e in errors))
+        self.assertTrue(any("'relative' skipped: not an absolute path" in e for e in errors))
+
+    def test_health_answers_if_config_fails(self):
+        bridge.AUTH_TOKEN = None
+        real = config.current
+
+        def broken():
+            raise RuntimeError("boom")
+
+        config.current = broken
+        try:
+            status, body = self.request("GET", "/health")
+        finally:
+            config.current = real
+        self.assertEqual(status, 200)
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["allowed_dirs"], [])
+        self.assertEqual(body["config_errors"], ["could not load the config: RuntimeError: boom"])
 
     def test_no_token_loaded_refuses_info_and_post(self):
         bridge.AUTH_TOKEN = None
@@ -160,7 +200,7 @@ class PostEnvelopeTest(BridgeTestBase):
 
     def test_too_large_is_413(self):
         self.assertEnvelopeError(
-            self.post({"action": "new_canvas", "params": {"width": 8192, "height": 8192}}),
+            self.post({"action": "new_canvas", "params": {"width": 9000, "height": 9000}}),
             413, "too_large")
 
     def test_wait_timeout_is_504(self):

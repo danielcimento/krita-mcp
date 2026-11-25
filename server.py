@@ -47,7 +47,10 @@ def krita_health() -> dict:
 
     Never fails: when Krita can't be reached it returns ``running: false``.
     ``protocol_ok`` is false when the installed plugin doesn't match this
-    server (update the plugin and restart Krita).
+    server (update the plugin and restart Krita). ``allowed_dirs`` lists the
+    directories file tools may use (the first is the output dir), and
+    ``config_errors`` the problems with the plugin's config file
+    (``~/.krita-mcp-config.json``), such as a skipped directory.
     """
     start = time.perf_counter()
     try:
@@ -68,7 +71,16 @@ def krita_health() -> dict:
     else:
         mismatch = client.protocol_mismatch_message(data.get("protocol")).split(": ", 1)[1]
         summary = f"PROTOCOL MISMATCH: Krita is running, but tools will fail. {mismatch}"
-    return {**data, "running": True, "protocol_ok": protocol_ok,
+    allowed_dirs = data.get("allowed_dirs") or []
+    config_errors = data.get("config_errors") or []
+    if allowed_dirs:
+        summary += f"; {len(allowed_dirs)} allowed dir{'s' if len(allowed_dirs) != 1 else ''}"
+    if config_errors:
+        listed = "; ".join(" ".join(str(e).split()) for e in config_errors)  # one line
+        summary += (f"; {len(config_errors)} config error{'s' if len(config_errors) != 1 else ''}: "
+                    + listed)
+    return {**data, "allowed_dirs": allowed_dirs, "config_errors": config_errors,
+            "running": True, "protocol_ok": protocol_ok,
             "elapsed_ms": elapsed_ms, "summary": summary}
 
 
@@ -80,7 +92,9 @@ def krita_new_canvas(
     background: str = "#1a1a2e"
 ) -> dict:
     """
-    Create a new canvas in Krita.
+    Create a new canvas in Krita. Limits: 16384 px per side and 67108864
+    pixels in total by default, configurable by the user in the plugin's
+    ~/.krita-mcp-config.json ("limits"); over a limit fails with too_large.
 
     Args:
         width: Canvas width in pixels (default 800)

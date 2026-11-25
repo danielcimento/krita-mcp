@@ -7,8 +7,8 @@ import unittest
 
 from krita import Krita
 
-from helpers import scratch_document
-from kritamcp import dispatch
+from helpers import scratch_document, temp_config
+from kritamcp import config, dispatch
 from kritamcp.commands import documents
 
 # action -> (timeout, mutating), as declared with @command (D9).
@@ -96,11 +96,21 @@ class DispatchTest(EnvelopeAssertions, unittest.TestCase):
 
     def test_new_canvas_width_zero(self):
         self.assertError(run("new_canvas", width=0, height=48),
-                         "bad_request", "'width' must be between 1 and 8192")
+                         "bad_request", "'width' must be at least 1")
+        self.assertError(run("new_canvas", width="wide", height=48),
+                         "bad_request", "'width' must be a number")
+
+    def test_new_canvas_per_side_limit(self):
+        # Acceptance test 3, at the default limits (the runner has no config file).
+        err = self.assertError(run("new_canvas", width=16385, height=16), "too_large")
+        self.assertEqual(err["details"], {"limit": "max_canvas_dim", "max": 16384, "width": 16385})
+        self.assertIn("~/.krita-mcp-config.json", err["message"])
 
     def test_new_canvas_too_many_pixels(self):
-        self.assertError(run("new_canvas", width=8192, height=8192),
-                         "too_large", "Canvas too large (max 16777216 pixels)")
+        err = self.assertError(run("new_canvas", width=9000, height=9000), "too_large")
+        self.assertEqual(err["details"],
+                         {"limit": "max_canvas_pixels", "max": 67108864, "pixels": 81000000})
+        self.assertIn("max_canvas_pixels", err["message"])
 
     def test_new_canvas_returns_ok(self):
         before = list(Krita.instance().documents())
@@ -123,6 +133,50 @@ class DispatchTest(EnvelopeAssertions, unittest.TestCase):
                         d.setModified(False)
                     finally:
                         d.close()
+
+    def test_new_canvas_limits_come_from_config(self):
+        # Small limits instead of a full-size canvas: new_canvas still builds
+        # its fill as a Python list (P1.7), far too slow at 5800x8400.
+        # canvas_size accepting 5800x8400 is a unit test (test_params).
+        self.assertEqual(dict(config.current().limits), config.DEFAULT_LIMITS)
+        with temp_config({"limits": {"max_canvas_dim": 64, "max_canvas_pixels": 2048}}):
+            self.assertEqual(config.current().errors, ())
+            err = self.assertError(run("new_canvas", width=65, height=10), "too_large")
+            self.assertEqual(err["details"]["limit"], "max_canvas_dim")
+            err = self.assertError(run("new_canvas", width=50, height=50), "too_large")
+            self.assertEqual(err["details"]["limit"], "max_canvas_pixels")
+            before = list(Krita.instance().documents())
+            try:
+                self.assertOk(run("new_canvas", width=32, height=32, name="kmcp-limit-test"))
+            finally:
+                for d in Krita.instance().documents():
+                    if not any(d == b for b in before):
+                        try:
+                            d.setModified(False)
+                        finally:
+                            d.close()
+        # Restored: the defaults apply again.
+        self.assertEqual(dict(config.current().limits), config.DEFAULT_LIMITS)
+        self.assertError(run("new_canvas", width=0, height=1), "bad_request")
+
+    def test_get_canvas_writes_to_current_output_dir(self):
+        # get_canvas reads config.current().output_dir per call (it follows
+        # CANVAS_OUTPUT_DIR, which current() keys on). Headless there is no
+        # active document, so documents' lookup is patched to a scratch one.
+        out = tempfile.mkdtemp(prefix="kmcp-out-")
+        saved = (config.CANVAS_OUTPUT_DIR, documents.get_active_document)
+        try:
+            config.CANVAS_OUTPUT_DIR = out
+            with scratch_document(8, 8) as doc:
+                documents.get_active_document = lambda: doc
+                result = self.assertOk(run("get_canvas", filename="../kmcp-shot"))
+            expected = os.path.join(os.path.realpath(out), "kmcp-shot.png")
+            self.assertEqual(result, {"path": expected})
+            self.assertTrue(os.path.isfile(expected))
+        finally:
+            config.CANVAS_OUTPUT_DIR, documents.get_active_document = saved
+            config.reset_cache()
+            shutil.rmtree(out, ignore_errors=True)
 
     def test_list_brushes(self):
         result = self.assertOk(run("list_brushes"))

@@ -455,7 +455,7 @@ of both bounds). The two documents must be the same size for pixel diffs.
 
 | Tool | Change |
 |---|---|
-| `krita_health` | Adds `protocol`, `version`, `krita_version` (done in P1.3, with `running` and `protocol_ok` added server-side), then `allowed_dirs`, `config_errors`, `busy` |
+| `krita_health` | Adds `protocol`, `version`, `krita_version` (done in P1.3, with `running` and `protocol_ok` added server-side), then `allowed_dirs` (resolved roots, the output dir first), `config_file`, `config_loaded`, `limits` and `config_errors` (done in P1.4; the summary counts the dirs and lists the errors), then `busy` |
 | `krita_new_canvas`, `krita_open_file`, `krita_save` | As above |
 | `krita_get_canvas` | Becomes a shortcut for `render` into the output dir |
 | `krita_set_color` | Also stored plugin-side (D15). Accepts `doc` |

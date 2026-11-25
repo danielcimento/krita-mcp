@@ -261,6 +261,16 @@ To document in the tool docs and README:
     directory (allowed when empty or with `overwrite`). Containment is
     re-checked after `makedirs`; if a symlink race sent the directory
     outside, the call fails with `forbidden_path`.
+  - `KRITA_MCP_CONFIG_FILE` in **Krita's** environment replaces the
+    config file path (used by tests and scripted launches). Like
+    `KRITA_MCP_ALLOWED_DIRS`, server.py can't set it, so it doesn't widen
+    the boundary; the replacement file gets the same owner/mode checks.
+  - `/health` (no token) reports `allowed_dirs`, `config_file`,
+    `config_loaded`, `limits` and `config_errors`. Any local process can
+    read the directory names; that is accepted, since the server is
+    loopback-only and refuses browser requests. If loading the config
+    fails unexpectedly, `/health` still answers, with the failure in
+    `config_errors`.
 
 ## D8. Size limits
 

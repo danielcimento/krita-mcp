@@ -17,14 +17,10 @@ class CommandError(Exception):
     """A command failed in a way the caller should see.
 
     ``CommandError(code, message, details=None)``, with ``code`` one of
-    ``HTTP_STATUS``. The one-argument form ``CommandError(message)`` is the
-    pre-F001 call style and means ``bad_request``; it goes away once every
-    caller passes a code (P1.3).
+    ``HTTP_STATUS``.
     """
 
-    def __init__(self, code, message=None, details=None):
-        if message is None:
-            code, message = "bad_request", code
+    def __init__(self, code, message, details=None):
         if code not in HTTP_STATUS:
             raise ValueError(f"unknown error code: {code!r}")
         super().__init__(message)

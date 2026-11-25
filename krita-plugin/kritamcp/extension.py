@@ -30,8 +30,12 @@ class KritaMCPExtension(Extension):
             except Exception as e:
                 print(f"[KritaMCP] could not read Krita's version: {e}")
 
-        # Ensure output directory exists
-        os.makedirs(config.CANVAS_OUTPUT_DIR, exist_ok=True)
+        # Ensure the output directory exists, and log config problems
+        # (krita_health reports them too).
+        settings = config.current()
+        os.makedirs(settings.output_dir, exist_ok=True)
+        for problem in settings.errors:
+            print(f"[KritaMCP] config: {problem}")
 
         # Load (or create) the shared token before the server can accept requests
         bridge.ensure_token()

@@ -5,10 +5,10 @@ import os
 from krita import InfoObject, Krita
 from PyQt5.QtGui import QColor
 
-from ..config import CANVAS_OUTPUT_DIR, MAX_CANVAS_DIM, MAX_CANVAS_PIXELS
+from .. import config
 from ..dispatch import LONG_TIMEOUT, command
 from ..errors import CommandError
-from ..params import int_param
+from ..params import canvas_size
 from ..paths import resolve_allowed_path
 from ._active import get_active_document
 
@@ -35,10 +35,8 @@ def _active_document():
 @command("new_canvas", timeout=LONG_TIMEOUT, mutating=True)
 def cmd_new_canvas(params):
     """Create a new canvas."""
-    width = int_param(params, "width", 800, 1, MAX_CANVAS_DIM)
-    height = int_param(params, "height", 600, 1, MAX_CANVAS_DIM)
-    if width * height > MAX_CANVAS_PIXELS:
-        raise CommandError("too_large", f"Canvas too large (max {MAX_CANVAS_PIXELS} pixels)")
+    # Limits are read per call, so a config file change applies at once (D8).
+    width, height = canvas_size(params, config.current().limits)
     name = str(params.get("name", "New Canvas"))[:200]
     bg_color = str(params.get("background", "#1a1a2e"))
 
@@ -61,7 +59,7 @@ def cmd_new_canvas(params):
     r, g, b = color.red(), color.green(), color.blue()
 
     # Create pixel data for entire canvas (BGRA format)
-    pixel_data = bytes([b, g, r, 255] * (width * height))
+    pixel_data = bytes((b, g, r, 255)) * (width * height)
     layer.setPixelData(pixel_data, 0, 0, width, height)
 
     doc.refreshProjection()
@@ -83,7 +81,7 @@ def cmd_get_canvas(params):
     if not filename.lower().endswith('.png'):
         filename += '.png'
 
-    filepath = resolve_allowed_path(os.path.join(CANVAS_OUTPUT_DIR, filename))
+    filepath = resolve_allowed_path(os.path.join(config.current().output_dir, filename))
 
     _export(doc, filepath)
 

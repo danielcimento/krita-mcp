@@ -102,6 +102,28 @@ class CommandQueue:
 command_queue = CommandQueue()
 command_counter = 0
 
+def config_health():
+    """The config fields of ``/health``. Never raises: if loading the config
+    fails unexpectedly, the failure is reported in ``config_errors``.
+
+    ``/health`` needs no token, so any local process can read these
+    (directory names only; the server listens on 127.0.0.1 and refuses
+    browser requests). Pure Python and ``os.stat``: safe on the HTTP thread.
+    """
+    try:
+        s = config.current()
+        return {
+            "allowed_dirs": list(s.roots),  # [0] is the output dir
+            "config_file": s.config_file,
+            "config_loaded": s.config_loaded,
+            "limits": dict(s.limits),
+            "config_errors": list(s.errors),
+        }
+    except Exception as e:
+        return {"allowed_dirs": [], "config_file": None, "config_loaded": False, "limits": None,
+                "config_errors": [f"could not load the config: {type(e).__name__}: {e}"]}
+
+
 def envelope_status(envelope):
     """HTTP status for a command envelope: 200 if ok, else per its error code."""
     if envelope.get("ok"):
@@ -177,6 +199,7 @@ class PaintRequestHandler(BaseHTTPRequestHandler):
                 "protocol": version.PROTOCOL,
                 "version": version.PLUGIN_VERSION,
                 "krita_version": version.KRITA_VERSION,  # cached at startup
+                **config_health(),
             })
         elif parsed.path == '/info':
             if self.reject_untrusted():

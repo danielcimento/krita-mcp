@@ -13,7 +13,7 @@ import sys
 import pytest
 
 PURE = ["kritamcp.config", "kritamcp.errors", "kritamcp.paths", "kritamcp.params",
-        "kritamcp.version"]
+        "kritamcp.refs", "kritamcp.version"]
 
 
 @pytest.mark.parametrize("name", PURE)
@@ -25,7 +25,7 @@ def test_package_import_has_no_krita_side_effects():
     # Fresh interpreter, so earlier imports in this session can't hide anything.
     code = (
         "import sys, kritamcp, kritamcp.config, kritamcp.errors, kritamcp.paths, kritamcp.params\n"
-        "import kritamcp.version\n"
+        "import kritamcp.refs, kritamcp.version\n"
         "assert kritamcp.Krita is None\n"
         "assert not hasattr(kritamcp, 'KritaMCPExtension')\n"
         "bad = sorted(m for m in sys.modules if m.split('.')[0] in ('krita', 'PyQt5')"
@@ -39,12 +39,18 @@ def test_config_values_unchanged():
     from kritamcp import config
     assert config.SERVER_PORT == 5678
     assert config.TOKEN_HEADER == "X-Krita-MCP-Token"
-    assert config.ALLOWED_DIRS == [config.CANVAS_OUTPUT_DIR]
     assert config.ALLOWED_HOSTS == {"localhost:5678", "127.0.0.1:5678"}
-    assert config.COORD == 10 * config.MAX_CANVAS_DIM
-    assert (config.MAX_BODY_BYTES, config.MAX_CANVAS_DIM, config.MAX_CANVAS_PIXELS,
-            config.MAX_BRUSH_SIZE, config.MAX_STROKE_POINTS, config.MAX_LIMIT) == (
-        5 * 1024 * 1024, 8192, 4096 * 4096, 1000, 10000, 1000)
+    assert config.COORD == 10 * 16384
+    assert (config.MAX_BODY_BYTES, config.MAX_BRUSH_SIZE, config.MAX_STROKE_POINTS,
+            config.MAX_LIMIT) == (5 * 1024 * 1024, 1000, 10000, 1000)
+
+
+def test_old_static_limits_are_gone():
+    # The canvas limits are config.current().limits now (D8); no module
+    # constant may keep the old 8192 / 16.8 MP values alive.
+    from kritamcp import config
+    for name in ("ALLOWED_DIRS", "MAX_CANVAS_DIM", "MAX_CANVAS_PIXELS"):
+        assert not hasattr(config, name), name
 
 
 def _plugin_dir():

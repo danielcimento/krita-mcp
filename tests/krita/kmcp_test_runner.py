@@ -14,6 +14,11 @@ place kritarunner imports modules from. ``make test-krita`` then runs::
   against ``module.Class.method`` (a plain string is a substring match,
   ``*`` and ``?`` are wildcards).
 
+While the tests run, ``KRITA_MCP_CONFIG_FILE`` points at a missing file in
+a temp dir and ``KRITA_MCP_ALLOWED_DIRS`` is unset, so the plugin's config
+is the defaults and the user's ``~/.krita-mcp-config.json`` is never read.
+Tests that need a config file write their own and point the variable at it.
+
 It puts ``<repo>/krita-plugin`` and ``<repo>/tests/krita`` on ``sys.path``,
 discovers ``tests/krita/test_*.py``, runs them with ``unittest``, writes a
 JUnit-style report and the test output into
@@ -33,8 +38,10 @@ import datetime
 import io
 import os
 import platform
+import shutil
 import socket
 import sys
+import tempfile
 import time
 import traceback
 import unittest
@@ -190,7 +197,29 @@ def _remove_stale_outputs():
             pass
 
 
+# The plugin's config variables (kritamcp/config.py: CONFIG_FILE_ENV,
+# ALLOWED_DIRS_ENV). Named here so the runner needs no plugin import.
+CONFIG_FILE_ENV = "KRITA_MCP_CONFIG_FILE"
+ALLOWED_DIRS_ENV = "KRITA_MCP_ALLOWED_DIRS"
+
+
 def _run(args):
+    saved = {k: os.environ.get(k) for k in (CONFIG_FILE_ENV, ALLOWED_DIRS_ENV)}
+    tmp = tempfile.mkdtemp(prefix="kmcp-config-")
+    os.environ[CONFIG_FILE_ENV] = os.path.join(tmp, "no-config.json")
+    os.environ.pop(ALLOWED_DIRS_ENV, None)
+    try:
+        return _run_tests(args)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _run_tests(args):
     repo = _resolve_repo(args)
     patterns = [p for p in args[1:] if p]
     tests_dir = os.path.join(repo, "tests", "krita")

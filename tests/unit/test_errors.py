@@ -11,10 +11,9 @@ def test_code_message_details():
                            "details": {"matches": ["{a}", "{b}"]}}
 
 
-def test_legacy_single_argument_is_bad_request():
-    e = CommandError("No path specified")
-    assert (e.code, e.message, e.http_status) == ("bad_request", "No path specified", 400)
-    assert e.to_dict() == {"code": "bad_request", "message": "No path specified"}
+def test_one_argument_form_is_gone():
+    with pytest.raises(TypeError):
+        CommandError("No path specified")
 
 
 def test_unknown_code_rejected():

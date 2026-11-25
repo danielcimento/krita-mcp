@@ -19,11 +19,11 @@ Plugin modules (`krita-plugin/kritamcp/`):
 | Module | Job |
 |---|---|
 | `__init__.py` | Registers `KritaMCPExtension` with Krita; nothing else. Outside Krita (`krita` not importable) it registers nothing |
-| `extension.py` | `KritaMCPExtension`: in `createActions` caches Krita's version (for `/health`), makes the output dir, loads the token, starts the server thread and the 50 ms timer |
+| `extension.py` | `KritaMCPExtension`: in `createActions` caches Krita's version (for `/health`), makes the output dir and logs config errors, loads the token, starts the server thread and the 50 ms timer |
 | `bridge.py` | `PaintRequestHandler` (Host/browser/token checks), `CommandQueue`, `ServerThread`, token loading. No token loaded means every authenticated request gets 401 |
 | `dispatch.py` | The command registry (`@command(name, timeout, mutating)`, `get`, `actions`) and `execute(command)`, which returns the D2 envelope. Imports `commands/` to fill the registry |
 | `commands/` | Handlers: `paint.py` (and the brush state), `documents.py`, `history.py`; `_active.py` finds the active document/view/layer |
-| `config.py`, `errors.py`, `paths.py`, `params.py`, `version.py` | Pure (no `krita`/PyQt5): constants, `CommandError` and the code → HTTP status table, `resolve_allowed_path`, `int_param`/`float_param`, `PROTOCOL`/`PLUGIN_VERSION`. Unit-tested in the repo venv |
+| `config.py`, `errors.py`, `paths.py`, `params.py`, `refs.py`, `version.py` | Pure (no `krita`/PyQt5): fixed constants plus the user config (`~/.krita-mcp-config.json`, `KRITA_MCP_ALLOWED_DIRS`) as `config.current()`, re-read when it changes: allowed roots, output dir, canvas limits, errors for `/health`; `CommandError` and the code → HTTP status table; `resolve_allowed_path`/`resolve_output_dir`; `int_param`/`float_param`/`canvas_size`; layer-ref parsing; `PROTOCOL`/`PLUGIN_VERSION`. Unit-tested in the repo venv |
 
 The server never touches pixels or files itself. All file I/O is done by
 the plugin, so the plugin's path checks are the security boundary.
@@ -70,9 +70,10 @@ Consequences:
 
 See the README's *Security* section. In short: loopback only, shared
 token from `~/.krita-mcp-token`, browser-originated requests refused, file
-access limited to `ALLOWED_DIRS` (realpath-resolved, so `..` and symlinks
-cannot escape) plus an extension allowlist, and size caps on canvases,
-strokes and request bodies.
+access limited to the allowed roots from `config.current()` (the output
+dir plus the config file's `allowed_dirs`; realpath-resolved, so `..` and
+symlinks cannot escape) plus an extension allowlist, and size caps on
+canvases (configurable), strokes and request bodies.
 
 ## Adding a command
 

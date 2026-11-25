@@ -172,3 +172,30 @@ def test_health_flags_protocol_mismatch(monkeypatch):
     result = server.krita_health()
     assert result["running"] is True and result["protocol_ok"] is False
     assert "MISMATCH" in result["summary"] and "restart Krita" in result["summary"]
+
+
+def test_health_reports_roots_and_config_errors(monkeypatch):
+    health = {"status": "ok", "plugin": "kritamcp", "protocol": 2, "version": "0.2.0",
+              "krita_version": "5.3.4", "allowed_dirs": ["/out", "/art"],
+              "config_file": "/home/u/.krita-mcp-config.json", "config_loaded": True,
+              "limits": {"max_canvas_dim": 16384, "max_canvas_pixels": 67108864},
+              "config_errors": ["allowed root '~/gone' skipped: does not exist",
+                                "config file x: unknown key 'colour'\nignored"]}
+    monkeypatch.setattr(client, "get_health", lambda timeout=None: dict(health))
+    result = server.krita_health()
+    assert result["allowed_dirs"] == ["/out", "/art"]
+    assert result["config_errors"] == health["config_errors"]
+    assert result["limits"] == health["limits"]
+    summary = result["summary"]
+    assert "\n" not in summary
+    assert "2 allowed dirs" in summary and "2 config errors: " in summary
+    assert "'~/gone' skipped: does not exist" in summary and "'colour' ignored" in summary
+
+
+def test_health_without_config_fields(monkeypatch):
+    health = {"status": "ok", "plugin": "kritamcp", "protocol": 2, "version": "0.2.0",
+              "krita_version": "5.3.4", "allowed_dirs": ["/out"], "config_errors": []}
+    monkeypatch.setattr(client, "get_health", lambda timeout=None: dict(health))
+    result = server.krita_health()
+    assert result["config_errors"] == [] and "config error" not in result["summary"]
+    assert "1 allowed dir" in result["summary"] and "dirs" not in result["summary"]

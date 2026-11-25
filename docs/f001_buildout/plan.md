@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phase 1 in progress: P1.1–P1.3 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phase 1 in progress: P1.1–P1.4 done (P1.6 `refs.py` landed early). Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -28,7 +28,7 @@ at `7483197`. Each one is fixed in the phase shown.
 | # | Finding | Fix in |
 |---|---|---|
 | 1 | `MAX_CANVAS_DIM = 8192` per side. Mao is 5800×**8400**, so the spec's example cap (8192×8192) would still refuse it | P1.4 (D8) |
-| 2 | `new_canvas` / `clear` build `bytes([b, g, r, 255] * n)`, a Python list of 4·n ints first (about 1.6 GB at 48.7 MP) | P1.7 |
+| 2 | `new_canvas` / `clear` build `bytes([b, g, r, 255] * n)`, a Python list of 4·n ints first (about 1.6 GB at 48.7 MP) | P1.7 (fill fixed early, in P1.4, when the caps went up) |
 | 3 | When `get_result` times out, the command still runs later, and its result stays in `CommandQueue.results` forever | P1.5 (D9) |
 | 4 | Single-threaded `HTTPServer`: `/health` waits behind a long command | P1.5 |
 | 5 | Validation errors go out as HTTP 500, and the server turns every error into a *successful* tool result reading "Error: …" | P1.3 (D2) |
@@ -134,7 +134,7 @@ roots, larger canvases, handles, and `list_documents` / `get_document_info`.
   `protocol: 2`. In `server.py`, `client.call()` checks the protocol once per process,
   raises `ToolError`, and all 15 existing tools return dicts with a
   `summary`. Unit tests for the server wrappers with the HTTP call mocked.
-- [ ] **P1.4 Config and limits.** `config.py` (D7, D8): config file, env
+- [x] **P1.4 Config and limits.** `config.py` (D7, D8): config file, env
   var, mtime reload, permission check, root checks, limit overrides.
   `paths.py` uses the resolved roots, and gains `resolve_output_dir`
   (create, check emptiness) and the `.json` manifest exception.
