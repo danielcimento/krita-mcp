@@ -20,8 +20,8 @@ before code depends on them.
 5. Fill in the *Result* column here, update
    [../krita-api-notes.md](../krita-api-notes.md) (change *[to verify]* to
    *[verified]* or correct the entry), and close the matching decisions in
-   [decisions.md](decisions.md). Commit the JSON as
-   `spike/probe-results.json`.
+   [decisions.md](decisions.md). Copy the JSON into `spike/` as
+   `probe-results-run<N>.json` and commit it.
 
 The script creates and closes its own `probe-*` documents and doesn't
 touch open work. Each probe runs in its own `try`. A bug in one probe
@@ -30,25 +30,31 @@ fix the probe and rerun rather than reading anything into that result.
 
 ## Questions
 
+Results are from run 2 (`spike/probe-results-run2.json`) unless marked
+otherwise. **Run 3** means the item still has to be confirmed by the next
+run.
+
 | # | Question | Decides | Result |
 |---|---|---|---|
-| Q0 | Krita and Python versions, numpy, byte order, scaling filter names | D5, `transform_layer` `resample` values | |
-| Q1 | Which libkis calls create Krita undo steps (`addChildNode`, `setName`, `setVisible`, `setOpacity`, `setBlendingMode`, `setInheritAlpha`, `setPixelData`, `move`, `remove`, reorder, `setActiveNode`)? | D6 (how the journal is documented, and what `krita_ui_undo` means), D10 | |
-| Q2 | Is `Node.bounds()` exact or tile-aligned? Does it shrink after pixels are cleared? Empty layer bounds? Off-canvas pixels? | `list_layers.bounds`, export cropping, lint `empty-layer` / `out-of-canvas`. If not exact, compute `opaque_bounds` from alpha | |
-| Q3 | UUID string format; `nodeByUniqueID` with and without braces; does `clone()` keep IDs; do `.kra` / `.ora` keep IDs? | D4, D10 option B (mapping nodes into a clone), `diff_documents` | |
-| Q4 | Does `createDocument` add a default layer? Default profile name; available RGBA/U8 profiles; `Document ==` in `documents()` | `new_canvas`, D3 | |
-| Q5 | BGRA order confirmed; `setPixelData`→`pixelData` and QImage→PNG→QImage bit-exact, including partial and zero alpha | D5; acceptance test 2 (pixel-identical round trip) | |
-| Q6 | `move(x, y)` absolute or relative; `scaleNode` / `rotateNode` origin and pivot | `transform_layer` | |
-| Q7 | Does `setVisible` set `modified`? Can it be reset? Does the projection follow after `refreshProjection` + `waitForDone`? Clone cost | D10 (render A vs B) | |
-| Q8 | Does a group's `projectionPixelData` include the group's own opacity? Does it bake inherit-alpha clipping? | `merge_layers` | |
-| Q9 | Do `Selection.cut` / `paste` write into the given layer, or create a floating layer? Does `Document.setSelection(None)` deselect? | `selection_to_layer` (use the API or do it ourselves), `select(none)` | |
-| Q10 | Does `Selection.grow` dilate (square or disc kernel)? Does `setPixelData` need a prior `resize`? | Lint `stray-alpha`, `trim_layers(near_px)` | |
-| Q11 | At 5800×8400: time for full-layer `setPixelData` / `pixelData`, PNG save, `projection`, `exportImage`, `saveAs .kra`, `clone`; opening and rendering the Mao `.ora` | Default timeouts (D9), D10, whether 184-layer `create_layers` fits in 300 s | |
-| Q12 | Can `kritarunner` import the plugin package and run commands headless? | D16 (headless live tests) | |
-| Q13 | In batch mode: return values of `exportImage` / `saveAs`; does `fileName()` follow `saveAs` but not `exportImage`; does `close()` prompt after `setModified(False)`? | `save`, `close_document` | |
-| Q14 | Is `layerStyleToAsl()` empty for a plain layer? | Lint `layer-style` | |
-| Q15 | Blend mode ID strings (`add` vs `linear_dodge`); what an invalid ID does | `blend_mode` validation, lint `blend-mode` | |
-| Q16 | Does app-wide batch mode stop `Node.save` from opening its export dialog? If it runs, does it write raw pixels or apply opacity? Runs last because it crashed Krita on the first run | D5 (confirms `Node.save` stays unused or can be used); the batch-mode helper | |
+| Q0 | Krita and Python versions, numpy, byte order, scaling filter names | D5, `transform_layer` `resample` values | Krita 5.3.4.1, Python 3.13.5, **no numpy**, little-endian. Filters: Hermite, Bell, Lanczos3, Bilinear, Mitchell, NearestNeighbor, BSpline, Bicubic |
+| Q1 | Which libkis calls create Krita undo steps? | D6, D10 | **Mixed.** Undoable: `addChildNode`, `remove`, `setBlendingMode`. Not undoable: `setName`, `setVisible`, `setOpacity`, `setInheritAlpha`, `setPixelData`, `move`, `setActiveNode`. Reorder: one undo only reverts the re-add. The undo after a non-undoable call reverted the setup's `addChildNode`, which shows that Edit → Undo hits earlier, unrelated steps. D6 is closed |
+| Q2 | Is `Node.bounds()` exact or tile-aligned? | `bounds`, cropping, lint | **Exact**, and it shrinks to (0,0,0,0) when the pixels are cleared. Empty layer: (0,0,0,0), `hasExtents` false. Not clipped to the canvas: off-canvas pixels are kept and readable |
+| Q3 | UUID format, lookup, persistence | D4, D10 B, `diff_documents` | Braced lowercase. Lookup works with or without braces. **Kept** by `clone()` and `.kra`, **not** by `.ora`. The probe's `clone_keeps_ids` / `same_ids` read `false` only because it left out the default `Background` layer: the Group and Alpha IDs match. ORA reopens with an empty `name()`. Node `==` is rechecked in run 3 |
+| Q4 | `createDocument` defaults, profiles, `Document ==` | `new_canvas`, D3 | Adds one opaque white **`Background`** paint layer. Default profile `sRGB-elle-V2-srgbtrc.icc`. 21 RGBA/U8 profiles. `==` finds the doc in `documents()`, `is` doesn't |
+| Q5 | BGRA order and bit-exact round trips | D5, acceptance test 2 | **Confirmed.** BGRA. `setPixelData`/`pixelData` and QImage→PNG→QImage are bit-exact, including partial and zero alpha |
+| Q6 | `move`, `scaleNode`, `rotateNode` semantics | `transform_layer` | `move` sets an **absolute** offset. `scaleNode(origin, w, h)`: bounds become w×h with `origin` fixed. `rotateNode` rotates about the **bounds' center**. Direction in run 3 |
+| Q7 | `setVisible` vs `modified` flag; projection follows visibility; clone cost | D10 | `setVisible` does **not** set `modified`. Clone of a small doc: 1 ms. The projection check was inconclusive, because the white `Background` was underneath. Run 3 uses a blank doc |
+| Q8 | Group projection: own opacity? clipping baked? | `merge_layers` | **Excludes** the group's own opacity and **includes** clipping baked in |
+| Q9 | `Selection.cut`/`paste`; `setSelection(None)` | `selection_to_layer`, `select(none)` | `cut` clears the source and `paste` writes into the destination, with no new layer. **`setSelection` adds a root-level `Selection Mask` node.** `setSelection(None)` makes `selection()` return `None`. Whether the mask node goes away, and the clipboard contents, are in run 3 |
+| Q10 | `Selection.grow` as dilation | lint `stray-alpha`, `trim_layers` | Works, with a roughly round kernel: 1 px grown by 4 gives 69 px in a 9×9 box. `setPixelData` works after `resize` |
+| Q11 | Timings at 5800×8400 | D9, D10, `create_layers` budget | Not run (`RUN_LARGE = False`) |
+| Q12 | `kritarunner` headless | D16 | Not run |
+| Q13 | Batch-mode save, export, close | `save`, `close_document` | No dialogs. `exportImage`/`saveAs` return `True`. `exportImage` leaves `fileName()` alone, `saveAs` re-points it and clears `modified`. `close()` after `setModified(False)` returns `True` with no prompt |
+| Q14 | `layerStyleToAsl()` on a plain layer | lint `layer-style` | `''` |
+| Q15 | Blend mode IDs and invalid values | validation, lint | `add` and `linear_dodge` are distinct, valid IDs. **Any string is accepted**, `not-a-mode` included, so validation is ours. Render behaviour of an invalid ID is in run 3 |
+| Q16 | `Node.save` under app-wide batch mode | D5 | No dialog. Wrote a 10×10 PNG, **with the layer's opacity baked into the alpha** (200 → 100 at 50% opacity). So not usable as raw export. D5 confirmed |
+| Q17 | Is `==` safe on a closed `Document` wrapper? | D3 (registry design) | Run 3 |
+| Q18 | Can a removed node be re-inserted with its pixels, properties and UUID? | D6 (journal inverse for delete) | Run 3 |
 
 ### Q12 by hand: kritarunner
 
@@ -90,11 +96,28 @@ Changes for run 2: results are saved after every probe, a progress file
 is written, the `Node.save` check moved to Q16 (run last, under app-wide
 batch mode), and `RUN_NODE_SAVE` / `SKIP` let it be left out.
 
+**2026-11-24, run 2.** All 16 probes finished (results in
+`spike/probe-results-run2.json`). Krita then segfaulted in the script's
+cleanup, at address 0x10 again. The progress file read `finished Q16`,
+and the cleanup's `complete` marker was missing. The cause was the
+probe's own bug: Q13 closed its `victim` document, which was also in
+the cleanup list, so cleanup called `setModified()` on a closed
+document's wrapper. That gave the most important finding of the run: **calling a
+method on a closed `Document` crashes Krita** (D3).
+
+Changes for run 3: cleanup skips documents that are no longer open
+(checked by `==` against `documents()`), and Q13 removes the document it
+closes from the list. `blank=True` scratch documents drop the
+`Background` layer. Probes fixed: Q3's node-equality check, Q7 on a
+blank doc, Q6 records the rotation direction, Q9 checks the mask node
+and clipboard after deselecting, Q15 renders an invalid mode. New: Q17
+(`==` on a closed wrapper) and Q18 (re-inserting a removed node).
+
 ## Not covered by the probe
 
 - A layer *with* a layer style, for Q14's positive case. Make one by hand
   in the lint fixture ([acceptance.md](acceptance.md#fixtures)) and check
   that `layerStyleToAsl()` is non-empty there.
-- Whether a modal dialog (an export option dialog, a "file changed on
-  disk" prompt) can block the main thread during a command. If any probe
-  hangs on a dialog, note which call caused it.
+- Other modal dialogs that could block the main thread during a command,
+  for example a "file changed on disk" prompt. If any probe hangs on a
+  dialog, note which call caused it.

@@ -76,9 +76,11 @@ active selection).
 ### `krita_new_canvas(width, height, name?, background?, color_profile?, resolution?)` · P0
 
 - Limits: 16384 per side and 67.1 MP total (D8).
-- `background`: a hex color, or `"transparent"`. With `"transparent"`
-  the document gets one empty paint layer named `Background`. Otherwise
-  that layer is filled with the color.
+- `background`: a hex color, or `"transparent"`. `createDocument` already
+  makes one opaque white paint layer named `Background` (spike Q4). That
+  layer is reused, with no second layer added as the current code does. It is filled with the color, or,
+  for `"transparent"`, replaced with an empty paint layer of the same
+  name, which is cheaper than clearing 48 MP.
 - `color_profile`: defaults to Krita's default sRGB profile for RGBA/U8.
   Profiles that aren't installed fail with `bad_request`, and the error
   lists the available profiles.
@@ -125,6 +127,8 @@ resize breaks existing rigs (CONVENTIONS: *Canvas*).
 
 - `root` is a layer ref, default `/`. `depth` is unlimited by default;
   `depth=1` lists direct children only.
+- The document's global selection, a root-level `selectionmask` (spike
+  Q9), is not listed. `get_document_info.selection` reports it.
 - `fields` is an optional subset of layer-object keys. It keeps responses
   small for big documents. `id`, `name` and `children` are always included.
 - Returns `{"layers": [<layer object>, …], "counts": {...}, "summary": …}`.
@@ -144,7 +148,7 @@ D13). Each spec:
 | `above` | ref \| `"$key"` | — | Insert directly above this sibling. If omitted, the layer goes **on top** of the parent's existing children |
 | `visible` | bool | `true` | |
 | `opacity` | number | `1.0` | |
-| `blend_mode` | string | `"normal"` | Checked against Krita's mode IDs |
+| `blend_mode` | string | `"normal"` | Checked against a fixed list of Krita composite-op IDs in the plugin. `setBlendingMode` stores any string, invalid ones included (spike Q15) |
 | `locked`, `alpha_locked`, `inherit_alpha` | bool | `false` | |
 | `pass_through` | bool | `false` | Groups only |
 | `png` | path | — | Paint only. Read with QImage and converted to BGRA |
@@ -199,8 +203,10 @@ duplicate-name convention.
   The group is then flattened as above. This turns "bake this clipped
   layer into its base" into one call.
 - Returns the new layer object and the removed IDs.
-- Spike Q8 decides whether the group's projection includes its own
-  opacity. That determines how the flattened layer's opacity is set.
+- A group's projection includes inherit-alpha clipping inside it, but
+  not the group's own opacity (spike Q8). The flattened layer therefore
+  takes the group's opacity and blend mode as properties, and doesn't bake
+  them into its pixels.
 
 ### `krita_set_active_layer(doc?, id)` · P1
 
@@ -324,10 +330,11 @@ selection to a new paint layer. The new layer goes directly above the
 source unless `parent`/`above` say otherwise. Partial selection values
 scale alpha, so feathered selections give soft edges. Pixels stay at the
 same canvas position. Done in `pixels.py` with selection `pixelData`
-times layer alpha; spike Q9 compares this with `Selection.cut`/`paste`.
+times layer alpha. `Selection.cut`/`paste` do work (spike Q9), but they
+go through the clipboard and would overwrite the user's.
 Returns the new layer and the cut rectangle.
 
-### `krita_transform_layer(doc?, id, translate?, scale?, rotate?, flip?, pivot?, resample="bicubic")`
+### `krita_transform_layer(doc?, id, translate?, scale?, rotate?, flip?, pivot?, resample="Bicubic")`
 
 - `translate: [dx, dy]` is relative. It uses `Node.move` with the position plus the delta.
 - `scale: [sx, sy]` or a number, `rotate` in degrees, clockwise.
@@ -336,8 +343,14 @@ Returns the new layer and the cut rectangle.
 - `pivot: [x, y]` in canvas pixels, or `"center"` (the default, the layer
   bounds' center).
 - Order: flip, scale, rotate, translate.
-- Spike Q6 settles the pivot semantics of `scaleNode` and `rotateNode`. If
-  they don't fit, scale and rotate are done with `QTransform` on the layer's pixels.
+- Native calls (spike Q6): `move` sets an absolute offset, so translate
+  adds the delta to `position()`. `scaleNode(origin, w, h, filter)` scales
+  the bounds to `w × h` and keeps `origin` fixed, so `origin` = pivot.
+  `rotateNode` rotates about the bounds' center, so a custom pivot is
+  rotate, then `move` by the pivot's displacement. The rotation direction
+  is confirmed in run 3, and the API normalizes it to clockwise on screen.
+- `resample` takes Krita's filter names: `Bicubic` (default), `Bilinear`,
+  `NearestNeighbor`, `Lanczos3`, `Mitchell`, `BSpline`, `Bell`, `Hermite`.
 
 ---
 
@@ -368,10 +381,10 @@ except `reference-hidden`.
 
 | Rule | Sev | Fires when |
 |---|---|---|
-| `node-type` | error | A node's type is not `paintlayer`/`grouplayer`: filter, fill, clone, vector or file layers, and all masks. Masks name their parent layer |
+| `node-type` | error | A node's type is not `paintlayer`/`grouplayer`: filter, fill, clone, vector or file layers, and all masks. Masks name their parent layer. The document's global selection (a root-level `selectionmask`) is exempt |
 | `layer-style` | error | `layerStyleToAsl()` is not empty |
 | `inherit-alpha` | error | `inherit_alpha` is true (Krita's clipping): bake it into the target with `merge_layers` |
-| `blend-mode` | error | A paint layer's blend mode is not `normal`/`multiply`/`add`. Groups are exempt, since group blending doesn't matter to the rig |
+| `blend-mode` | error | A paint layer's blend mode is not `normal`/`multiply`/`add`. Groups are exempt, since group blending doesn't matter to the rig. `linear_dodge` is reported with a hint to use `add`, the ID the rig's Add maps to (to confirm on the umamo side) |
 | `duplicate-name` | error | Two or more nodes, anywhere in the document, share a name. **One finding per name.** `layer_id` is the second occurrence in stacking order, and `related_ids` lists all of them |
 | `side-token` | warning | Within one parent, stripping side tokens makes names collide (`Eyebrow` next to `Eyebrow L`): flag the ones without a token. Also flags non-standard tokens such as `_L`, `Left`, `(L)` or a lowercase ` l` |
 | `empty-layer` | warning | A paint layer with no pixel where `alpha > 0` |

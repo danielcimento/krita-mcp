@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Planning done. Phase 0 probe written, waiting to be run in Krita |
+| Status | Planning done. Phase 0: probe run 2 done, run 3 pending for a few items |
 
 ## Scope
 
@@ -34,7 +34,8 @@ at `7483197`. Each one is fixed in the phase shown.
 | 5 | Validation errors go out as HTTP 500, and the server turns every error into a *successful* tool result reading "Error: …" | P1.3 (D2) |
 | 6 | `krita_save` returns the requested path, not the resolved one | P1.7 |
 | 7 | `get_color_at` checks coordinates against `MAX_CANVAS_DIM`, not the document size | P1.6 |
-| 8 | The painting tools write with `setPixelData`, which probably bypasses undo (spike Q1). If so, `krita_undo` today undoes an unrelated earlier step | P5.1 (D6) |
+| 8 | The painting tools write with `setPixelData`, which creates no undo step (spike Q1). So `krita_undo` today undoes an unrelated earlier step instead | P5.1 (D6) |
+| 13 | `new_canvas` adds a paint layer on top of the white `Background` that `createDocument` already makes (spike Q4) | P1.7 |
 | 9 | `get_active_layer()` may return a group or mask. `setPixelData` then fails without an error | P1.6 |
 | 10 | `open_file` uses `doc.name()`, which is empty for `.ora` | P1.7 |
 | 11 | The server can't tell when the installed plugin is an older version | P1.3 (protocol version) |
@@ -95,17 +96,21 @@ installable and the existing tools working.
 - [x] First run (2026-11-24): crashed at the Q14 `Node.save` call (see
       [spike.md § Run log](spike.md#run-log)). The probe was fixed to save
       results after every probe, and `Node.save` moved to Q16.
-- [ ] **User:** rerun the probe in Krita (and Q12 by hand), commit
-      `spike/probe-results.json`.
-- [ ] Record results in `spike.md` and `krita-api-notes.md`. Close D6,
-      D10 and D16 in `decisions.md`, and adjust `api-design.md` where results
-      differ from what was assumed.
+- [x] Run 2: all probes finished, then Krita crashed in the probe's
+      cleanup because a closed document was touched again. Results are
+      recorded in `spike.md`, `krita-api-notes.md` and the decisions. D6 is closed.
+- [ ] **User:** run 3, to confirm the items marked *Run 3* in spike.md
+      (Q3 node `==`, Q6 rotation direction, Q7, Q9 mask/clipboard, Q15, Q17,
+      Q18). Optionally `RUN_LARGE` for Q11, and Q12 by hand.
+- [ ] Close D10 (Q7) and D16 (Q12). Settle D3's registry variant (Q17)
+      and the delete inverse (Q18).
 
-*Exit:* no *Open* entries left in decisions.md.
+*Exit:* no *Open* or *Provisional* entries in decisions.md that block
+Phase 1–4 work. D16 can stay provisional, because the headless runner is optional.
 
-Most of Phase 1 doesn't depend on the spike and can start in parallel.
-P1.7, Phase 2's `bounds` and anything pixel-related should wait for Q2, Q4,
-Q5 and Q13.
+Phase 1 can start now. Q2, Q4, Q5 and Q13, which P1.7 and the pixel work
+waited on, are answered. Before P1.6 the registry needs Q17. Before P2.2
+the batch executor's delete inverse needs Q18.
 
 ### Phase 1: Foundation
 

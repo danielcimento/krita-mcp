@@ -70,6 +70,14 @@ Auth and transport errors (401, 403 for host/browser, 413 for body size,
   documents the user opened by hand. One document never gets two handles.
 - Handles are pruned when their document is no longer in
   `Krita.instance().documents()`. A stale handle gives `not_found`.
+- **Liveness check before every use.** Calling a method on a closed
+  document's wrapper crashes Krita (spike run 2). So the registry checks
+  `any(stored == d for d in app.documents())` on every lookup, and only
+  ever calls methods on the live wrapper from `documents()` that matched.
+  The stored wrapper is used only in `==`. Whether `==` is safe on a
+  closed wrapper is probe Q17. If it isn't, the registry keeps no
+  `Document` objects, only a fingerprint (`fileName()` + creation
+  order), and re-matches against `documents()` on each call.
 - The `doc` parameter accepts: a handle; an absolute path that is the
   `fileName()` of exactly one open document; or nothing, meaning the active
   document (`no active document` is `not_found`).
@@ -94,10 +102,16 @@ A layer reference (`id`, `parent`, `above`, … in every tool) is one of:
 Name forms that match more than one node fail with `ambiguous` and list
 the matching IDs. The document root is `"/"` (valid only as a `parent`).
 
-UUIDs are only stable as far as the file format keeps them. `.kra` stores
-node UUIDs (to be confirmed by the spike). `.ora` and `.psd` do not, so a
-document reopened from those formats has new IDs. Agents should treat IDs
-as valid for one document session plus `.kra` round trips.
+UUIDs are only stable as far as the file format keeps them. Verified in
+spike run 2: `.kra` save and reopen and `Document.clone()` keep node
+UUIDs, and `.ora` does not. `.psd` is assumed not to. Agents should treat
+IDs as valid for one document session plus `.kra` round trips.
+`nodeByUniqueID` accepts IDs with or without braces.
+
+The document's global selection appears as a root-level
+`selectionmask` node named `Selection Mask` (spike Q9). Ref resolution,
+`list_layers` and lint skip it, and `get_document_info.selection`
+reports it instead.
 
 ## D5. Pixel I/O uses QImage, with no numpy
 
@@ -123,9 +137,10 @@ bundle). All pixel I/O goes through one module, `pixels.py`:
 `export_layers`. **We don't use it.** On the first probe run it ignored
 document batch mode, opened the PNG export dialog, and crashed Krita when
 the dialog was dismissed (see [spike.md § Run log](spike.md#run-log)).
-Even if Q16 shows that app-wide batch mode makes it safe, the
-`pixelData` → QImage path stays the main one, because it is under our
-control and testable outside Krita.
+Run 2 showed that app-wide batch mode suppresses the dialog, but also
+that `Node.save` **bakes the layer's opacity into the alpha**, so its
+output isn't the layer's raw pixels. The `pixelData` → QImage path is
+bit-exact (Q5) and is the only path.
 
 All export calls, `exportImage` and `saveAs` included, go through one
 helper that sets the document's batch mode, and the app-wide one when
@@ -133,15 +148,19 @@ needed, in `try`/`finally`.
 
 ## D6. Undo granularity
 
-**Open, pending spike Q1.** The recommendation follows.
+**Decided** (spike run 2, Q1). Re-inserting a removed node, which the
+delete inverse needs, is checked by Q18.
 
-Krita 5.3.4's Python API has no undo-macro call (the stub has no
-`beginMacro` or equivalent). So "one undo per agent action" cannot be done by
-grouping Krita's own undo commands. What can be done depends on which
-libkis calls create undo commands at all, which is spike question Q1.
+Krita 5.3.4's Python API has no undo-macro call, so Krita's own undo
+commands can't be grouped. Q1 found that undo coverage is **mixed**:
+`addChildNode`, `remove` and `setBlendingMode` push undo steps, while
+`setName`, `setVisible`, `setOpacity`, `setInheritAlpha`, `setPixelData`
+and `move` don't. A reorder takes two steps. So after any agent batch,
+Krita's Edit → Undo is unpredictable: it skips some of the agent's
+changes and can revert earlier, unrelated ones.
 
-*Recommendation, whatever Q1 finds:* give agents an undo they control,
-built on the batch executor (D11).
+Agents therefore get an undo they control, built on the batch executor
+(D11):
 
 - Every mutating batch tool records the inverse of each step it applies.
   It needs these anyway to roll back when a batch fails halfway.
@@ -166,14 +185,18 @@ built on the batch executor (D11).
   (the current `edit_undo` / `edit_redo` action triggers), aimed at the
   doc's view.
 
-*If Q1 finds libkis calls are undoable one by one:* the journal is still
-needed for "one undo per action". Document that Krita's Edit → Undo works
-step by step.
+To document in the tool docs and README:
 
-*If Q1 finds they are not undoable:* note in the tool docs that agent
-edits never appear in Krita's undo history, and that `krita_ui_undo` may
-undo an unrelated earlier user action. This affects the existing painting
-tools today.
+- Agent edits are only partly in Krita's undo history. After agent
+  changes, Edit → Undo (and `krita_ui_undo`) may skip them or revert an
+  unrelated earlier step. This affects the existing painting tools today.
+- Applying a journal inverse uses the same libkis calls, so it also
+  leaves partial entries on Krita's undo stack (a re-insert does, a
+  rename doesn't).
+- If Q18 shows that a removed node can't be re-inserted with its pixels,
+  the delete inverse falls back to keeping a `duplicate()` made before the
+  removal. That keeps pixels and properties, but the UUID changes, and the
+  result reports the new ID.
 
 ## D7. Allowed roots come from config
 
@@ -246,7 +269,11 @@ and other coordinate checks use the document's real size, not
 
 ## D10. How `render` hides layers
 
-**Provisional, pending spike Q7.**
+**Provisional, pending spike Q7 (run 3).** Run 2 established that
+`setVisible` sets neither the modified flag nor an undo step, and that
+`clone()` keeps UUIDs. Both options remain viable. Run 2's
+projection check was spoiled by the white `Background` layer that
+`createDocument` adds, so run 3 repeats it on a blank document.
 
 `render(only=…, hide=…)` must not leave visibility changed. There are two ways:
 
