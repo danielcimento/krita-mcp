@@ -492,7 +492,14 @@ Krita-only `krita:linear_dodge`.
   ```
   `"either"` (default), `"add"` or `"linear_dodge"`. With a specific
   spelling, the other one is a `blend-mode` finding with a fix hint.
-  (Which spelling umamo expects is being surveyed; record it here.)
+  **umamo accepts both** (surveyed 2026-11-25): it reads the `.kra`'s
+  `maindoc.xml` and maps `compositeop` case-insensitively, `add` and
+  `linear_dodge` both to `LayerBlend.Add` → Cubism `Additive`
+  (`umamo/module/format/.../kra/KraReader.kt` `parseCompositeOp`, tested in
+  `KraSyntheticReaderTest`). So `"either"` is the right default. Its PSD
+  reader knows only `lddg` for additive and reads Krita's `norm` (from an
+  exported `add`) as Normal, which the export conversion below prevents.
+  umamo has no `.ora` or PNG+manifest importer.
 - **Export conversion.** `save` to `.psd` writes `add` layers as
   `linear_dodge`; `save` to `.ora` writes `linear_dodge` layers as `add`.
   The conversion is done on a `clone()` of the document (D10), so the
