@@ -90,6 +90,7 @@ If using a virtual environment:
 | `krita_get_canvas` | Export canvas to PNG (for AI to see progress) |
 | `krita_save` | Save in place (no path), save as `.kra` (the document moves there), or export to PNG/JPG/…; returns the resolved path and file size |
 | `krita_close_document` | Close a document by handle; refuses unsaved changes unless `discard=true` |
+| `krita_list_layers` | The layer tree as a flat list, top to bottom (Layers-docker order): id, name, path, type, parent, children, visibility, opacity, blend mode, locks, bounds (exact, may extend past the canvas). Optional `root` (a subtree), `depth`, `fields`; per-type `counts` |
 | `krita_undo` / `krita_redo` | Undo/redo actions |
 | `krita_clear` | Clear a layer to a solid color, or `"transparent"` |
 | `krita_get_color_at` | Eyedropper — sample color at a pixel |

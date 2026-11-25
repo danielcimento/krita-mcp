@@ -47,6 +47,17 @@ def build_index(doc):
     return refs.NodeIndex([entry for _, entry in walk(doc)])
 
 
+def tree(doc):
+    """``(index, {id: node})`` from one walk, for commands that need both
+    the index and every node (``list_layers``). The wrappers are valid for
+    the current command only."""
+    by_id, entries = {}, []
+    for node, entry in walk(doc):
+        by_id[entry["id"]] = node
+        entries.append(entry)
+    return refs.NodeIndex(entries), by_id
+
+
 def node_by_id(doc, nid):
     """The node with id ``nid`` (braces optional), or None."""
     return doc.nodeByUniqueID(QUuid(nid))
@@ -120,12 +131,14 @@ _GETTERS = {
 }
 
 
-def layer_object(node, index, fields=None):
+def layer_object(node, index, fields=None, *, nid=None):
     """The layer object (api-design § Layer object) for ``node``, which must
     be in ``index``. ``fields``: optional list of keys; ``id``, ``name`` and
-    ``children`` are always included."""
+    ``children`` are always included, and only the keys asked for are read
+    from Krita. ``nid``: the node's id when the caller already has it."""
     want = check_fields(fields)
-    nid = node_id(node)
+    if nid is None:
+        nid = node_id(node)
     out = {}
     for key in LAYER_FIELDS:
         if key not in want:

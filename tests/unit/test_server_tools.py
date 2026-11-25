@@ -28,6 +28,7 @@ EXPECTED_TOOLS = {
     "krita_list_documents",
     "krita_get_document_info",
     "krita_close_document",
+    "krita_list_layers",
 }
 
 # tool -> (kwargs, plugin action, canned plugin payload)
@@ -68,6 +69,9 @@ CASES = {
                                  "max_depth": 1, "selection": None}),
     "krita_close_document": ({"doc": "doc-1"}, "close_document",
                              {"doc": "doc-1", "closed": True}),
+    "krita_list_layers": ({}, "list_layers",
+                          {"root": "/", "layers": [{"id": "{1}", "name": "a", "children": []}],
+                           "counts": {"paintlayer": 1, "total": 1}}),
 }
 
 
@@ -265,7 +269,7 @@ def test_health_idle_has_busy_null(monkeypatch):
 # get_color_at also take `layer`. App/UI-state tools take neither.
 DOC_TOOLS = {"krita_save", "krita_get_canvas", "krita_stroke", "krita_fill",
              "krita_draw_shape", "krita_clear", "krita_get_color_at",
-             "krita_get_document_info", "krita_close_document"}
+             "krita_get_document_info", "krita_close_document", "krita_list_layers"}
 # close_document has no active-document default.
 REQUIRED_DOC_TOOLS = {"krita_close_document"}
 OPTIONAL_DOC_TOOLS = DOC_TOOLS - REQUIRED_DOC_TOOLS
@@ -438,3 +442,41 @@ def test_close_document_params_and_summary(fake_call):
     result = server.krita_close_document("doc-1", discard=True)
     assert fake_call.calls[1][1] == {"doc": "doc-1", "discard": True}
     assert "discarded" in result["summary"]
+
+
+# P2.1: list_layers.
+
+def test_list_layers_forwards_only_set_params(fake_call):
+    server.krita_list_layers()
+    assert fake_call.calls[0][1] == {}
+    server.krita_list_layers(doc="doc-2", root="Head", depth=2, fields=["bounds"])
+    assert fake_call.calls[1][1] == {"doc": "doc-2", "root": "Head", "depth": 2,
+                                     "fields": ["bounds"]}
+    server.krita_list_layers(fields=[])  # an empty list is sent: only id, name, children
+    assert fake_call.calls[2][1] == {"fields": []}
+
+
+def test_list_layers_schema():
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    tool = tools["krita_list_layers"]
+    props = tool.parameters["properties"]
+    assert set(props) == {"doc", "root", "depth", "fields", "timeout_s"}
+    assert not tool.parameters.get("required")
+    assert "top to bottom" in tool.description and "not clipped" in tool.description
+
+
+def test_list_layers_summary(fake_call):
+    fake_call.payload = {"doc": "doc-2", "root": "/", "layers": [{"id": "{1}"}],
+                         "counts": {"paintlayer": 184, "grouplayer": 38, "total": 222}}
+    assert server.krita_list_layers()["summary"] == "38 groups, 184 paint layers in doc-2"
+    fake_call.payload = {"doc": "doc-2", "root": "{1}",
+                         "layers": [{"id": "{1}", "name": "Eyes", "path": "Head/Eyes"}],
+                         "counts": {"grouplayer": 1, "paintlayer": 1, "transparencymask": 2,
+                                    "total": 4}}
+    assert server.krita_list_layers(root="{1}", depth=1)["summary"] == (
+        "1 group, 1 paint layer, 2 transparency masks under 'Head/Eyes' in doc-2 (depth 1)")
+    fake_call.payload = {"doc": "doc-2", "root": "/", "layers": [], "counts": {"total": 0}}
+    assert server.krita_list_layers()["summary"] == "No layers in doc-2"
+    fake_call.payload = {"root": "/", "layers": [],
+                         "counts": {"weirdlayer": 2, "total": 2}}
+    assert server.krita_list_layers()["summary"] == "2 weirdlayer in the active document"

@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phase 1 done (live acceptance 3, 5 and 6 passed 2026-11-25; 5 minus the export row, 6 in its Phase-1 form). Phase 2 in progress: P2.2, P2.6 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phase 1 done (live acceptance 3, 5 and 6 passed 2026-11-25; 5 minus the export row, 6 in its Phase-1 form). Phase 2 in progress: P2.1, P2.2, P2.6 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -169,7 +169,7 @@ row of test 5, which lands with P3.2). Test 6 ran in its Phase-1 form
 
 ### Phase 2: Layer tree (P0)
 
-- [ ] **P2.1 `list_layers`.** Layer object serialization, `root`, `depth`,
+- [x] **P2.1 `list_layers`.** Layer object serialization, `root`, `depth`,
   `fields`, counts. Bounds per Q2.
 - [x] **P2.2 Batch executor.** `batch.py`: validate-all, apply with recorded
   inverses, rollback on failure, `dry_run`. It also hands the inverse

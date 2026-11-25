@@ -16,6 +16,7 @@ import unittest
 
 from helpers import temp_config
 from kritamcp import bridge, cmdqueue, config, dispatch, version
+from test_dispatch import EXPECTED_REGISTRY
 
 TOKEN = "test-token"
 JSON = {config.TOKEN_HEADER: TOKEN, "Content-Type": "application/json"}
@@ -165,7 +166,7 @@ class HandlerAuthTest(BridgeTestBase):
             "mutating": [n for n in names if dispatch.get(n).mutating],
         })
         self.assertEqual(body["commands"], sorted(body["commands"]))
-        self.assertEqual(len(body["commands"]), 17)
+        self.assertEqual(body["commands"], sorted(EXPECTED_REGISTRY))
         self.assertEqual(body["timeouts"]["save"], dispatch.LONG_TIMEOUT)
         self.assertEqual(body["timeouts"]["undo"], dispatch.QUERY_TIMEOUT)
         self.assertIn("new_canvas", body["mutating"])

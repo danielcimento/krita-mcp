@@ -22,6 +22,7 @@ EXPECTED_REGISTRY = {
     "get_document_info": (30, False),
     "list_documents": (30, False),
     "list_brushes": (30, False),
+    "list_layers": (30, False),
     "new_canvas": (300, True),
     "open_file": (300, True),
     "redo": (30, True),

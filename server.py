@@ -308,6 +308,95 @@ def krita_close_document(doc: str, discard: bool = False,
                          + (" (unsaved changes, if any, discarded)" if discard else ""))
 
 
+# --- Layer tree (api-design § Layer tree) ----------------------------------
+
+# Node type -> (singular, plural) for summaries. Others print as the type.
+_TYPE_WORDS = {
+    "grouplayer": ("group", "groups"),
+    "paintlayer": ("paint layer", "paint layers"),
+    "filterlayer": ("filter layer", "filter layers"),
+    "filllayer": ("fill layer", "fill layers"),
+    "clonelayer": ("clone layer", "clone layers"),
+    "vectorlayer": ("vector layer", "vector layers"),
+    "filelayer": ("file layer", "file layers"),
+    "transparencymask": ("transparency mask", "transparency masks"),
+    "filtermask": ("filter mask", "filter masks"),
+    "transformmask": ("transform mask", "transform masks"),
+    "colorizemask": ("colorize mask", "colorize masks"),
+}
+
+
+def _type_counts(counts) -> str:
+    """"38 groups, 184 paint layers": groups first, then paint layers, then
+    the rest by type name. Empty string when nothing is counted."""
+    items = [(k, v) for k, v in (counts or {}).items()
+             if k != "total" and isinstance(v, int) and not isinstance(v, bool) and v > 0]
+    first = {"grouplayer": 0, "paintlayer": 1}
+    items.sort(key=lambda kv: (first.get(kv[0], 2), kv[0]))
+    parts = []
+    for kind, n in items:
+        one, many = _TYPE_WORDS.get(kind, (kind, kind))
+        parts.append(f"{n} {one if n == 1 else many}")
+    return ", ".join(parts)
+
+
+@mcp.tool()
+def krita_list_layers(doc: Optional[str] = None, root: Optional[str] = None,
+                      depth: Optional[int] = None, fields: Optional[list[str]] = None,
+                      timeout_s: Optional[float] = None) -> dict:
+    """
+    List a document's layer tree as a flat list of layer objects,
+    depth-first and top to bottom (the order of Krita's Layers docker: a
+    group comes right before its contents). Returns {doc, root, layers,
+    counts}: root is "/" or the root layer's id; counts has nodes per type
+    over the listed layers (e.g. {"grouplayer": 38, "paintlayer": 184}) and
+    "total". The document's global selection is never listed.
+
+    Each layer object has: id (braced UUID), name, path (name path from the
+    document root, "/" in names escaped as "\\/"), type ("paintlayer",
+    "grouplayer", ...), parent (id, null at the top level), index (position
+    in the parent counted from the bottom, like Krita's childNodes()),
+    visible (the layer's own flag), opacity (0.0-1.0), blend_mode (a Krita
+    id such as "normal", "multiply", "add"), locked, alpha_locked,
+    inherit_alpha (clipping), pass_through (bool on groups, null
+    otherwise), has_layer_style, bounds and children (child ids, top to
+    bottom). bounds is {x, y, w, h} in exact canvas pixels, or null for a
+    layer with no pixels. It is not clipped to the canvas, so it may start
+    at negative x/y or extend past the canvas edge.
+
+    Args:
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        root: Layer to list from: a layer UUID, a name path such as
+              "Head/Eyes" ("\\/" for a slash in a name), or a unique name.
+              Default "/", the whole document (the root itself isn't a
+              layer and isn't listed). A layer root is listed first,
+              followed by its subtree
+        depth: Levels below root to list, at least 1; default unlimited.
+               1 = root's direct children only (for a layer root: the layer
+               and its direct children). Layers at the cut-off still list
+               their children ids, so pass one as root to go deeper
+        fields: Layer-object keys to include, e.g. ["type", "bounds"], to keep
+                big listings small; id, name and children are always
+                included. Unknown keys fail with bad_request. Default all
+        timeout_s: Seconds to wait for Krita, up to 900; default per command
+    """
+    result = client.call("list_layers",
+                         _with({}, doc=doc, root=root, depth=depth, fields=fields),
+                         timeout_s=timeout_s)
+    layers = result.get("layers") or []
+    counts = result.get("counts") or {}
+    what = _type_counts(counts) or "No layers"
+    if result.get("root") not in (None, "/") and layers:
+        first = layers[0]
+        what += f" under '{first.get('path') or first.get('name')}'"
+    summary = what + (_in(result) or f" in {doc or 'the active document'}")
+    if depth is not None:
+        summary += f" (depth {depth})"
+    return _done(result, summary)
+
+
 @mcp.tool()
 def krita_set_color(color: str, timeout_s: Optional[float] = None) -> dict:
     """

@@ -193,14 +193,37 @@ resize breaks existing rigs (CONVENTIONS: *Canvas*).
 
 ### `krita_list_layers(doc?, root?, depth?, fields?)` · P0
 
-- `root` is a layer ref, default `/`. `depth` is unlimited by default;
-  `depth=1` lists direct children only.
+- Returns `{"doc", "root", "layers": [<layer object>, …], "counts":
+  {...}, "summary"}`. `layers` is a **flat list**, depth-first and top to
+  bottom: the Layers docker's order, so a group comes right before its
+  contents. Nesting is in each object's `parent` and `children` (ids, top
+  to bottom), not in the list's shape.
+- `root` is a layer ref, default `/`. With `/` the listed nodes are the
+  root's descendants (the root isn't a layer). With a layer, it is listed
+  **first**, followed by its subtree, so the caller sees the layer it
+  asked for. Each object's `path` is still from the document root.
+  The result's `root` is `"/"` or the layer's id. A name or
+  path matching several layers is `ambiguous`.
+- `depth` is unlimited by default; otherwise a whole number ≥ 1 (else
+  `bad_request`). It counts levels below the root: `depth=1` lists the
+  root's direct children (for a layer root, the layer and its direct
+  children). Nodes at the cut-off still list their `children` ids, so the
+  caller can go deeper with `root=<id>`.
 - The document's global selection, a root-level `selectionmask` (spike
   Q9), is not listed. `get_document_info.selection` reports it.
 - `fields` is an optional subset of layer-object keys. It keeps responses
-  small for big documents. `id`, `name` and `children` are always included.
-- Returns `{"layers": [<layer object>, …], "counts": {...}, "summary": …}`.
-  `layers` is top to bottom.
+  small for big documents. `id`, `name` and `children` are always
+  included, keys keep the layer-object order, and only the requested keys
+  are read from Krita. An unknown key is `bad_request` (`details.unknown`,
+  `details.valid`).
+- `counts` has nodes per type over the listed nodes (`{"grouplayer": 38,
+  "paintlayer": 184, "total": 222}`).
+- `bounds` is exact (spike Q2) and in canvas pixels, and is not clipped
+  to the canvas: it may start at negative `x`/`y` or extend past the
+  edge. `null` for a layer with no pixels. A group's bounds is the union
+  of its children's.
+- Settled in P2.1 (2026-11-25): `kritamcp/commands/layers.py`; one tree
+  walk per call (about 7 ms headless for 229 nodes, all fields).
 
 ### `krita_create_layers(doc?, specs | manifest, dry_run?)` · P0
 
