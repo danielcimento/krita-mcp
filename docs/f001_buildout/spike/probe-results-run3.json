@@ -1,0 +1,789 @@
+{
+  "Q0": {
+    "title": "Environment",
+    "status": "ok",
+    "elapsed_ms": 0,
+    "result": {
+      "krita": "5.3.4.1 (git bd6e8d0)",
+      "python": "3.13.5 (main, Sep 18 2026, 16:02:43) [Clang 21.0.0 (clang-2100.1.1.101)]",
+      "numpy": false,
+      "byteorder": "little",
+      "filter_strategies": [
+        "Bicubic",
+        "Bilinear",
+        "Lanczos3",
+        "Mitchell",
+        "Bell",
+        "Hermite",
+        "NearestNeighbor",
+        "BSpline"
+      ]
+    }
+  },
+  "Q1": {
+    "title": "Which libkis calls create undo steps",
+    "status": "ok",
+    "elapsed_ms": 1232,
+    "result": {
+      "addChildNode": {
+        "active_is_doc": true,
+        "before": {
+          "tree": [
+            "Background"
+          ]
+        },
+        "after": {
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "after_undo": {
+          "tree": [
+            "Background"
+          ]
+        },
+        "changed": true,
+        "undoable": true
+      },
+      "setName": {
+        "active_is_doc": true,
+        "before": {
+          "prop": "A",
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "after": {
+          "prop": "B",
+          "tree": [
+            "Background",
+            "B"
+          ]
+        },
+        "after_undo": {
+          "prop": "B",
+          "tree": [
+            "Background"
+          ]
+        },
+        "changed": true,
+        "undoable": false
+      },
+      "setVisible": {
+        "active_is_doc": true,
+        "before": {
+          "prop": true,
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "after": {
+          "prop": false,
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "after_undo": {
+          "prop": false,
+          "tree": [
+            "Background"
+          ]
+        },
+        "changed": true,
+        "undoable": false
+      },
+      "setOpacity": {
+        "active_is_doc": true,
+        "before": {
+          "prop": 255,
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "after": {
+          "prop": 100,
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "after_undo": {
+          "prop": 100,
+          "tree": [
+            "Background"
+          ]
+        },
+        "changed": true,
+        "undoable": false
+      },
+      "setBlendingMode": {
+        "active_is_doc": true,
+        "before": {
+          "prop": "normal",
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "after": {
+          "prop": "multiply",
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "after_undo": {
+          "prop": "normal",
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "changed": true,
+        "undoable": true
+      },
+      "setInheritAlpha": {
+        "active_is_doc": true,
+        "before": {
+          "prop": false,
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "after": {
+          "prop": true,
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "after_undo": {
+          "prop": true,
+          "tree": [
+            "Background"
+          ]
+        },
+        "changed": true,
+        "undoable": false
+      },
+      "setPixelData": {
+        "active_is_doc": true,
+        "before": {
+          "prop": [
+            0,
+            0,
+            255,
+            255
+          ],
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "after": {
+          "prop": [
+            255,
+            0,
+            0,
+            255
+          ],
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "after_undo": {
+          "prop": [
+            255,
+            0,
+            0,
+            255
+          ],
+          "tree": [
+            "Background"
+          ]
+        },
+        "changed": true,
+        "undoable": false
+      },
+      "move": {
+        "active_is_doc": true,
+        "before": {
+          "prop": [
+            0,
+            0,
+            4,
+            4
+          ],
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "after": {
+          "prop": [
+            20,
+            30,
+            4,
+            4
+          ],
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "after_undo": {
+          "prop": [
+            20,
+            30,
+            4,
+            4
+          ],
+          "tree": [
+            "Background"
+          ]
+        },
+        "changed": true,
+        "undoable": false
+      },
+      "remove": {
+        "active_is_doc": true,
+        "before": {
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "after": {
+          "tree": [
+            "Background"
+          ]
+        },
+        "after_undo": {
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "changed": true,
+        "undoable": true
+      },
+      "removeChildNode+addChildNode (reorder)": {
+        "active_is_doc": true,
+        "before": {
+          "tree": [
+            "Background",
+            "Bottom",
+            "Top"
+          ]
+        },
+        "after": {
+          "tree": [
+            "Background",
+            "Top",
+            "Bottom"
+          ]
+        },
+        "after_undo": {
+          "tree": [
+            "Background",
+            "Top"
+          ]
+        },
+        "changed": true,
+        "undoable": false
+      },
+      "setActiveNode": {
+        "active_is_doc": true,
+        "before": {
+          "active": "A",
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "after": {
+          "active": "Background",
+          "tree": [
+            "Background",
+            "A"
+          ]
+        },
+        "after_undo": {
+          "active": "Background",
+          "tree": [
+            "Background"
+          ]
+        },
+        "changed": true,
+        "undoable": false
+      }
+    }
+  },
+  "Q2": {
+    "title": "Node.bounds(): exact or tile-aligned; empty layers",
+    "status": "ok",
+    "elapsed_ms": 33,
+    "result": {
+      "empty_bounds": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "empty_hasExtents": false,
+      "after_write": [
+        13,
+        17,
+        10,
+        10
+      ],
+      "expected_exact": [
+        13,
+        17,
+        10,
+        10
+      ],
+      "exact": true,
+      "after_clear_to_transparent": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "off_canvas_bounds": [
+        250,
+        250,
+        10,
+        10
+      ],
+      "off_canvas_pixel_outside_readable": [
+        0,
+        0,
+        255,
+        255
+      ]
+    }
+  },
+  "Q3": {
+    "title": "UUIDs: format, lookup, clone, .kra/.ora persistence",
+    "status": "ok",
+    "elapsed_ms": 100,
+    "result": {
+      "ids": {
+        "Group": "{1a3d8531-ff37-471d-9012-a69deab01e0a}",
+        "Alpha": "{704f2657-9d8a-4080-bb6e-6df7be48d579}"
+      },
+      "lookup_ok": true,
+      "lookup_unbraced_ok": true,
+      "node_wrappers_equal": true,
+      "node_wrappers_not_equal": true,
+      "clone_keeps_ids": false,
+      "clone_ids": {
+        "Background": "{461c8b83-7419-42f2-b698-5a3f35985c2e}",
+        "Group": "{1a3d8531-ff37-471d-9012-a69deab01e0a}",
+        "Alpha": "{704f2657-9d8a-4080-bb6e-6df7be48d579}"
+      },
+      "persisted": {
+        "kra": {
+          "export_ok": true,
+          "same_ids": false,
+          "ids": {
+            "Background": "{461c8b83-7419-42f2-b698-5a3f35985c2e}",
+            "Group": "{1a3d8531-ff37-471d-9012-a69deab01e0a}",
+            "Alpha": "{704f2657-9d8a-4080-bb6e-6df7be48d579}"
+          },
+          "reopened_name": "probe-uuid",
+          "reopened_fileName": "/Users/daniel/krita-mcp-output/spike/probe-uuid.kra"
+        },
+        "ora": {
+          "export_ok": true,
+          "same_ids": false,
+          "ids": {
+            "Background": "{6567150a-bf82-4273-9769-486f2fc64203}",
+            "Group": "{b222f80f-d065-4550-be2b-7296e85e52c3}",
+            "Alpha": "{128a6ff4-04dd-48bd-bc1f-5c025d15c4e6}"
+          },
+          "reopened_name": "",
+          "reopened_fileName": "/Users/daniel/krita-mcp-output/spike/probe-uuid.ora"
+        }
+      }
+    }
+  },
+  "Q4": {
+    "title": "createDocument defaults, profiles, Document equality",
+    "status": "ok",
+    "elapsed_ms": 24,
+    "result": {
+      "default_children": [
+        [
+          "Background",
+          "paintlayer"
+        ]
+      ],
+      "color": [
+        "RGBA",
+        "U8",
+        "sRGB-elle-V2-srgbtrc.icc"
+      ],
+      "name": "probe-defaults",
+      "fileName": "",
+      "modified": false,
+      "profiles_rgba_u8": [
+        "ACES CG Linear (Academy Color Encoding System AP1)",
+        "ACEScg-elle-V4-g10.icc",
+        "Adobe RGB (1998)",
+        "ClayRGB-elle-V2-g22.icc",
+        "ClayRGB-elle-V4-srgbtrc.icc",
+        "Display P3",
+        "High Dynamic Range UHDTV Wide Color Gamut Display (Rec. 2020) - SMPTE ST 2084 PQ EOTF",
+        "LargeRGB-elle-V2-g22.icc",
+        "ROMM RGB: ISO 22028-2:2013",
+        "Rec. ITU-R BT.2020-1",
+        "Rec. ITU-R BT.709-5",
+        "Rec2020-elle-V4-g10.icc",
+        "SMPTE RP 431-2-2007 DCI (P3)",
+        "V\u0161eobecn\u00fd RGB profil",
+        "WideRGB-elle-V2-g22.icc",
+        "krita-2.5, lcms sRGB built-in with linear gamma TRC",
+        "sRGB IEC61966-2.1",
+        "sRGB built-in",
+        "sRGB-elle-V2-g10.icc",
+        "sRGB-elle-V2-srgbtrc.icc",
+        "scRGB (linear)"
+      ],
+      "profiles_count": 21,
+      "in_documents_by_eq": true,
+      "in_documents_by_is": false
+    }
+  },
+  "Q5": {
+    "title": "BGRA order and bit-exact PNG round trip via QImage",
+    "status": "ok",
+    "elapsed_ms": 25,
+    "result": {
+      "setPixelData_roundtrip_exact": true,
+      "setPixelData_roundtrip_exact_ignoring_zero_alpha": true,
+      "projection_of_bgra_10_20_30": [
+        30,
+        20,
+        10,
+        255
+      ],
+      "expected_rgb": [
+        30,
+        20,
+        10,
+        255
+      ],
+      "qimage_png_saved": true,
+      "png_roundtrip_exact": true,
+      "png_roundtrip_exact_ignoring_zero_alpha": true,
+      "bytesPerLine": 1024
+    }
+  },
+  "Q6": {
+    "title": "move / scaleNode / rotateNode semantics",
+    "status": "ok",
+    "elapsed_ms": 32,
+    "result": {
+      "move(10,10)": {
+        "pos_before": [
+          0,
+          0
+        ],
+        "bounds_before": [
+          100,
+          50,
+          20,
+          10
+        ],
+        "pos_after": [
+          10,
+          10
+        ],
+        "bounds_after": [
+          110,
+          60,
+          20,
+          10
+        ]
+      },
+      "move(10,10) again": {
+        "bounds_after": [
+          110,
+          60,
+          20,
+          10
+        ],
+        "note": "same bounds => absolute, shifted => relative"
+      },
+      "scaleNode(origin=100,50, 40x20)": {
+        "bounds_before": [
+          100,
+          50,
+          20,
+          10
+        ],
+        "bounds_after": [
+          100,
+          50,
+          40,
+          20
+        ]
+      },
+      "rotateNode(pi/2)": {
+        "bounds_before": [
+          100,
+          50,
+          20,
+          10
+        ],
+        "bounds_after": [
+          105,
+          45,
+          10,
+          20
+        ],
+        "marker_before": [
+          119,
+          50
+        ],
+        "marker_after": [
+          114,
+          64
+        ],
+        "note": "bottom-right (~115,64) => clockwise on screen; top-left (~105,46) => counter-clockwise"
+      }
+    }
+  },
+  "Q7": {
+    "title": "Visibility toggles: modified flag and projection refresh",
+    "status": "ok",
+    "elapsed_ms": 24,
+    "result": {
+      "alpha_visible": 255,
+      "alpha_hidden": 0,
+      "projection_follows_visibility": true,
+      "modified_after_setVisible": false,
+      "modified_after_restore_and_reset": false,
+      "clone_ms_small_doc": 1
+    }
+  },
+  "Q8": {
+    "title": "Group projection: own opacity included? clipping baked?",
+    "status": "ok",
+    "elapsed_ms": 21,
+    "result": {
+      "group_projection_alpha_at_5_5": [
+        255,
+        0,
+        0,
+        255
+      ],
+      "group_projection_alpha_at_15_15": [
+        255,
+        0,
+        0,
+        0
+      ],
+      "note": "alpha 255 at (5,5) => group opacity NOT in its projection; alpha 0 at (15,15) => clipping is baked",
+      "doc_projection_at_5_5": [
+        127,
+        127,
+        255,
+        255
+      ]
+    }
+  },
+  "Q9": {
+    "title": "Selection copy/cut/paste and document selection",
+    "status": "ok",
+    "elapsed_ms": 27,
+    "result": {
+      "doc_selection_rect": [
+        0,
+        0,
+        5,
+        5
+      ],
+      "src_at_2_2_after_cut": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "src_at_10_10": [
+        0,
+        0,
+        255,
+        255
+      ],
+      "dst_at_2_2_after_paste": [
+        0,
+        0,
+        255,
+        255
+      ],
+      "dst_children_after_paste": [
+        "Background",
+        "Src",
+        "Dst",
+        "Selection Mask"
+      ],
+      "note": "paste may create a floating/new layer instead of writing into dst",
+      "selection_cleared": true,
+      "root_children_after_deselect": [
+        [
+          "Background",
+          "paintlayer"
+        ],
+        [
+          "Src",
+          "paintlayer"
+        ],
+        [
+          "Dst",
+          "paintlayer"
+        ]
+      ],
+      "system_clipboard_formats_after_cut": [
+        "application/x-krita-selection",
+        "application/x-qt-image"
+      ]
+    }
+  },
+  "Q10": {
+    "title": "Selection.grow as dilation",
+    "status": "ok",
+    "elapsed_ms": 0,
+    "result": {
+      "nonzero_after_grow_4": 69,
+      "bbox": [
+        28,
+        28,
+        36,
+        36
+      ],
+      "note": "81 => square kernel, about 49-57 => disc; bbox should be 28..36"
+    }
+  },
+  "Q11": {
+    "title": "Timing at Mao size (RUN_LARGE only)",
+    "status": "ok",
+    "elapsed_ms": 0,
+    "result": {
+      "skipped": "set RUN_LARGE = True"
+    }
+  },
+  "Q13": {
+    "title": "Batch-mode save/export/close: return values, fileName, dialogs",
+    "status": "ok",
+    "elapsed_ms": 89,
+    "result": {
+      "export_png_ok": true,
+      "fileName_after_export": "",
+      "saveAs_kra_ok": true,
+      "fileName_after_saveAs": "/Users/daniel/krita-mcp-output/spike/probe-save.kra",
+      "modified_after_saveAs": false,
+      "close_after_setModified_false": true
+    }
+  },
+  "Q14": {
+    "title": "layerStyleToAsl on a plain layer",
+    "status": "ok",
+    "elapsed_ms": 27,
+    "result": {
+      "asl_repr": "''",
+      "asl_empty": true
+    }
+  },
+  "Q15": {
+    "title": "Blend mode IDs and invalid values",
+    "status": "ok",
+    "elapsed_ms": 24,
+    "result": {
+      "normal": "normal",
+      "multiply": "multiply",
+      "add": "add",
+      "screen": "screen",
+      "linear_dodge": "linear_dodge",
+      "not-a-mode": "not-a-mode",
+      "render_normal": [
+        128,
+        128,
+        128,
+        255
+      ],
+      "render_not-a-mode": [
+        128,
+        128,
+        128,
+        255
+      ]
+    }
+  },
+  "Q16": {
+    "title": "Node.save with exportRect, under app-wide batch mode (runs last)",
+    "status": "ok",
+    "elapsed_ms": 61,
+    "result": {
+      "app_batchmode_before": false,
+      "file_written": true,
+      "node_save_size": [
+        10,
+        10
+      ],
+      "node_save_pixel_rgba": [
+        255,
+        0,
+        0,
+        100
+      ],
+      "note": "no dialog appeared => app batch mode suppresses it; alpha 200 => raw pixels; ~100 => layer opacity baked in"
+    }
+  },
+  "Q17": {
+    "title": "Liveness check on a closed Document (== only)",
+    "status": "ok",
+    "elapsed_ms": 45,
+    "result": {
+      "open_before": true,
+      "close_ok": true,
+      "open_after": false,
+      "note": "if this probe crashes Krita, == on a closed wrapper is unsafe too"
+    }
+  },
+  "Q18": {
+    "title": "Re-inserting a removed node (journal inverse for delete)",
+    "status": "ok",
+    "elapsed_ms": 23,
+    "result": {
+      "lookup_none_after_remove": true,
+      "addChildNode_returned": true,
+      "found_after_reinsert": true,
+      "same_uuid": true,
+      "pixels_kept": [
+        0,
+        0,
+        255,
+        255
+      ],
+      "bounds": [
+        3,
+        3,
+        4,
+        4
+      ],
+      "opacity": 77,
+      "parent": "G",
+      "expected": "pixels [0,0,255,255], bounds [3,3,4,4], opacity 77, parent G"
+    }
+  }
+}

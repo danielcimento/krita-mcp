@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Planning done. Phase 0: probe run 2 done, run 3 pending for a few items |
+| Status | Phase 0 done (Q11/Q12 optional). Phase 1 next |
 
 ## Scope
 
@@ -99,18 +99,16 @@ installable and the existing tools working.
 - [x] Run 2: all probes finished, then Krita crashed in the probe's
       cleanup because a closed document was touched again. Results are
       recorded in `spike.md`, `krita-api-notes.md` and the decisions. D6 is closed.
-- [ ] **User:** run 3, to confirm the items marked *Run 3* in spike.md
-      (Q3 node `==`, Q6 rotation direction, Q7, Q9 mask/clipboard, Q15, Q17,
-      Q18). Optionally `RUN_LARGE` for Q11, and Q12 by hand.
-- [ ] Close D10 (Q7) and D16 (Q12). Settle D3's registry variant (Q17)
-      and the delete inverse (Q18).
+- [x] Run 3: clean. Every question that blocks work is answered. D3, D6
+      and D10 are closed.
+- [ ] Optional: `RUN_LARGE = True` for Q11 (timings at Mao size, to tune
+      D9's default timeouts), and Q12 by hand (kritarunner, D16). Neither
+      blocks Phase 1.
 
-*Exit:* no *Open* or *Provisional* entries in decisions.md that block
-Phase 1–4 work. D16 can stay provisional, because the headless runner is optional.
+*Exit:* met. The only provisional decision left is D16 (headless test
+runner), which is optional.
 
-Phase 1 can start now. Q2, Q4, Q5 and Q13, which P1.7 and the pixel work
-waited on, are answered. Before P1.6 the registry needs Q17. Before P2.2
-the batch executor's delete inverse needs Q18.
+Phase 1 can start.
 
 ### Phase 1: Foundation
 

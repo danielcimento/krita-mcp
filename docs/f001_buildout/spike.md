@@ -30,31 +30,31 @@ fix the probe and rerun rather than reading anything into that result.
 
 ## Questions
 
-Results are from run 2 (`spike/probe-results-run2.json`) unless marked
-otherwise. **Run 3** means the item still has to be confirmed by the next
-run.
+Results are from run 2 (`spike/probe-results-run2.json`), with run 3
+(`spike/probe-results-run3.json`) filling in the items marked *run 3*.
+Run 3 repeated every run-2 result unchanged.
 
 | # | Question | Decides | Result |
 |---|---|---|---|
 | Q0 | Krita and Python versions, numpy, byte order, scaling filter names | D5, `transform_layer` `resample` values | Krita 5.3.4.1, Python 3.13.5, **no numpy**, little-endian. Filters: Hermite, Bell, Lanczos3, Bilinear, Mitchell, NearestNeighbor, BSpline, Bicubic |
 | Q1 | Which libkis calls create Krita undo steps? | D6, D10 | **Mixed.** Undoable: `addChildNode`, `remove`, `setBlendingMode`. Not undoable: `setName`, `setVisible`, `setOpacity`, `setInheritAlpha`, `setPixelData`, `move`, `setActiveNode`. Reorder: one undo only reverts the re-add. The undo after a non-undoable call reverted the setup's `addChildNode`, which shows that Edit → Undo hits earlier, unrelated steps. D6 is closed |
 | Q2 | Is `Node.bounds()` exact or tile-aligned? | `bounds`, cropping, lint | **Exact**, and it shrinks to (0,0,0,0) when the pixels are cleared. Empty layer: (0,0,0,0), `hasExtents` false. Not clipped to the canvas: off-canvas pixels are kept and readable |
-| Q3 | UUID format, lookup, persistence | D4, D10 B, `diff_documents` | Braced lowercase. Lookup works with or without braces. **Kept** by `clone()` and `.kra`, **not** by `.ora`. The probe's `clone_keeps_ids` / `same_ids` read `false` only because it left out the default `Background` layer: the Group and Alpha IDs match. ORA reopens with an empty `name()`. Node `==` is rechecked in run 3 |
+| Q3 | UUID format, lookup, persistence | D4, D10 B, `diff_documents` | Braced lowercase. Lookup works with or without braces. **Kept** by `clone()` and `.kra`, **not** by `.ora`. The probe's `clone_keeps_ids` / `same_ids` read `false` only because it left out the default `Background` layer: the Group and Alpha IDs match. ORA reopens with an empty `name()`. *Run 3:* Node `==` and `!=` work |
 | Q4 | `createDocument` defaults, profiles, `Document ==` | `new_canvas`, D3 | Adds one opaque white **`Background`** paint layer. Default profile `sRGB-elle-V2-srgbtrc.icc`. 21 RGBA/U8 profiles. `==` finds the doc in `documents()`, `is` doesn't |
 | Q5 | BGRA order and bit-exact round trips | D5, acceptance test 2 | **Confirmed.** BGRA. `setPixelData`/`pixelData` and QImage→PNG→QImage are bit-exact, including partial and zero alpha |
-| Q6 | `move`, `scaleNode`, `rotateNode` semantics | `transform_layer` | `move` sets an **absolute** offset. `scaleNode(origin, w, h)`: bounds become w×h with `origin` fixed. `rotateNode` rotates about the **bounds' center**. Direction in run 3 |
-| Q7 | `setVisible` vs `modified` flag; projection follows visibility; clone cost | D10 | `setVisible` does **not** set `modified`. Clone of a small doc: 1 ms. The projection check was inconclusive, because the white `Background` was underneath. Run 3 uses a blank doc |
+| Q6 | `move`, `scaleNode`, `rotateNode` semantics | `transform_layer` | `move` sets an **absolute** offset. `scaleNode(origin, w, h)`: bounds become w×h with `origin` fixed. `rotateNode` rotates about the **bounds' center**. *Run 3:* positive radians turn **clockwise on screen** |
+| Q7 | `setVisible` vs `modified` flag; projection follows visibility; clone cost | D10 | `setVisible` does **not** set `modified`. Clone of a small doc: 1 ms. *Run 3, on a blank doc:* the projection **follows visibility** (alpha 255 → 0). D10 is closed: A |
 | Q8 | Group projection: own opacity? clipping baked? | `merge_layers` | **Excludes** the group's own opacity and **includes** clipping baked in |
-| Q9 | `Selection.cut`/`paste`; `setSelection(None)` | `selection_to_layer`, `select(none)` | `cut` clears the source and `paste` writes into the destination, with no new layer. **`setSelection` adds a root-level `Selection Mask` node.** `setSelection(None)` makes `selection()` return `None`. Whether the mask node goes away, and the clipboard contents, are in run 3 |
+| Q9 | `Selection.cut`/`paste`; `setSelection(None)` | `selection_to_layer`, `select(none)` | `cut` clears the source and `paste` writes into the destination, with no new layer. **`setSelection` adds a root-level `Selection Mask` node.** `setSelection(None)` makes `selection()` return `None`. *Run 3:* the mask node **goes away** after deselecting, and `cut` puts `application/x-krita-selection` + `application/x-qt-image` on the **system clipboard** |
 | Q10 | `Selection.grow` as dilation | lint `stray-alpha`, `trim_layers` | Works, with a roughly round kernel: 1 px grown by 4 gives 69 px in a 9×9 box. `setPixelData` works after `resize` |
 | Q11 | Timings at 5800×8400 | D9, D10, `create_layers` budget | Not run (`RUN_LARGE = False`) |
 | Q12 | `kritarunner` headless | D16 | Not run |
 | Q13 | Batch-mode save, export, close | `save`, `close_document` | No dialogs. `exportImage`/`saveAs` return `True`. `exportImage` leaves `fileName()` alone, `saveAs` re-points it and clears `modified`. `close()` after `setModified(False)` returns `True` with no prompt |
 | Q14 | `layerStyleToAsl()` on a plain layer | lint `layer-style` | `''` |
-| Q15 | Blend mode IDs and invalid values | validation, lint | `add` and `linear_dodge` are distinct, valid IDs. **Any string is accepted**, `not-a-mode` included, so validation is ours. Render behaviour of an invalid ID is in run 3 |
+| Q15 | Blend mode IDs and invalid values | validation, lint | `add` and `linear_dodge` are distinct, valid IDs. **Any string is accepted**, `not-a-mode` included, so validation is ours. *Run 3:* an invalid ID renders like Normal (50% gray over white stays 128; the test can't tell Normal from Multiply) |
 | Q16 | `Node.save` under app-wide batch mode | D5 | No dialog. Wrote a 10×10 PNG, **with the layer's opacity baked into the alpha** (200 → 100 at 50% opacity). So not usable as raw export. D5 confirmed |
-| Q17 | Is `==` safe on a closed `Document` wrapper? | D3 (registry design) | Run 3 |
-| Q18 | Can a removed node be re-inserted with its pixels, properties and UUID? | D6 (journal inverse for delete) | Run 3 |
+| Q17 | Is `==` safe on a closed `Document` wrapper? | D3 (registry design) | *Run 3:* **safe**, and the closed doc no longer matches anything in `documents()` |
+| Q18 | Can a removed node be re-inserted with its pixels, properties and UUID? | D6 (journal inverse for delete) | *Run 3:* **yes**: same UUID, pixels, bounds, opacity and parent. `nodeByUniqueID` returns `None` while it is out |
 
 ### Q12 by hand: kritarunner
 
@@ -112,6 +112,13 @@ closes from the list. `blank=True` scratch documents drop the
 blank doc, Q6 records the rotation direction, Q9 checks the mask node
 and clipboard after deselecting, Q15 renders an invalid mode. New: Q17
 (`==` on a closed wrapper) and Q18 (re-inserting a removed node).
+
+**2026-11-24, run 3.** Completed with no crash (progress file:
+`complete`). Results in `spike/probe-results-run3.json`. All run-2 results
+repeated. Every open question except Q11 (timings at Mao size, optional)
+and Q12 (kritarunner, optional) is answered, and D3, D6 and D10 are
+closed. Q11 feeds the default timeouts (D9). P1.5 can start with the
+planned defaults, which get tuned once Q11 runs.
 
 ## Not covered by the probe
 

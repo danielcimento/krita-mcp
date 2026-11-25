@@ -74,10 +74,8 @@ Auth and transport errors (401, 403 for host/browser, 413 for body size,
   document's wrapper crashes Krita (spike run 2). So the registry checks
   `any(stored == d for d in app.documents())` on every lookup, and only
   ever calls methods on the live wrapper from `documents()` that matched.
-  The stored wrapper is used only in `==`. Whether `==` is safe on a
-  closed wrapper is probe Q17. If it isn't, the registry keeps no
-  `Document` objects, only a fingerprint (`fileName()` + creation
-  order), and re-matches against `documents()` on each call.
+  The stored wrapper is used only in `==`, which is safe after the
+  document closes (spike run 3, Q17).
 - The `doc` parameter accepts: a handle; an absolute path that is the
   `fileName()` of exactly one open document; or nothing, meaning the active
   document (`no active document` is `not_found`).
@@ -148,8 +146,9 @@ needed, in `try`/`finally`.
 
 ## D6. Undo granularity
 
-**Decided** (spike run 2, Q1). Re-inserting a removed node, which the
-delete inverse needs, is checked by Q18.
+**Decided** (spike run 2, Q1; run 3, Q18 confirmed that a removed node
+can be re-inserted with its UUID, pixels and properties, so the delete
+inverse works as described).
 
 Krita 5.3.4's Python API has no undo-macro call, so Krita's own undo
 commands can't be grouped. Q1 found that undo coverage is **mixed**:
@@ -193,10 +192,6 @@ To document in the tool docs and README:
 - Applying a journal inverse uses the same libkis calls, so it also
   leaves partial entries on Krita's undo stack (a re-insert does, a
   rename doesn't).
-- If Q18 shows that a removed node can't be re-inserted with its pixels,
-  the delete inverse falls back to keeping a `duplicate()` made before the
-  removal. That keeps pixels and properties, but the UUID changes, and the
-  result reports the new ID.
 
 ## D7. Allowed roots come from config
 
@@ -269,11 +264,12 @@ and other coordinate checks use the document's real size, not
 
 ## D10. How `render` hides layers
 
-**Provisional, pending spike Q7 (run 3).** Run 2 established that
-`setVisible` sets neither the modified flag nor an undo step, and that
-`clone()` keeps UUIDs. Both options remain viable. Run 2's
-projection check was spoiled by the white `Background` layer that
-`createDocument` adds, so run 3 repeats it on a blank document.
+**Decided: A, with B as fallback** (spike runs 2 and 3, Q1 and Q7).
+`setVisible` sets neither the modified flag nor an undo step, and the
+projection follows visibility after `refreshProjection()` +
+`waitForDone()`. So an in-place toggle leaves no trace once it's
+restored. B remains the fallback if Q11 shows in-place re-rendering is
+much slower than a clone at Mao size.
 
 `render(only=…, hide=…)` must not leave visibility changed. There are two ways:
 
@@ -285,8 +281,8 @@ projection check was spoiled by the white `Background` layer that
   and close the clone. The original is untouched, but memory and time are
   about one full document copy.
 
-Use A unless the spike shows that `setVisible` creates undo steps or that
-the modified flag can't be restored. In either case use B.
+The restore runs in `finally`. If Krita crashes mid-render, it can't
+run, but nothing is saved either, so the file on disk is unaffected.
 
 ## D11. Batch semantics
 

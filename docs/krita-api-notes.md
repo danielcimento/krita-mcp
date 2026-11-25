@@ -19,7 +19,8 @@ Items are tagged:
 - **[stub]**: the signature exists in the 5.3.4 stub. Behaviour is not verified.
 - **[verified]**: behaviour confirmed by a run in Krita. Unless a note
   says otherwise, it was confirmed by the F001 probe, run 2, on
-  2026-11-24 ([raw results](f001_buildout/spike/probe-results-run2.json)).
+  2026-11-24 ([raw results](f001_buildout/spike/probe-results-run2.json)),
+  and repeated in run 3 ([raw results](f001_buildout/spike/probe-results-run3.json)).
 - **[to verify]**: an assumption that still needs a test. The probe script,
   [f001_buildout/spike/krita_api_probe.py](f001_buildout/spike/krita_api_probe.py),
   covers most of these.
@@ -34,9 +35,9 @@ so the HTTP bridge dies with it.
   (`setModified`, `name`, …) crashes. [verified, run 2: it crashed in the
   probe's cleanup, at address 0x10]. Before every use, check that the
   document is still open with `any(doc == d for d in Krita.instance().documents())`.
-  Whether `==` itself is safe on a closed wrapper is being checked by
-  probe Q17 [to verify]. The handle registry must never keep a `Document`
-  beyond that check.
+  `==` itself is safe on a closed wrapper. It returns no match
+  [verified, run 3, Q17]. So a stored wrapper may be kept for `==`
+  checks, but never called directly.
 - **Modal dialogs during a command.** A dialog blocks the main thread, so
   the command never returns. Dismissing the one `Node.save` opened then
   crashed Krita [verified, run 1]. Every export path must run in batch
@@ -110,9 +111,9 @@ so the HTTP bridge dies with it.
   `colorizemask`.
 - **The document's global selection shows up as a node.** After
   `Document.setSelection(sel)`, `rootNode().childNodes()` includes a
-  root-level `Selection Mask` [verified, Q9]. Whether it goes away after
-  `setSelection(None)` is [to verify] (Q9, run 3). Tree listing and lint
-  must treat a root-level `selectionmask` as UI state, not content.
+  root-level `Selection Mask` [verified, Q9]. It goes away again after
+  `setSelection(None)` [verified, run 3]. Tree listing and lint must treat
+  a root-level `selectionmask` as UI state, not content.
 - UUIDs [verified]:
   - `uniqueId().toString()` gives the braced lowercase form, e.g.
     `{c0cc968f-d678-4a81-88fd-c9210f662cea}`.
@@ -136,8 +137,14 @@ so the HTTP bridge dies with it.
 - `setBlendingMode()` **accepts any string**: `"not-a-mode"` is stored
   and read back unchanged [verified]. Validate against a known list
   ourselves. `add` and `linear_dodge` are distinct IDs, and both are
-  accepted. How an invalid mode renders is in Q15, run 3 [to verify].
+  accepted. A layer with an invalid ID renders like Normal: 50% gray over
+  white stayed 128 [verified, run 3]. That test can't tell Normal from
+  Multiply, but either way an invalid ID fails silently.
 - `inheritAlpha()` is Krita's clipping ("alpha inheritance").
+- A node removed with `remove()` can be put back: `addChildNode(node, …)`
+  re-inserts the same wrapper with the same UUID, pixels, bounds, opacity
+  and parent, and `nodeByUniqueID` returns `None` while it is out
+  [verified, run 3, Q18].
 - `GroupLayer.passThroughMode()` [stub].
 - `layerStyleToAsl()` returns `''` for a layer without a style
   [verified]. The non-empty case is [to verify], using the lint fixture.
@@ -154,8 +161,10 @@ so the HTTP bridge dies with it.
     kept that corner in place.
   - `rotateNode(radians)` rotates about the **center of the layer's
     bounds**, not the image center: (100, 50, 20, 10) became
-    (105, 45, 10, 20). The direction is [to verify] (Q6, run 3). For a
-    custom pivot, rotate and then `move` by the offset.
+    (105, 45, 10, 20). **Positive radians turn clockwise on screen**
+    (y down): a top-right marker at (119, 50) ended at (114, 64), bottom
+    right [verified, run 3]. For a custom pivot, rotate and then `move` by
+    the offset.
 - `Node.save(filename, xRes, yRes, InfoObject, exportRect)` writes the
   node to a file, **with the layer's opacity applied**: alpha 200 at 50%
   opacity was saved as 100. It needs app-wide batch mode (see *Crash
@@ -193,9 +202,9 @@ so the HTTP bridge dies with it.
   and `setSelection(None)` makes `selection()` return `None` [verified].
 - `cut(node)` clears the selected pixels in `node`, and
   `paste(dest, x, y)` writes them into `dest`, without creating a new layer
-  [verified]. They probably go through the clipboard. Q9 run 3 records the
-  system clipboard [to verify]. Don't use them in tools: they would
-  clobber the user's clipboard.
+  [verified]. `cut` **puts the pixels on the system clipboard**
+  (`application/x-krita-selection`, `application/x-qt-image`) [verified,
+  run 3]. Don't use them in tools: they clobber the user's clipboard.
 - `grow(r, r)` dilates with a roughly round kernel. One pixel grown by 4
   became 69 pixels in a 9×9 box. After `resize(w, h)`,
   `setPixelData` / `pixelData` work on a standalone `Selection` [verified].

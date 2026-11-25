@@ -347,8 +347,9 @@ Returns the new layer and the cut rectangle.
   adds the delta to `position()`. `scaleNode(origin, w, h, filter)` scales
   the bounds to `w × h` and keeps `origin` fixed, so `origin` = pivot.
   `rotateNode` rotates about the bounds' center, so a custom pivot is
-  rotate, then `move` by the pivot's displacement. The rotation direction
-  is confirmed in run 3, and the API normalizes it to clockwise on screen.
+  rotate, then `move` by the pivot's displacement. Positive radians turn
+  clockwise on screen (spike Q6), so `rotate` in degrees maps directly to
+  `rotateNode(radians(rotate))`.
 - `resample` takes Krita's filter names: `Bicubic` (default), `Bilinear`,
   `NearestNeighbor`, `Lanczos3`, `Mitchell`, `BSpline`, `Bell`, `Hermite`.
 
