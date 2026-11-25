@@ -532,3 +532,15 @@ Krita-only `krita:linear_dodge`.
   brings `add` layers back as `linear_dodge`: a rename with identical
   pixels. `.kra` saves are never converted. Lands with P2 (it needs the
   tree walk and `save`).
+
+  *(P2.7, 2026-11-25): built as above, in `kritamcp/blendexport.py`.*
+  Settled on the way: every node counts, groups included (PSD keeps a
+  group's mode, so an `add` group would also be lost); with nothing to
+  convert no clone is made; an **in-place** save of a `.psd` / `.ora`
+  document that needs conversion exports the converted clone over its
+  own file instead of `Document.save()` and clears `modified`, so the
+  file holds the converted spelling while the open document keeps the
+  user's. The clone is not in `documents()` (headless, verified), so the
+  registry never sees it. Headless tests: the reopened `.psd`'s
+  projection is byte-identical to the original's, and Krita's own export
+  of the same document (no conversion) is not.

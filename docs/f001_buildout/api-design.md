@@ -167,6 +167,32 @@ format=None)`):
   written, and fails with `krita_error` otherwise (a `saveAs` that wrote
   nothing leaves the document marked modified).
 
+Additive blend conversion done in P2.7 (`kritamcp/blendexport.py`):
+
+- The table is `psd`: `add` → `linear_dodge`; `ora`: `linear_dodge` →
+  `add`. Every node of the tree is checked, groups (PSD keeps a group's
+  blend mode: `lddg` reopens as `linear_dodge`), locked layers and masks
+  included; the root-level global selection is skipped. Other formats
+  (`kra`, `png`, `jpg`, …) are never converted.
+- Nothing to convert: the document is exported as before and no clone is
+  made. Otherwise `doc.clone()`, the modes set on the clone's nodes (found
+  by UUID), `refreshProjection()` + `waitForDone()`, `exportImage` of the
+  clone in batch mode, and the clone closed in `finally`. The open
+  document's modes, `fileName()` and `modified` are unchanged. The clone
+  is not in `Krita.instance().documents()` (headless, verified), so no
+  handle is ever issued for it.
+- **In place:** a document whose own file is `.psd` or `.ora` and that
+  has layers to convert is saved by exporting the converted clone over
+  that file instead of `Document.save()`, then `setModified(False)` on the
+  document: its content is saved, but the file holds the converted
+  spelling, so reopening it gives `linear_dodge` (PSD) or `add` (ORA)
+  where the open document has the other. Without layers to convert it is
+  `Document.save()` as before.
+- `blend_conversions`: `[{id, path, from, to}]` in the Layers docker's
+  order (`path` as in the layer object), `[]` when nothing was converted.
+  The server's summary adds e.g. "; 2 Add layers written as Linear Dodge
+  for PSD".
+
 ### `krita_close_document(doc, discard=false)` · P1
 
 Fails with `conflict` when the document is modified and `discard` is

@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phase 1 done (live acceptance 3, 5 and 6 passed 2026-11-25; 5 minus the export row, 6 in its Phase-1 form). Phase 2 in progress: P2.1–P2.6 done; P2.7 and the live acceptance-1 run left. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phase 1 done (live acceptance 3, 5 and 6 passed 2026-11-25; 5 minus the export row, 6 in its Phase-1 form). Phase 2 in progress: P2.1–P2.7 done; the live acceptance-1 run left. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -206,10 +206,15 @@ row of test 5, which lands with P3.2). Test 6 ran in its Phase-1 form
   maps it the same way. On Mao it gives 184 paint, 38 groups, depth 3,
   7 multiply, the 2 hidden groups, 17 duplicate names, 5800 × 8400.
 
-- [ ] **P2.7 Additive blend conversion on export (D17).** `save` to
+- [x] **P2.7 Additive blend conversion on export (D17).** `save` to
   `.psd` converts `add` → `linear_dodge`, to `.ora` `linear_dodge` → `add`,
   on a `clone()`; result lists `blend_conversions`. Headless test reopens
   the exported file and checks the modes.
+  Done (2026-11-25): `kritamcp/blendexport.py`, groups included; no clone
+  when nothing converts; an in-place `.psd` / `.ora` save that needs it
+  exports the converted clone over the document's file. Headless
+  `tests/krita/test_blend_export.py` (modes, `stack.xml`, identical
+  composite, clone closed, original untouched).
 
 *Exit:* acceptance test **1** (Mao rebuild) passes.
 

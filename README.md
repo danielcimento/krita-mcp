@@ -88,7 +88,7 @@ If using a virtual environment:
 | `krita_fill` | Fill a circular area at a point |
 | `krita_draw_shape` | Draw rectangle, ellipse, or line |
 | `krita_get_canvas` | Export canvas to PNG (for AI to see progress) |
-| `krita_save` | Save in place (no path), save as `.kra` (the document moves there), or export to PNG/JPG/…; returns the resolved path and file size |
+| `krita_save` | Save in place (no path), save as `.kra` (the document moves there), or export to PNG/JPG/…; returns the resolved path and file size. `.psd` saves write Add layers as Linear Dodge (PSD would turn Add into Normal) and `.ora` saves write Linear Dodge as Add (the standard `svg:plus`): same pixels, done on a copy so the open document keeps its modes; `blend_conversions` lists the layers |
 | `krita_close_document` | Close a document by handle; refuses unsaved changes unless `discard=true` |
 | `krita_list_layers` | The layer tree as a flat list, top to bottom (Layers-docker order): id, name, path, type, parent, children, visibility, opacity, blend mode, locks, bounds (exact, may extend past the canvas). Optional `root` (a subtree), `depth`, `fields`; per-type `counts` |
 | `krita_create_layers` | Create groups and paint layers in one all-or-nothing call: list siblings bottom to top; `key` / `"$key"` to nest in layers made earlier in the call; `above`; visibility, opacity (0–1), blend mode, locks, clipping, pass-through; `png` + `x`/`y` for a layer's pixels. Or pass `manifest`: a `manifest.json` (from `export_layers` or `tools/ora_to_manifest.py`) whose PNG paths are relative to it; errors name the manifest entry, and the result lists `skipped` entries and `warnings` (e.g. a different document size). Unknown keys fail; `dry_run` validates only |

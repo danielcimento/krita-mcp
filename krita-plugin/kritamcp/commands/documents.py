@@ -11,7 +11,7 @@ import os
 from krita import Krita
 from PyQt5.QtGui import QColor
 
-from .. import config, fileio, nodes, registry
+from .. import blendexport, config, fileio, nodes, registry
 from ..dispatch import LONG_TIMEOUT, command
 from ..errors import CommandError
 from ..params import canvas_size, float_param
@@ -286,7 +286,13 @@ def cmd_save(params):
     """Save in place (no ``path``), as ``.kra`` (``saveAs``: the document's
     path moves there), or export to another format (``exportImage``: the
     document's path is unchanged). Missing parent directories inside the
-    allowed root are created."""
+    allowed root are created.
+
+    ``.psd`` and ``.ora`` get the additive blend conversion (D17,
+    ``blendexport``): exports, and in-place saves of a document whose own
+    file is one of those, which then export the converted copy over that
+    file instead of ``Document.save()`` and clear ``modified``. The result's
+    ``blend_conversions`` lists the converted layers."""
     fmt = _format_param(params)
     path = params.get("path")
     if path is not None:  # checked before the document is looked up
@@ -307,8 +313,15 @@ def cmd_save(params):
                                f"'format' {fmt!r} doesn't match the document's file {target}; "
                                "pass 'path' to save in another format",
                                {"format": fmt, "extension": ext})
-        fileio.save_in_place(doc)
-        return _saved(handle, target, ext, changed=False)
+        conversions = blendexport.planned(doc, ext)
+        if conversions:
+            # Document.save() would write the user's spelling (D17), so the
+            # converted clone is exported over the document's own file.
+            blendexport.export(doc, target, ext, conversions)
+            doc.setModified(False)  # the content is saved
+        else:
+            fileio.save_in_place(doc)
+        return _saved(handle, target, ext, changed=False, conversions=conversions)
 
     ext = _format_of(os.path.splitext(target)[1])
     if fmt is not None and fmt != ext:
@@ -317,14 +330,16 @@ def cmd_save(params):
                            {"format": fmt, "extension": ext})
     target = ensure_parent_dir(target)
     before = doc_path(doc)
+    conversions = []
     if ext == "kra":
         fileio.save_as(doc, target)
     else:
-        fileio.export_image(doc, target)
-    return _saved(handle, target, ext, changed=doc_path(doc) != before)
+        conversions = blendexport.export(doc, target, ext)
+    return _saved(handle, target, ext, changed=doc_path(doc) != before,
+                  conversions=conversions)
 
 
-def _saved(handle, target, fmt, changed):
+def _saved(handle, target, fmt, changed, conversions):
     try:
         size = os.path.getsize(target)
     except OSError as e:
@@ -332,7 +347,7 @@ def _saved(handle, target, fmt, changed):
                            f"Krita reported success but {target} can't be read: "
                            f"{e.strerror or e}") from e
     return {"doc": handle, "path": target, "format": fmt, "bytes": size,
-            "doc_path_changed": changed}
+            "doc_path_changed": changed, "blend_conversions": conversions}
 
 
 @command("close_document", mutating=True)

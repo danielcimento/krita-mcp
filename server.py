@@ -259,7 +259,15 @@ def krita_save(path: Optional[str] = None, doc: Optional[str] = None,
     folders are created): a .kra file is a "save as", so the document now
     lives there; any other format is an export, and the document's own
     path is unchanged. Existing files are overwritten. Returns path
-    (resolved), format, bytes (file size) and doc_path_changed.
+    (resolved), format, bytes (file size), doc_path_changed and
+    blend_conversions.
+
+    Add and Linear Dodge render identically, but PSD loses Add (it is
+    written as Normal) and only Krita reads ORA's Linear Dodge. So a .psd
+    save writes "add" layers as "linear_dodge", and a .ora save writes
+    "linear_dodge" layers as "add", on a copy: the open document keeps its
+    modes. blend_conversions lists them ({id, path, from, to}); empty
+    otherwise. .kra saves are never converted.
 
     Args:
         path: File name or path; relative paths are resolved against the
@@ -284,7 +292,27 @@ def krita_save(path: Optional[str] = None, doc: Optional[str] = None,
         summary = f"Saved {who} to {where}{info}{moved}"
     else:
         summary = f"Exported {who} to {where}{info}"
-    return _done(result, summary)
+    return _done(result, summary + _blend_conversions(result))
+
+
+# Krita blend-mode id -> its name in Krita's UI, for the save summary (D17).
+_MODE_WORDS = {"add": "Add", "linear_dodge": "Linear Dodge"}
+
+
+def _blend_conversions(result: dict) -> str:
+    """"; 2 Add layers written as Linear Dodge for PSD" for a save that
+    converted additive blend modes (D17), else ""."""
+    pairs: dict = {}
+    for c in result.get("blend_conversions") or []:
+        key = (c.get("from"), c.get("to"))
+        pairs[key] = pairs.get(key, 0) + 1
+    fmt = str(result.get("format", "")).upper()
+    parts = []
+    for (src, dst), n in pairs.items():
+        layers = "layer" if n == 1 else "layers"
+        parts.append(f"{n} {_MODE_WORDS.get(src, src)} {layers} written as "
+                     f"{_MODE_WORDS.get(dst, dst)} for {fmt}")
+    return "".join(f"; {p}" for p in parts)
 
 
 @mcp.tool()

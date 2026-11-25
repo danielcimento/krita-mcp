@@ -416,6 +416,26 @@ def test_save_summaries(fake_call):
         "Exported doc-2 to /out/a.png (png, 100 bytes)"
 
 
+def test_save_summary_mentions_blend_conversions(fake_call):
+    add = {"from": "add", "to": "linear_dodge"}
+    fake_call.payload = {"doc": "doc-2", "path": "/out/a.psd", "format": "psd", "bytes": 100,
+                         "doc_path_changed": False, "blend_conversions": []}
+    assert server.krita_save(path="a.psd")["summary"] == \
+        "Exported doc-2 to /out/a.psd (psd, 100 bytes)"
+    fake_call.payload["blend_conversions"] = [{"id": "{a}", "path": "A", **add},
+                                              {"id": "{b}", "path": "G/B", **add}]
+    result = server.krita_save(path="a.psd")
+    assert result["summary"] == ("Exported doc-2 to /out/a.psd (psd, 100 bytes); "
+                                 "2 Add layers written as Linear Dodge for PSD")
+    assert result["blend_conversions"] == fake_call.payload["blend_conversions"]
+    fake_call.payload = {"doc": "doc-2", "path": "/out/a.ora", "format": "ora", "bytes": 100,
+                         "doc_path_changed": False,
+                         "blend_conversions": [{"id": "{a}", "path": "A", "from": "linear_dodge",
+                                                "to": "add"}]}
+    assert server.krita_save()["summary"] == ("Saved doc-2 in place to /out/a.ora (ora, 100 bytes); "
+                                              "1 Linear Dodge layer written as Add for ORA")
+
+
 def test_save_schema_path_optional():
     tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
     params = tools["krita_save"].parameters

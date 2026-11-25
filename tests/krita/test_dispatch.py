@@ -477,7 +477,7 @@ class DocumentHandleTest(EnvelopeAssertions, unittest.TestCase):
             expected = os.path.join(os.path.realpath(self.out), "kmcp-saved.png")
             self.assertGreater(result.pop("bytes"), 0)
             self.assertEqual(result, {"path": expected, "doc": handle, "format": "png",
-                                      "doc_path_changed": False})
+                                      "doc_path_changed": False, "blend_conversions": []})
             self.assertTrue(os.path.isfile(expected))
         result = self.assertOk(run("open_file", path="kmcp-saved.png"))
         opened = result["doc"]

@@ -181,6 +181,14 @@ are fast enough that per-pixel Python loops are never justified.
   copy-on-write and nearly free: 1 ms for 256², 4 ms for a 5800×8400
   one-layer document, **10 ms for the 222-node Mao document**
   [verified, Q11].
+- A clone is **not in `documents()`**: the count is unchanged after
+  `clone()`, no open document `==` it, its `fileName()` is `""` (even for
+  a saved original), `batchmode()` `False`, `modified()` `False`
+  [verified 2026-11-25, kritarunner, P2.7]. From libkis' source,
+  `Document::clone()` doesn't register it with KisPart or open a view, so
+  the GUI should match [to verify]. `setBlendingMode` on a clone's node
+  leaves the original's alone, also on a locked layer, and `exportImage`
+  of the clone works.
 - `resizeImage(x, y, w, h)` changes the canvas without scaling.
   `scaleImage` scales content. `crop` crops [stub].
 - `colorModel()` / `colorDepth()` / `colorProfile()` return `"RGBA"`,
@@ -249,6 +257,10 @@ are fast enough that per-pixel Python loops are never justified.
     `krita:linear_dodge` (a Krita-only op other ORA readers won't know).
     Both reopen unchanged in Krita.
   - `.kra` keeps both.
+  - Groups too: a `.psd` export writes an `add` group as Normal and a
+    `linear_dodge` group as `lddg` (reopens `linear_dodge`); `.ora` writes
+    a group's (`<stack>`) mode like a layer's [verified 2026-11-25, P2.7].
+  - `setBlendingMode` does not set `modified()` [verified, P2.7].
 - `inheritAlpha()` is Krita's clipping ("alpha inheritance").
 - A node removed with `remove()` can be put back: `addChildNode(node, …)`
   re-inserts the same wrapper with the same UUID, pixels, bounds, opacity
