@@ -144,6 +144,9 @@ unreadable file) is `krita_error`. A missing file is `not_found`.
   `exportImage` in batch mode, and the document's own path is unchanged.
 - Returns `path` (resolved), `format`, `bytes` (file size),
   `doc_path_changed`, and `elapsed_ms`.
+- Additive blend conversion (D17): `.psd` saves write `add` layers as
+  `linear_dodge`, and `.ora` saves write `linear_dodge` as `add`, through a
+  `clone()`. Converted layers are listed in `blend_conversions`.
 
 Done in P1.7 (server signature `krita_save(path=None, doc=None,
 format=None)`):
@@ -456,7 +459,7 @@ except `reference-hidden`.
 | `node-type` | error | A node's type is not `paintlayer`/`grouplayer`: filter, fill, clone, vector or file layers, and all masks. Masks name their parent layer. The document's global selection (a root-level `selectionmask`) is exempt |
 | `layer-style` | error | `layerStyleToAsl()` is not empty |
 | `inherit-alpha` | error | `inherit_alpha` is true (Krita's clipping): bake it into the target with `merge_layers` |
-| `blend-mode` | error | A paint layer's blend mode is not `normal`/`multiply`/`add`. Groups are exempt, since group blending doesn't matter to the rig. `linear_dodge` is reported with a hint to use `add`, the ID the rig's Add maps to (to confirm on the umamo side) |
+| `blend-mode` | error | A paint layer's blend mode is not `normal`/`multiply`/`add`/`linear_dodge`. Groups are exempt, since group blending doesn't matter to the rig. `add` and `linear_dodge` render identically and both count as the rig's Add (D17). If the config sets `lint.additive_mode` to one spelling, the other is a finding with a fix hint |
 | `duplicate-name` | error | Two or more nodes, anywhere in the document, share a name. **One finding per name.** `layer_id` is the second occurrence in stacking order, and `related_ids` lists all of them |
 | `side-token` | warning | Within one parent, stripping side tokens makes names collide (`Eyebrow` next to `Eyebrow L`): flag the ones without a token. Also flags non-standard tokens such as `_L`, `Left`, `(L)` or a lowercase ` l` |
 | `empty-layer` | warning | A paint layer with no pixel where `alpha > 0` |

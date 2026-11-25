@@ -470,3 +470,34 @@ Krita's UI after a `set_color` doesn't reach the agent's painting.
   `__init__.py` only registers the extension, and registers nothing when
   `krita` isn't importable, so pure modules import under pytest. Done in
   P1.2 (2026-11-24).
+
+## D17. Additive blend: `add` and `linear_dodge` are one mode
+
+**Decided** (2026-11-25, with the user; probe:
+[spike/probe-results-blend.json](spike/probe-results-blend.json)).
+
+Krita has two IDs for additive blending, `add` ("Addition") and
+`linear_dodge` ("Linear Dodge"). The probe found them **byte-identical**
+in rendering at U8, U16 and F32, so they are one mode under two names.
+They differ only on export: `.psd` writes `add` as **Normal** (the
+additive effect is silently lost) and `linear_dodge` as `lddg`; `.ora`
+writes `add` as the standard `svg:plus` and `linear_dodge` as the
+Krita-only `krita:linear_dodge`.
+
+- **Lint** accepts both as the rig's Add by default: no finding. The
+  config file can require one spelling, for pipelines whose consumer
+  compares strings:
+  ```json
+  {"lint": {"additive_mode": "either"}}
+  ```
+  `"either"` (default), `"add"` or `"linear_dodge"`. With a specific
+  spelling, the other one is a `blend-mode` finding with a fix hint.
+  (Which spelling umamo expects is being surveyed; record it here.)
+- **Export conversion.** `save` to `.psd` writes `add` layers as
+  `linear_dodge`; `save` to `.ora` writes `linear_dodge` layers as `add`.
+  The conversion is done on a `clone()` of the document (D10), so the
+  user's document is unchanged, and the result lists the converted layers
+  in `blend_conversions`. A `.kra → .psd → .kra` round trip therefore
+  brings `add` layers back as `linear_dodge`: a rename with identical
+  pixels. `.kra` saves are never converted. Lands with P2 (it needs the
+  tree walk and `save`).
