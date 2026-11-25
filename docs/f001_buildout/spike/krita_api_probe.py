@@ -24,6 +24,12 @@ Known hazard (first run, 2026-11-24): Node.save() ignores the document's
 batch mode and shows the "PNG image" export dialog; dismissing it crashed
 Krita 5.3.4. Q16 now sets the app-wide batch mode around the call. Set
 RUN_NODE_SAVE = False if it still misbehaves.
+
+Run 2 crashed during cleanup, after every probe had finished: a document
+closed inside Q13 was closed again, and calling a method on a closed
+Document's wrapper segfaults. Cleanup now only touches documents that are
+still in Krita.documents(). The Document wrapper is otherwise used only
+for == comparisons.
 """
 
 import json
@@ -93,10 +99,22 @@ def probe(qid, title):
     return deco
 
 
-def scratch_doc(w=256, h=256, name="probe"):
+def scratch_doc(w=256, h=256, name="probe", blank=False):
+    """createDocument adds an opaque white 'Background' layer (run 2, Q4/Q8).
+    blank=True removes it so projections show only the probe's layers."""
     doc = app.createDocument(w, h, f"probe-{name}", "RGBA", "U8", "", 72.0)
     SCRATCH.append(doc)
+    if blank:
+        for c in doc.rootNode().childNodes():
+            c.remove()
+        settle(doc)
     return doc
+
+
+def is_open(doc):
+    """True while doc is still open. Uses == only, which run 2 showed is
+    safe; calling any other method on a closed document crashes Krita."""
+    return any(doc == d for d in app.documents())
 
 
 def show(doc):
@@ -293,7 +311,8 @@ def q3():
         "ids": ids,
         "lookup_ok": found is not None and found == a,
         "lookup_unbraced_ok": found_unbraced is not None and found_unbraced == a,
-        "node_wrappers_equal": doc.rootNode().childNodes()[0] == g,
+        "node_wrappers_equal": g.childNodes()[0] == a,
+        "node_wrappers_not_equal": g.childNodes()[0] != g,
         "clone_keeps_ids": clone_ids == ids, "clone_ids": clone_ids,
         "persisted": persisted,
     }
@@ -390,17 +409,30 @@ def q6():
                                               "bounds_after": rect(n.bounds())}
 
     n = fresh("rotate")
+    n.setPixelData(bytes((0, 255, 0, 255)), 119, 50, 1, 1)  # green marker, top-right
+    settle(doc)
     n.rotateNode(math.pi / 2)
     settle(doc)
+    b = n.bounds()
+    data = bytes(n.pixelData(b.x(), b.y(), b.width(), b.height()))
+    marker = None
+    for i in range(0, len(data), 4):
+        if data[i + 1] > 200 and data[i + 2] < 50:
+            k = i // 4
+            marker = [b.x() + k % b.width(), b.y() + k // b.width()]
+            break
     out["rotateNode(pi/2)"] = {"bounds_before": [100, 50, 20, 10],
-                               "bounds_after": rect(n.bounds()),
-                               "image_center": [doc.width() / 2, doc.height() / 2]}
+                               "bounds_after": rect(b),
+                               "marker_before": [119, 50],
+                               "marker_after": marker,
+                               "note": "bottom-right (~115,64) => clockwise on screen; "
+                                       "top-left (~105,46) => counter-clockwise"}
     return out
 
 
 @probe("Q7", "Visibility toggles: modified flag and projection refresh")
 def q7():
-    doc = scratch_doc(name="vis")
+    doc = scratch_doc(name="vis", blank=True)
     n = add_paint(doc)
     n.setPixelData(solid(0, 0, 255, 255, 100), 10, 10, 10, 10)
     settle(doc)
@@ -470,7 +502,16 @@ def q9():
         "note": "paste may create a floating/new layer instead of writing into dst",
     })
     doc.setSelection(None)
+    settle(doc)
     out["selection_cleared"] = doc.selection() is None
+    out["root_children_after_deselect"] = [(c.name(), c.type())
+                                           for c in doc.rootNode().childNodes()]
+    try:
+        from PyQt5.QtWidgets import QApplication
+        md = QApplication.clipboard().mimeData()
+        out["system_clipboard_formats_after_cut"] = list(md.formats()) if md else None
+    except Exception as e:
+        out["system_clipboard_formats_after_cut"] = repr(e)
     return out
 
 
@@ -555,6 +596,7 @@ def q13():
     victim.setModified(True)
     victim.setModified(False)
     out["close_after_setModified_false"] = victim.close()
+    SCRATCH.remove(victim)  # closed; touching it again would crash Krita
     return out
 
 
@@ -574,6 +616,13 @@ def q15():
     for mode in ("normal", "multiply", "add", "screen", "linear_dodge", "not-a-mode"):
         n.setBlendingMode(mode)
         out[mode] = n.blendingMode()
+    # How does a layer with an invalid mode render? 50% gray over white
+    # Background: normal => 128, multiply => 128, add => 255, invisible => 255.
+    n.setPixelData(solid(128, 128, 128, 255, 4), 0, 0, 2, 2)
+    for mode in ("normal", "not-a-mode"):
+        n.setBlendingMode(mode)
+        settle(doc)
+        out[f"render_{mode}"] = doc.projection(0, 0, 1, 1).pixelColor(0, 0).getRgb()
     return out
 
 
@@ -611,6 +660,43 @@ def q16():
     }
 
 
+@probe("Q17", "Liveness check on a closed Document (== only)")
+def q17():
+    doc = app.createDocument(16, 16, "probe-liveness", "RGBA", "U8", "", 72.0)
+    before = is_open(doc)
+    doc.setModified(False)
+    closed = doc.close()
+    return {"open_before": before, "close_ok": closed, "open_after": is_open(doc),
+            "note": "if this probe crashes Krita, == on a closed wrapper is unsafe too"}
+
+
+@probe("Q18", "Re-inserting a removed node (journal inverse for delete)")
+def q18():
+    doc = scratch_doc(name="reinsert", blank=True)
+    g = doc.createGroupLayer("G")
+    doc.rootNode().addChildNode(g, None)
+    n = add_paint(doc, "Kept", parent=g)
+    n.setPixelData(solid(0, 0, 255, 255, 16), 3, 3, 4, 4)
+    n.setOpacity(77)
+    uid = n.uniqueId().toString()
+    settle(doc)
+    n.remove()
+    settle(doc)
+    gone = doc.nodeByUniqueID(QUuid(uid)) is None
+    ok = g.addChildNode(n, None)
+    settle(doc)
+    back = doc.nodeByUniqueID(QUuid(uid))
+    return {
+        "lookup_none_after_remove": gone,
+        "addChildNode_returned": ok,
+        "found_after_reinsert": back is not None,
+        "same_uuid": back is not None and back.uniqueId().toString() == uid,
+        "pixels_kept": px(n, 4, 4), "bounds": rect(n.bounds()), "opacity": n.opacity(),
+        "parent": n.parentNode().name() if n.parentNode() else None,
+        "expected": "pixels [0,0,255,255], bounds [3,3,4,4], opacity 77, parent G",
+    }
+
+
 # ------------------------------------------------------------------ main
 
 def main():
@@ -619,6 +705,8 @@ def main():
             run()
     finally:
         for d in SCRATCH:
+            if not is_open(d):  # already closed (e.g. by a probe); don't touch it
+                continue
             try:
                 d.setModified(False)
                 d.close()
