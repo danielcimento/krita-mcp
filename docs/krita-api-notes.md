@@ -249,6 +249,24 @@ are fast enough that per-pixel Python loops are never justified.
   and parent, and `nodeByUniqueID` returns `None` while it is out
   [verified, run 3, Q18].
 - `GroupLayer.passThroughMode()` [stub].
+- **ORA import, groups and blend ops** [verified 2026-11-25, P2.6]:
+  - In `.kra` `maindoc.xml` a group's flag is `passthrough="1"`/`"0"`.
+    Krita imported the Mao `.ora` (38 groups, all `isolation="auto"`) with
+    every group `passthrough="1"`. Its ORA importer sets pass-through only
+    for `isolation="auto"`; `"isolate"` and a missing attribute give
+    pass-through off. Its exporter writes `auto` for pass-through groups and
+    `isolate` otherwise.
+  - Importer `svg:` ops → Krita IDs: `src-over` `normal`, `multiply`,
+    `plus` `add`, `screen`, `overlay`, `darken`, `lighten`, `color-dodge`
+    `dodge`, `color-burn` `burn`, `hard-light` `hard_light`, `soft-light`
+    **`soft_light_svg`** (not `soft_light`, which is the Photoshop variant),
+    `difference` `diff`, `color`, `luminosity` **`luminize`**, `hue`,
+    `saturation`, `dst-in` `destination-in`, `dst-out` `erase`, `dst-atop`
+    `destination-atop`. `krita:<id>` → `<id>`. `svg:src-atop` is Normal with
+    alpha locked. The exporter also writes `alpha-preserve="true"` (alpha
+    lock with a non-Normal op), `edit-locked="true"` and `selected="true"`
+    (sources: `plugins/impex/ora/kis_open_raster_stack_{load,save}_visitor.cpp`,
+    `libs/pigment/KoCompositeOpRegistry.h`).
 - `layerStyleToAsl()` returns `''` for a layer without a style
   [verified]. The non-empty case is [to verify], using the lint fixture.
 - Group `projectionPixelData()` **includes** inherit-alpha clipping

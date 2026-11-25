@@ -191,6 +191,11 @@ row of test 5, which lands with P3.2). Test 6 ran in its Phase-1 form
   Krita did when it imported the same file: compare with the group flags in
   `~/krita-mcp-output/mao_pro_layered.kra`, which Krita saved from this
   `.ora`. Unit-tested on a small synthetic `.ora`.
+  *2026-11-25:* Krita saved all 38 `isolation="auto"` groups with
+  `passthrough="1"` in the `.kra` (none differ), matching its ORA importer
+  (only `auto` → pass-through; `isolate` or no attribute → off), so the tool
+  maps it the same way. On Mao it gives 184 paint, 38 groups, depth 3,
+  7 multiply, the 2 hidden groups, 17 duplicate names, 5800 × 8400.
 
 - [ ] **P2.7 Additive blend conversion on export (D17).** `save` to
   `.psd` converts `add` → `linear_dodge`, to `.ora` `linear_dodge` → `add`,
