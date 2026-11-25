@@ -13,7 +13,7 @@ import sys
 import pytest
 
 PURE = ["kritamcp.cmdqueue", "kritamcp.config", "kritamcp.errors", "kritamcp.paths",
-        "kritamcp.params", "kritamcp.refs", "kritamcp.version"]
+        "kritamcp.params", "kritamcp.refs", "kritamcp.version", "kritamcp.batch"]
 
 
 @pytest.mark.parametrize("name", PURE)
@@ -25,7 +25,7 @@ def test_package_import_has_no_krita_side_effects():
     # Fresh interpreter, so earlier imports in this session can't hide anything.
     code = (
         "import sys, kritamcp, kritamcp.config, kritamcp.errors, kritamcp.paths, kritamcp.params\n"
-        "import kritamcp.refs, kritamcp.version, kritamcp.cmdqueue\n"
+        "import kritamcp.refs, kritamcp.version, kritamcp.cmdqueue, kritamcp.batch\n"
         "assert kritamcp.Krita is None\n"
         "assert not hasattr(kritamcp, 'KritaMCPExtension')\n"
         "bad = sorted(m for m in sys.modules if m.split('.')[0] in ('krita', 'PyQt5')"
