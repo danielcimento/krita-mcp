@@ -404,6 +404,18 @@ document.
 - `id` is informative only. `create_layers` assigns new IDs.
 - The manifest is a superset of the `create_layers` spec, so any spec
   field can appear in it.
+- *(P2.4, 2026-11-25; `kritamcp/manifest.py`)* Structure rules
+  `create_layers(manifest=…)` enforces, all `bad_request` with
+  `details.index`: `version` must be 1; top-level keys other than
+  `version`/`generator`/`document`/`layers` and entry keys other than the
+  spec fields plus `id`, `path`, `stack_index`, `w`, `h`, `projection` are
+  rejected (the informative ones are dropped). Every entry needs a unique
+  `key`. `parent` is `"/"` or `"$key"` of an earlier group entry, and
+  `above` is `"$key"` of an earlier sibling: names and UUIDs are not
+  accepted in a manifest. `projection: true` entries are skipped (reported
+  in `skipped`) and may not be a `parent` or `above` target. `png` is a
+  relative path or `null`; absolute paths are rejected. At most 2000
+  layers (`too_large`), and the file is capped at 16 MB.
 
 ### `krita_import_png(doc?, id, png, x=0, y=0, mode="replace")` · P0
 
