@@ -9,13 +9,102 @@ from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QMessageBox
 import json
 import threading
+import hmac
+import secrets
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 import os
 
 # Configuration - customize these as needed
 SERVER_PORT = 5678
 CANVAS_OUTPUT_DIR = os.path.expanduser("~/krita-mcp-output")
+
+# Directories that save/open_file may touch. Paths outside these are refused.
+ALLOWED_DIRS = [CANVAS_OUTPUT_DIR]
+
+# Shared secret; the MCP server reads the same file. Created on first run.
+TOKEN_FILE = os.path.expanduser("~/.krita-mcp-token")
+TOKEN_HEADER = "X-Krita-MCP-Token"
+
+# Resource limits
+MAX_BODY_BYTES = 5 * 1024 * 1024
+MAX_CANVAS_DIM = 8192
+MAX_CANVAS_PIXELS = 4096 * 4096
+MAX_BRUSH_SIZE = 1000
+MAX_STROKE_POINTS = 10000
+MAX_LIMIT = 1000
+
+ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".kra", ".webp", ".tif", ".tiff", ".bmp", ".gif", ".ora", ".psd"}
+ALLOWED_HOSTS = {f"localhost:{SERVER_PORT}", f"127.0.0.1:{SERVER_PORT}"}
+
+
+def load_or_create_token():
+    """Read the shared token, creating it (mode 0600) if it does not exist."""
+    try:
+        fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        with open(TOKEN_FILE) as f:
+            return f.read().strip()
+    token = secrets.token_urlsafe(32)
+    with os.fdopen(fd, "w") as f:
+        f.write(token)
+    return token
+
+
+AUTH_TOKEN = load_or_create_token()
+
+
+class CommandError(Exception):
+    """Raised for invalid command parameters."""
+
+
+def resolve_allowed_path(path, must_exist=False):
+    """Resolve a path and ensure it lies inside one of ALLOWED_DIRS.
+
+    Relative paths are resolved against CANVAS_OUTPUT_DIR. Symlinks are
+    resolved before the check, so they cannot be used to escape.
+    """
+    if not isinstance(path, str) or not path:
+        raise CommandError("No path specified")
+    expanded = os.path.expanduser(path)
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(CANVAS_OUTPUT_DIR, expanded)
+    real = os.path.realpath(expanded)
+    for root in ALLOWED_DIRS:
+        root_real = os.path.realpath(root)
+        if os.path.commonpath([real, root_real]) == root_real:
+            break
+    else:
+        raise CommandError(f"Path is outside the allowed directories: {path}")
+    if os.path.splitext(real)[1].lower() not in ALLOWED_IMAGE_EXTS:
+        raise CommandError(f"File type not allowed: {path}")
+    if must_exist and not os.path.isfile(real):
+        raise CommandError(f"File not found: {path}")
+    return real
+
+
+def int_param(params, key, default, lo, hi):
+    """Read an integer parameter and check it is within [lo, hi]."""
+    value = params.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise CommandError(f"'{key}' must be a number")
+    value = int(value)
+    if not lo <= value <= hi:
+        raise CommandError(f"'{key}' must be between {lo} and {hi}")
+    return value
+
+
+def float_param(params, key, default, lo, hi):
+    value = params.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise CommandError(f"'{key}' must be a number")
+    value = float(value)
+    if not lo <= value <= hi:
+        raise CommandError(f"'{key}' must be between {lo} and {hi}")
+    return value
+
+
+COORD = 10 * MAX_CANVAS_DIM  # generous bound for coordinates
 
 class CommandQueue:
     """Thread-safe command queue for passing commands from HTTP thread to main thread."""
@@ -75,20 +164,44 @@ class PaintRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(data).encode())
 
+    def reject_untrusted(self, require_token=True):
+        """Return True (after sending an error) if the request should be refused.
+
+        Blocks browser-originated requests (CSRF), DNS rebinding (Host check),
+        and anything without the shared token.
+        """
+        host = self.headers.get('Host', '')
+        if host not in ALLOWED_HOSTS:
+            self.send_json_response({"error": "Forbidden host"}, 403)
+            return True
+        if self.headers.get('Origin') or self.headers.get('Sec-Fetch-Site'):
+            self.send_json_response({"error": "Browser requests are not allowed"}, 403)
+            return True
+        if require_token:
+            supplied = self.headers.get(TOKEN_HEADER, '')
+            if not hmac.compare_digest(supplied.encode(), AUTH_TOKEN.encode()):
+                self.send_json_response({"error": "Missing or invalid token"}, 401)
+                return True
+        return False
+
     def do_GET(self):
         """Handle GET requests - mainly for health check."""
         parsed = urlparse(self.path)
 
         if parsed.path == '/health':
+            if self.reject_untrusted(require_token=False):
+                return
             self.send_json_response({"status": "ok", "plugin": "kritamcp"})
         elif parsed.path == '/info':
+            if self.reject_untrusted():
+                return
             self.send_json_response({
                 "status": "ok",
-                "canvas_dir": CANVAS_OUTPUT_DIR,
                 "commands": [
                     "new_canvas", "set_color", "set_brush", "stroke",
                     "fill", "draw_shape", "get_canvas", "undo", "redo",
-                    "clear", "save", "get_color_at", "list_brushes"
+                    "clear", "save", "get_color_at", "list_brushes",
+                    "open_file"
                 ]
             })
         else:
@@ -98,13 +211,31 @@ class PaintRequestHandler(BaseHTTPRequestHandler):
         """Handle POST requests - paint commands."""
         global command_counter
 
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length).decode('utf-8')
+        if self.reject_untrusted():
+            return
+
+        content_type = self.headers.get('Content-Type', '')
+        if content_type.split(';')[0].strip().lower() != 'application/json':
+            self.send_json_response({"error": "Content-Type must be application/json"}, 415)
+            return
 
         try:
+            content_length = int(self.headers.get('Content-Length', 0))
+        except ValueError:
+            self.send_json_response({"error": "Invalid Content-Length"}, 400)
+            return
+        if content_length < 0 or content_length > MAX_BODY_BYTES:
+            self.send_json_response({"error": "Request body too large"}, 413)
+            return
+
+        try:
+            body = self.rfile.read(content_length).decode('utf-8')
             command = json.loads(body)
-        except json.JSONDecodeError:
+        except (UnicodeDecodeError, json.JSONDecodeError):
             self.send_json_response({"error": "Invalid JSON"}, 400)
+            return
+        if not isinstance(command, dict) or not isinstance(command.get("params", {}), dict):
+            self.send_json_response({"error": "Command must be a JSON object"}, 400)
             return
 
         # Assign command ID and queue it
@@ -130,7 +261,7 @@ class ServerThread(QThread):
         self.server = None
 
     def run(self):
-        self.server = HTTPServer(('localhost', self.port), PaintRequestHandler)
+        self.server = HTTPServer(('127.0.0.1', self.port), PaintRequestHandler)
         self.server.serve_forever()
 
     def stop(self):
@@ -241,10 +372,12 @@ class KritaMCPExtension(Extension):
 
     def cmd_new_canvas(self, params):
         """Create a new canvas."""
-        width = params.get("width", 800)
-        height = params.get("height", 600)
-        name = params.get("name", "New Canvas")
-        bg_color = params.get("background", "#1a1a2e")
+        width = int_param(params, "width", 800, 1, MAX_CANVAS_DIM)
+        height = int_param(params, "height", 600, 1, MAX_CANVAS_DIM)
+        if width * height > MAX_CANVAS_PIXELS:
+            raise CommandError(f"Canvas too large (max {MAX_CANVAS_PIXELS} pixels)")
+        name = str(params.get("name", "New Canvas"))[:200]
+        bg_color = str(params.get("background", "#1a1a2e"))
 
         app = Krita.instance()
 
@@ -310,10 +443,12 @@ class KritaMCPExtension(Extension):
                 return {"error": f"Brush preset not found: {preset_name}"}
 
         if size is not None:
+            size = int_param(params, "size", None, 1, MAX_BRUSH_SIZE)
             self.current_brush_size = size
             view.setBrushSize(size)
 
         if opacity is not None:
+            opacity = float_param(params, "opacity", None, 0.0, 1.0)
             self.current_opacity = opacity
             # Opacity is set per-stroke, store for later
 
@@ -322,12 +457,19 @@ class KritaMCPExtension(Extension):
     def cmd_stroke(self, params):
         """Paint a stroke along points using pixel-level drawing with soft edges."""
         points = params.get("points", [])
-        brush_size = params.get("size", self.current_brush_size)
-        hardness = params.get("hardness", 0.5)  # 0.0 = very soft, 1.0 = hard edge
-        opacity = params.get("opacity", 1.0)
+        brush_size = int_param(params, "size", self.current_brush_size, 1, MAX_BRUSH_SIZE)
+        hardness = float_param(params, "hardness", 0.5, 0.0, 1.0)  # 0.0 = very soft, 1.0 = hard edge
+        opacity = float_param(params, "opacity", 1.0, 0.0, 1.0)
 
-        if len(points) < 2:
+        if not isinstance(points, list) or len(points) < 2:
             return {"error": "Need at least 2 points for a stroke"}
+        if len(points) > MAX_STROKE_POINTS:
+            return {"error": f"Too many points (max {MAX_STROKE_POINTS})"}
+        for p in points:
+            if (not isinstance(p, list) or len(p) != 2
+                    or not all(isinstance(c, (int, float)) and not isinstance(c, bool)
+                               and -COORD <= c <= COORD for c in p)):
+                return {"error": "Each point must be an [x, y] pair of numbers"}
 
         layer = self.get_active_layer()
         if not layer:
@@ -438,9 +580,9 @@ class KritaMCPExtension(Extension):
 
     def cmd_fill(self, params):
         """Fill a circular area with current color."""
-        x = params.get("x", 0)
-        y = params.get("y", 0)
-        radius = params.get("radius", 50)
+        x = int_param(params, "x", 0, -COORD, COORD)
+        y = int_param(params, "y", 0, -COORD, COORD)
+        radius = int_param(params, "radius", 50, 1, MAX_CANVAS_DIM)
 
         layer = self.get_active_layer()
         if not layer:
@@ -494,10 +636,10 @@ class KritaMCPExtension(Extension):
     def cmd_draw_shape(self, params):
         """Draw a shape (rectangle, ellipse, line)."""
         shape = params.get("shape", "rectangle")
-        x = params.get("x", 0)
-        y = params.get("y", 0)
-        width = params.get("width", 100)
-        height = params.get("height", 100)
+        x = int_param(params, "x", 0, -COORD, COORD)
+        y = int_param(params, "y", 0, -COORD, COORD)
+        width = int_param(params, "width", 100, 0, COORD)
+        height = int_param(params, "height", 100, 0, COORD)
         fill = params.get("fill", True)
 
         layer = self.get_active_layer()
@@ -517,9 +659,9 @@ class KritaMCPExtension(Extension):
 
         if shape == "line":
             # Draw line using pixel data
-            x2 = params.get("x2", x + width)
-            y2 = params.get("y2", y + height)
-            line_width = params.get("line_width", 2)
+            x2 = int_param(params, "x2", x + width, -COORD, COORD)
+            y2 = int_param(params, "y2", y + height, -COORD, COORD)
+            line_width = int_param(params, "line_width", 2, 1, MAX_BRUSH_SIZE)
 
             # Calculate bounding box
             x1_bound = max(0, int(min(x, x2)) - line_width)
@@ -608,16 +750,19 @@ class KritaMCPExtension(Extension):
     def cmd_get_canvas(self, params):
         """Export current canvas to file and return path."""
         filename = params.get("filename", "canvas.png")
+        if not isinstance(filename, str) or not filename:
+            return {"error": "Invalid filename"}
 
         doc = self.get_active_document()
         if not doc:
             return {"error": "No active document"}
 
-        # Ensure filename has extension
-        if not filename.endswith('.png'):
+        # Strip any directory components so the export stays in the output dir
+        filename = os.path.basename(filename)
+        if not filename.lower().endswith('.png'):
             filename += '.png'
 
-        filepath = os.path.join(CANVAS_OUTPUT_DIR, filename)
+        filepath = resolve_allowed_path(os.path.join(CANVAS_OUTPUT_DIR, filename))
 
         # Export image (batch mode suppresses export dialog)
         doc.setBatchmode(True)
@@ -671,9 +816,7 @@ class KritaMCPExtension(Extension):
 
     def cmd_save(self, params):
         """Save to specific path."""
-        filepath = params.get("path")
-        if not filepath:
-            return {"error": "No path specified"}
+        filepath = resolve_allowed_path(params.get("path"))
 
         doc = self.get_active_document()
         if not doc:
@@ -688,8 +831,8 @@ class KritaMCPExtension(Extension):
 
     def cmd_get_color_at(self, params):
         """Get color at specific pixel (eyedropper)."""
-        x = params.get("x", 0)
-        y = params.get("y", 0)
+        x = int_param(params, "x", 0, 0, MAX_CANVAS_DIM)
+        y = int_param(params, "y", 0, 0, MAX_CANVAS_DIM)
 
         doc = self.get_active_document()
         if not doc:
@@ -709,8 +852,8 @@ class KritaMCPExtension(Extension):
 
     def cmd_list_brushes(self, params):
         """List available brush presets."""
-        filter_str = params.get("filter", "")
-        limit = params.get("limit", 50)
+        filter_str = str(params.get("filter", ""))
+        limit = int_param(params, "limit", 50, 1, MAX_LIMIT)
 
         presets = Krita.instance().resources("preset")
         brush_list = []
@@ -725,12 +868,7 @@ class KritaMCPExtension(Extension):
 
     def cmd_open_file(self, params):
         """Open an existing file in Krita."""
-        filepath = params.get("path")
-        if not filepath:
-            return {"error": "No path specified"}
-
-        if not os.path.exists(filepath):
-            return {"error": f"File not found: {filepath}"}
+        filepath = resolve_allowed_path(params.get("path"), must_exist=True)
 
         app = Krita.instance()
 

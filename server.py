@@ -13,8 +13,26 @@ from typing import Optional
 
 # Configuration
 KRITA_URL = os.environ.get("KRITA_URL", "http://localhost:5678")
+TOKEN_FILE = os.path.expanduser(os.environ.get("KRITA_MCP_TOKEN_FILE", "~/.krita-mcp-token"))
+TOKEN_HEADER = "X-Krita-MCP-Token"
 
 mcp = FastMCP("krita-mcp")
+
+
+def auth_headers() -> dict:
+    """Read the shared token written by the Krita plugin on its first start.
+
+    Read on every call so the server works even if Krita creates the token
+    after this process starts.
+    """
+    token = os.environ.get("KRITA_MCP_TOKEN")
+    if not token:
+        try:
+            with open(TOKEN_FILE) as f:
+                token = f.read().strip()
+        except OSError:
+            token = ""
+    return {TOKEN_HEADER: token}
 
 
 def send_command(action: str, params: dict = None, timeout: float = 30.0) -> dict:
@@ -26,6 +44,7 @@ def send_command(action: str, params: dict = None, timeout: float = 30.0) -> dic
         response = httpx.post(
             KRITA_URL,
             json={"action": action, "params": params},
+            headers=auth_headers(),
             timeout=timeout
         )
         return response.json()
@@ -261,10 +280,12 @@ def krita_clear(color: str = "#1a1a2e") -> str:
 @mcp.tool()
 def krita_save(path: str) -> str:
     """
-    Save the current canvas to a specific file path.
+    Save the current canvas to a file inside the plugin's allowed
+    directories (by default ~/krita-mcp-output).
 
     Args:
-        path: Full file path to save to (e.g., "C:/art/my_painting.png")
+        path: File name or path; relative paths are resolved against the
+              output directory (e.g., "my_painting.png")
     """
     # Extended timeout — saving large files can take a while
     result = send_command("save", {"path": path}, timeout=120.0)
@@ -314,10 +335,13 @@ def krita_list_brushes(filter: str = "", limit: int = 20) -> str:
 @mcp.tool()
 def krita_open_file(path: str) -> str:
     """
-    Open an existing file in Krita (.kra, .png, .jpg, etc).
+    Open an existing image file in Krita (.kra, .png, .jpg, etc). Only files
+    inside the plugin's allowed directories (by default ~/krita-mcp-output)
+    can be opened.
 
     Args:
-        path: Full file path to open (e.g., "C:/art/my_painting.kra")
+        path: File name or path; relative paths are resolved against the
+              output directory (e.g., "my_painting.kra")
     """
     result = send_command("open_file", {"path": path}, timeout=30.0)
 

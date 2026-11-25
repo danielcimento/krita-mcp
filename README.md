@@ -37,7 +37,7 @@ Then in Krita: **Settings → Configure Krita → Python Plugin Manager → Enab
 ### 2. Install the MCP Server
 
 ```bash
-pip install fastmcp httpx
+pip install -r requirements.txt
 ```
 
 Or with a virtual environment:
@@ -125,6 +125,18 @@ def get_result(self, command_id, timeout=120):
 | Plugin HTTP port | `5678` | Edit `SERVER_PORT` in plugin `__init__.py` |
 | MCP server URL | `http://localhost:5678` | Set `KRITA_URL` env var |
 | Canvas output dir | `~/krita-mcp-output` | Edit `CANVAS_OUTPUT_DIR` in plugin `__init__.py` |
+| Dirs that save/open may use | output dir only | Edit `ALLOWED_DIRS` in plugin `__init__.py` |
+| Auth token file | `~/.krita-mcp-token` | Plugin: `TOKEN_FILE`; MCP server: `KRITA_MCP_TOKEN_FILE` env var (or pass the token itself in `KRITA_MCP_TOKEN`) |
+| Size limits | 8192 px per side, 16 MP total, 5 MB requests | `MAX_*` constants in plugin `__init__.py` |
+
+## Security
+
+The plugin's HTTP server only listens on `127.0.0.1`, and:
+
+- **Requires a shared token.** On first start the plugin writes a random token to `~/.krita-mcp-token` (readable only by you). The MCP server reads it and sends it in the `X-Krita-MCP-Token` header. Requests without it are refused (except `/health`).
+- **Refuses browser requests.** Requests carrying `Origin` or `Sec-Fetch-Site` headers, without `Content-Type: application/json`, or with a `Host` other than `localhost`/`127.0.0.1` are rejected. This blocks web pages from driving Krita (CSRF and DNS rebinding).
+- **Confines file access.** `save` and `open_file` only accept image files inside `ALLOWED_DIRS`; `get_canvas` always writes into the output dir.
+- **Caps resource use.** Canvas size, brush size, stroke point count and request size are limited so a single request can't freeze Krita.
 
 ## Painting Approach
 
