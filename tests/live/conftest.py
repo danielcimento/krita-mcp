@@ -65,15 +65,17 @@ class Caller:
         import server  # imported lazily: collection stays offline
         self._server = server
 
-    def _tool(self, name):
-        return getattr(self._server, name if name.startswith("krita_") else f"krita_{name}")
+    def _tool(self, tool):
+        return getattr(self._server, tool if tool.startswith("krita_") else f"krita_{tool}")
 
-    def __call__(self, name, **kwargs):
-        return self._tool(name)(**kwargs)
+    # Positional-only, so tool parameters such as new_canvas's ``name`` can
+    # be passed as keywords.
+    def __call__(self, tool, /, **kwargs):
+        return self._tool(tool)(**kwargs)
 
-    def error(self, code, name, **kwargs):
+    def error(self, code, tool, /, **kwargs):
         with pytest.raises(ToolError) as info:
-            self._tool(name)(**kwargs)
+            self._tool(tool)(**kwargs)
         message = str(info.value)
         assert message.startswith(f"{code}: "), message
         return message
