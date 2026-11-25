@@ -25,12 +25,17 @@ EXPECTED_TOOLS = {
     "krita_get_color_at",
     "krita_list_brushes",
     "krita_open_file",
+    "krita_list_documents",
+    "krita_get_document_info",
+    "krita_close_document",
 }
 
 # tool -> (kwargs, plugin action, canned plugin payload)
 CASES = {
     "krita_new_canvas": ({"width": 64, "height": 48}, "new_canvas",
-                         {"width": 64, "height": 48, "name": "New Canvas"}),
+                         {"width": 64, "height": 48, "name": "New Canvas",
+                          "color_profile": "sRGB-elle-V2-srgbtrc.icc", "resolution": 120,
+                          "background": "#1a1a2e", "background_layer": "{0000}"}),
     "krita_set_color": ({"color": "#ff0000"}, "set_color", {"color": "#ff0000"}),
     "krita_set_brush": ({"preset": "Basic", "size": 5}, "set_brush",
                         {"preset": "Basic", "size": 5, "opacity": None}),
@@ -42,12 +47,27 @@ CASES = {
     "krita_undo": ({}, "undo", {}),
     "krita_redo": ({}, "redo", {}),
     "krita_clear": ({}, "clear", {"color": "#1a1a2e"}),
-    "krita_save": ({"path": "a.png"}, "save", {"path": "/out/a.png"}),
+    "krita_save": ({"path": "a.png"}, "save",
+                   {"path": "/out/a.png", "format": "png", "bytes": 2048,
+                    "doc_path_changed": False}),
     "krita_get_color_at": ({"x": 1, "y": 1}, "get_color_at",
                            {"color": "#010203", "r": 1, "g": 2, "b": 3, "a": 255}),
     "krita_list_brushes": ({}, "list_brushes", {"brushes": ["b) Basic-1"], "count": 1}),
     "krita_open_file": ({"path": "a.kra"}, "open_file",
-                        {"path": "/out/a.kra", "name": "a", "width": 4, "height": 4}),
+                        {"path": "/out/a.kra", "name": "a", "width": 4, "height": 4,
+                         "layer_counts": {"paintlayer": 1}, "already_open": False}),
+    "krita_list_documents": ({}, "list_documents",
+                             {"documents": [{"doc": "doc-1", "name": "a", "path": None,
+                                             "width": 4, "height": 4, "modified": False,
+                                             "active": True}]}),
+    "krita_get_document_info": ({}, "get_document_info",
+                                {"name": "a", "path": None, "width": 4, "height": 4,
+                                 "resolution": 72, "color_model": "RGBA", "color_depth": "U8",
+                                 "color_profile": "sRGB-elle-V2-srgbtrc.icc",
+                                 "modified": True, "layer_counts": {"paintlayer": 2},
+                                 "max_depth": 1, "selection": None}),
+    "krita_close_document": ({"doc": "doc-1"}, "close_document",
+                             {"doc": "doc-1", "closed": True}),
 }
 
 
@@ -244,7 +264,11 @@ def test_health_idle_has_busy_null(monkeypatch):
 # P1.6: tools that act on a document take `doc`; painting tools and
 # get_color_at also take `layer`. App/UI-state tools take neither.
 DOC_TOOLS = {"krita_save", "krita_get_canvas", "krita_stroke", "krita_fill",
-             "krita_draw_shape", "krita_clear", "krita_get_color_at"}
+             "krita_draw_shape", "krita_clear", "krita_get_color_at",
+             "krita_get_document_info", "krita_close_document"}
+# close_document has no active-document default.
+REQUIRED_DOC_TOOLS = {"krita_close_document"}
+OPTIONAL_DOC_TOOLS = DOC_TOOLS - REQUIRED_DOC_TOOLS
 LAYER_TOOLS = {"krita_stroke", "krita_fill", "krita_draw_shape", "krita_clear",
                "krita_get_color_at"}
 
@@ -257,9 +281,11 @@ def test_doc_and_layer_in_schemas():
         assert ("doc" in props) == (name in DOC_TOOLS), name
         assert ("layer" in props) == (name in LAYER_TOOLS), name
         for key in ("doc", "layer"):
-            if key in props:
+            if key in props and not (key == "doc" and name in REQUIRED_DOC_TOOLS):
                 assert key not in required, name
                 assert props[key].get("default") is None, name
+        if name in REQUIRED_DOC_TOOLS:
+            assert "doc" in required, name
         if "doc" in props:
             assert "doc-3" in props["doc"]["description"], name
             assert "absolute path" in props["doc"]["description"], name
@@ -268,7 +294,7 @@ def test_doc_and_layer_in_schemas():
             assert "unique name" in props["layer"]["description"], name
 
 
-@pytest.mark.parametrize("name", sorted(DOC_TOOLS))
+@pytest.mark.parametrize("name", sorted(OPTIONAL_DOC_TOOLS))
 def test_doc_and_layer_not_sent_when_unset(fake_call, name):
     kwargs, action, payload = CASES[name]
     getattr(server, name)(**kwargs)
@@ -279,6 +305,7 @@ def test_doc_and_layer_not_sent_when_unset(fake_call, name):
 @pytest.mark.parametrize("name", sorted(DOC_TOOLS))
 def test_doc_and_layer_forwarded(fake_call, name):
     kwargs, action, payload = CASES[name]
+    kwargs = {k: v for k, v in kwargs.items() if k != "doc"}
     extra = {"doc": "doc-2"}
     if name in LAYER_TOOLS:
         extra["layer"] = "Head/Eyes"
@@ -320,3 +347,94 @@ def test_set_color_summary_notes_no_view(fake_call):
         "Color set to #ff0000 (stored; no Krita window to update)"
     fake_call.payload = {"color": "#ff0000", "view_updated": True}
     assert server.krita_set_color("#ff0000")["summary"] == "Color set to #ff0000"
+
+
+# P1.7: document tools.
+
+def test_new_canvas_sends_profile_and_resolution_only_when_set(fake_call):
+    server.krita_new_canvas(width=10, height=10)
+    params = fake_call.calls[0][1]
+    assert params == {"width": 10, "height": 10, "name": "New Canvas", "background": "#1a1a2e"}
+    server.krita_new_canvas(width=10, height=10, background="transparent",
+                            color_profile="sRGB built-in", resolution=300.0)
+    params = fake_call.calls[1][1]
+    assert params["color_profile"] == "sRGB built-in" and params["resolution"] == 300.0
+    assert params["background"] == "transparent"
+
+
+def test_new_canvas_summary(fake_call):
+    fake_call.payload = {"doc": "doc-4", "name": "A", "width": 5800, "height": 8400,
+                         "color_profile": "sRGB-elle-V2-srgbtrc.icc", "resolution": 120,
+                         "background": "transparent", "background_layer": "{1}"}
+    summary = server.krita_new_canvas(width=5800, height=8400, name="A",
+                                      background="transparent")["summary"]
+    assert summary == ("Created canvas 'A' (doc-4): 5800x8400, background transparent, "
+                       "sRGB-elle-V2-srgbtrc.icc, 120 dpi")
+
+
+def test_save_params(fake_call):
+    server.krita_save()
+    server.krita_save(path="a.kra", doc="doc-2", format="kra")
+    assert fake_call.calls[0][1] == {}
+    assert fake_call.calls[1][1] == {"path": "a.kra", "doc": "doc-2", "format": "kra"}
+
+
+def test_save_summaries(fake_call):
+    fake_call.payload = {"doc": "doc-2", "path": "/out/a.kra", "format": "kra", "bytes": 20480,
+                         "doc_path_changed": True}
+    assert server.krita_save(path="a.kra")["summary"] == \
+        "Saved doc-2 to /out/a.kra (kra, 20.0 KB); the document now lives there"
+    fake_call.payload = {**fake_call.payload, "doc_path_changed": False}
+    assert server.krita_save()["summary"] == "Saved doc-2 in place to /out/a.kra (kra, 20.0 KB)"
+    fake_call.payload = {"doc": "doc-2", "path": "/out/a.png", "format": "png", "bytes": 100,
+                         "doc_path_changed": False}
+    assert server.krita_save(path="a.png")["summary"] == \
+        "Exported doc-2 to /out/a.png (png, 100 bytes)"
+
+
+def test_save_schema_path_optional():
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    params = tools["krita_save"].parameters
+    assert "path" not in params.get("required", [])
+    assert set(params["properties"]) >= {"path", "doc", "format", "timeout_s"}
+
+
+def test_open_file_already_open_summary(fake_call):
+    fake_call.payload = {"doc": "doc-1", "path": "/out/a.kra", "name": "a", "width": 4,
+                         "height": 4, "layer_counts": {"paintlayer": 2, "grouplayer": 1},
+                         "already_open": True}
+    assert server.krita_open_file(path="a.kra")["summary"] == \
+        "a is already open as doc-1 (4x4, 3 layers)"
+    fake_call.payload = {**fake_call.payload, "already_open": False}
+    assert server.krita_open_file(path="a.kra")["summary"] == "Opened a as doc-1 (4x4, 3 layers)"
+
+
+def test_list_documents_summary(fake_call):
+    fake_call.payload = {"documents": []}
+    assert server.krita_list_documents()["summary"] == "0 open documents"
+    fake_call.payload = {"documents": [
+        {"doc": "doc-1", "name": "A", "active": False},
+        {"doc": "doc-2", "name": "B", "active": True}]}
+    assert server.krita_list_documents()["summary"] == \
+        "2 open documents: doc-1 'A', doc-2 'B' (active)"
+    fake_call.payload = {"documents": [{"doc": f"doc-{i}", "name": "x", "active": False}
+                                       for i in range(12)]}
+    summary = server.krita_list_documents()["summary"]
+    assert summary.startswith("12 open documents: ") and summary.endswith(", and 2 more")
+
+
+def test_get_document_info_summary(fake_call):
+    fake_call.payload = {**CASES["krita_get_document_info"][2], "doc": "doc-1",
+                         "selection": {"x": 0, "y": 0, "w": 2, "h": 2}}
+    assert server.krita_get_document_info(doc="doc-1")["summary"] == (
+        "doc-1 'a': 4x4, RGBA/U8 sRGB-elle-V2-srgbtrc.icc, 2 layers, depth 1, modified, "
+        "has a selection")
+
+
+def test_close_document_params_and_summary(fake_call):
+    fake_call.payload = {"doc": "doc-1", "closed": True}
+    assert server.krita_close_document("doc-1")["summary"] == "Closed doc-1"
+    assert fake_call.calls[0][1] == {"doc": "doc-1", "discard": False}
+    result = server.krita_close_document("doc-1", discard=True)
+    assert fake_call.calls[1][1] == {"doc": "doc-1", "discard": True}
+    assert "discarded" in result["summary"]

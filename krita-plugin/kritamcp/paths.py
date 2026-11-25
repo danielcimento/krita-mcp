@@ -65,6 +65,34 @@ def resolve_output_dir(path, *, overwrite=False, create=True, roots=None, base_d
     return again
 
 
+def ensure_parent_dir(real, *, roots=None):
+    """Create the missing parent directories of ``real`` (a file path that
+    ``resolve_allowed_path`` returned), then check containment again, in
+    case a symlink swapped in meanwhile sent it outside. Returns the
+    realpath again.
+
+    Errors: ``conflict`` (a parent is a file), ``krita_error`` (could not
+    create), ``forbidden_path`` (outside every root after creating).
+    """
+    if roots is None:
+        roots = config.current().roots
+    parent = os.path.dirname(real)
+    if not os.path.isdir(parent):
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except FileExistsError:
+            raise CommandError("conflict", f"Not a directory: {parent}") from None
+        except NotADirectoryError:
+            raise CommandError("conflict", f"A parent of {parent} is not a directory") from None
+        except OSError as e:
+            raise CommandError("krita_error",
+                               f"Cannot create directory {parent}: {e.strerror or e}") from e
+    again = os.path.realpath(real)
+    if not _inside(again, roots):
+        raise CommandError("forbidden_path", f"Path is outside the allowed directories: {real}")
+    return again
+
+
 def _defaults(roots, base_dir):
     if roots is None or base_dir is None:
         settings = config.current()

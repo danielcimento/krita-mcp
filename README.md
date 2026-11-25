@@ -79,24 +79,28 @@ If using a virtual environment:
 | Tool | Description |
 |------|-------------|
 | `krita_health` | Check if Krita is running with the plugin active |
-| `krita_new_canvas` | Create a new canvas (width, height, background color); returns its `doc` handle |
+| `krita_list_documents` | List open documents with their `doc` handles, size, path, modified and active flags |
+| `krita_get_document_info` | One document's size, resolution, color space, layer counts, nesting depth and selection |
+| `krita_new_canvas` | Create a new RGBA canvas (width, height, background color or `"transparent"`, color profile, resolution); returns its `doc` handle |
 | `krita_set_color` | Set foreground paint color (hex); kept by the plugin, so it works without a window |
 | `krita_set_brush` | Set brush preset, size, and opacity |
 | `krita_stroke` | Paint a stroke through a list of [x, y] points |
 | `krita_fill` | Fill a circular area at a point |
 | `krita_draw_shape` | Draw rectangle, ellipse, or line |
 | `krita_get_canvas` | Export canvas to PNG (for AI to see progress) |
-| `krita_save` | Save canvas to a specific file path |
+| `krita_save` | Save in place (no path), save as `.kra` (the document moves there), or export to PNG/JPG/…; returns the resolved path and file size |
+| `krita_close_document` | Close a document by handle; refuses unsaved changes unless `discard=true` |
 | `krita_undo` / `krita_redo` | Undo/redo actions |
 | `krita_clear` | Clear a layer to a solid color, or `"transparent"` |
 | `krita_get_color_at` | Eyedropper — sample color at a pixel |
 | `krita_list_brushes` | List available brush presets |
-| `krita_open_file` | Open an existing .kra, .png, .jpg, etc.; returns its `doc` handle |
+| `krita_open_file` | Open an existing .kra, .ora, .png, .jpg, etc.; returns its `doc` handle (an already open file returns its existing handle, `already_open: true`) |
 
 Tools that act on a document take an optional `doc`: a handle such as
 `doc-3` (returned by `krita_new_canvas` and `krita_open_file`), or the
 absolute path of an open document. Without it they use the active
-document. The painting tools and `krita_get_color_at` also take `layer`:
+document (`krita_close_document` is the exception: `doc` is required).
+The painting tools and `krita_get_color_at` also take `layer`:
 a layer's UUID, a name path such as `Head/Eyes` (`\/` for a slash in a
 name), or a unique name. Painting defaults to the active layer and must
 target a paint layer.
@@ -151,7 +155,9 @@ Every key is optional:
 - **No restart needed.** The plugin re-reads the file whenever it changes
   (mtime, size, mode), and notices a listed directory being created later.
 - **Allowed dirs.** File tools (`save`, `open_file`, …) may only touch
-  paths inside the output dir or one of these. Each entry must be an
+  paths inside the output dir or one of these. That includes saving a
+  document in place: its own file must be inside them too. `save`
+  creates missing folders inside them. Each entry must be an
   absolute (or `~`) path to an existing directory; symlinks are resolved.
   `/`, your home directory and its parents are refused as too broad.
   Relative tool paths still resolve against the output dir.

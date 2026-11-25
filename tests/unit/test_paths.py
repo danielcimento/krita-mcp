@@ -322,3 +322,40 @@ def test_output_dir_escape_detected_after_create(tmp_path, root, monkeypatch):
 def test_output_dir_empty_or_non_string_is_bad_request(root, bad):
     with refused("bad_request", "^No path specified$"):
         outdir(bad, root)
+
+
+# --- ensure_parent_dir (save into a new folder, P1.7) ---------------------
+
+def test_ensure_parent_dir_creates_missing_parents(root):
+    real = resolve("a/b/x.kra", root)
+    assert paths.ensure_parent_dir(real, roots=[root]) == os.path.join(root, "a", "b", "x.kra")
+    assert os.path.isdir(os.path.join(root, "a", "b"))
+
+
+def test_ensure_parent_dir_existing_parent_is_a_no_op(root):
+    real = resolve("x.kra", root)
+    assert paths.ensure_parent_dir(real, roots=[root]) == real
+
+
+def test_ensure_parent_dir_file_in_the_way_is_conflict(root):
+    open(os.path.join(root, "f"), "w").close()
+    with refused("conflict", "not a directory|Not a directory"):
+        paths.ensure_parent_dir(os.path.join(root, "f", "x.png"), roots=[root])
+    with refused("conflict", "not a directory|Not a directory"):
+        paths.ensure_parent_dir(os.path.join(root, "f", "sub", "x.png"), roots=[root])
+
+
+def test_ensure_parent_dir_escape_detected_after_create(tmp_path, root, monkeypatch):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    real = resolve("late/x.png", root)
+    original = os.makedirs
+
+    def racing_makedirs(path, exist_ok=False):
+        os.symlink(outside, path)  # a symlink swapped in instead of the dir
+
+    monkeypatch.setattr(os, "makedirs", racing_makedirs)
+    with refused("forbidden_path", "outside"):
+        paths.ensure_parent_dir(real, roots=[root])
+    monkeypatch.setattr(os, "makedirs", original)
+    assert not (outside / "x.png").exists()

@@ -87,6 +87,15 @@ def _active_document():
     return Krita.instance().activeDocument()
 
 
+def active_live():
+    """The live wrapper of the active document, or None (always None
+    headless). ``activeDocument()``'s own wrapper is only compared."""
+    active = _active_document()
+    if active is None:
+        return None
+    return next((d for d in _live() if active == d), None)
+
+
 def _by_path(path):
     want = os.path.realpath(os.path.expanduser(path))
     matches = []
@@ -117,10 +126,7 @@ def resolve_doc(params, field="doc"):
     """
     ref = params.get(field)
     if ref is None:
-        active = _active_document()
-        live = None
-        if active is not None:
-            live = next((d for d in _live() if active == d), None)
+        live = active_live()
         if live is None:
             raise CommandError("not_found",
                                f"No active document; pass '{field}' (a handle like 'doc-1')")

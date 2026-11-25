@@ -9,15 +9,18 @@ from krita import Krita
 
 from helpers import add_paint_layer, scratch_document, settle, temp_config
 from kritamcp import config, dispatch, nodes, registry
-from kritamcp.commands import documents, paint
+from kritamcp.commands import paint
 
 # action -> (timeout, mutating), as declared with @command (D9).
 EXPECTED_REGISTRY = {
     "clear": (300, True),
+    "close_document": (30, True),
     "draw_shape": (30, True),
     "fill": (30, True),
     "get_canvas": (300, False),
     "get_color_at": (30, False),
+    "get_document_info": (30, False),
+    "list_documents": (30, False),
     "list_brushes": (30, False),
     "new_canvas": (300, True),
     "open_file": (300, True),
@@ -118,7 +121,10 @@ class DispatchTest(EnvelopeAssertions, unittest.TestCase):
             result = self.assertOk(run("new_canvas", width=64, height=48,
                                        name="kmcp-dispatch-test"))
             self.assertRegex(result.pop("doc"), r"^doc-[1-9][0-9]*$")
-            self.assertEqual(result, {"width": 64, "height": 48, "name": "kmcp-dispatch-test"})
+            self.assertRegex(result.pop("background_layer"), r"^\{[0-9a-f-]{36}\}$")
+            self.assertEqual(result, {"width": 64, "height": 48, "name": "kmcp-dispatch-test",
+                                      "color_profile": "sRGB-elle-V2-srgbtrc.icc",
+                                      "resolution": 120, "background": "#1a1a2e"})
         finally:
             # Defensive: close anything new without touching it otherwise.
             for d in Krita.instance().documents():
@@ -129,9 +135,8 @@ class DispatchTest(EnvelopeAssertions, unittest.TestCase):
                         d.close()
 
     def test_new_canvas_limits_come_from_config(self):
-        # Small limits instead of a full-size canvas: new_canvas still builds
-        # its fill as a Python list (P1.7), far too slow at 5800x8400.
-        # canvas_size accepting 5800x8400 is a unit test (test_params).
+        # Small limits keep this quick; the full-size 5800x8400 canvas is
+        # test_documents.NewCanvasTest.test_full_size_canvas.
         self.assertEqual(dict(config.current().limits), config.DEFAULT_LIMITS)
         with temp_config({"limits": {"max_canvas_dim": 64, "max_canvas_pixels": 2048}}):
             self.assertEqual(config.current().errors, ())
@@ -192,10 +197,12 @@ class DispatchTest(EnvelopeAssertions, unittest.TestCase):
         self.assertIn("allowed directories", err["message"])
         self.assertIn("/etc/kmcp-test.png", err["message"])
 
-    def test_save_no_path(self):
-        err = run("save")
-        self.assertIs(err["ok"], False)
-        self.assertEqual(err["error"]["message"], "No path specified")
+    def test_save_no_path_never_saved_is_conflict(self):
+        # No path means "save in place" (P1.7), which needs a saved document.
+        with scratch_document(8, 8) as doc:
+            handle = registry.handle_for(doc)
+            err = self.assertError(run("save", doc=handle), "conflict")
+            self.assertEqual(err["details"], {"doc": handle})
 
     def test_open_file_bad_extension(self):
         err = run("open_file", path="notes.txt")
@@ -221,32 +228,6 @@ class DispatchTest(EnvelopeAssertions, unittest.TestCase):
                                ("draw_shape", {}), ("get_color_at", {"x": 0, "y": 0}),
                                ("get_canvas", {}), ("save", {"path": "kmcp-x.png"})):
             self.assertError(run(action, **params), "not_found", msg)
-
-
-class ExportTest(unittest.TestCase):
-    """documents._export: batch mode always reset; a failed export raises."""
-
-    def setUp(self):
-        self.dir = tempfile.mkdtemp(prefix="kmcp-export-")
-
-    def tearDown(self):
-        shutil.rmtree(self.dir, ignore_errors=True)
-
-    def test_export_ok(self):
-        path = os.path.join(self.dir, "out.png")
-        with scratch_document(8, 8) as doc:
-            documents._export(doc, path)
-            self.assertFalse(doc.batchmode())
-        self.assertTrue(os.path.isfile(path))
-
-    def test_export_failure_is_krita_error(self):
-        path = os.path.join(self.dir, "missing-dir", "out.png")
-        with scratch_document(8, 8) as doc:
-            with self.assertRaises(documents.CommandError) as cm:
-                documents._export(doc, path)
-            self.assertFalse(doc.batchmode())
-        self.assertEqual(cm.exception.code, "krita_error")
-        self.assertFalse(os.path.exists(path))
 
 
 RED = bytes((0, 0, 255, 255))      # BGRA
@@ -489,7 +470,9 @@ class DocumentHandleTest(EnvelopeAssertions, unittest.TestCase):
             handle = registry.handle_for(doc)
             result = self.assertOk(run("save", doc=handle, path="kmcp-saved.png"))
             expected = os.path.join(os.path.realpath(self.out), "kmcp-saved.png")
-            self.assertEqual(result, {"path": expected, "doc": handle})
+            self.assertGreater(result.pop("bytes"), 0)
+            self.assertEqual(result, {"path": expected, "doc": handle, "format": "png",
+                                      "doc_path_changed": False})
             self.assertTrue(os.path.isfile(expected))
         result = self.assertOk(run("open_file", path="kmcp-saved.png"))
         opened = result["doc"]

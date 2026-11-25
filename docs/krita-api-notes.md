@@ -151,6 +151,23 @@ are fast enough that per-pixel Python loops are never justified.
   - `saveAs` re-points `fileName()` and clears `modified`.
 - `close()` returns `True`, with no prompt, after `setModified(False)`
   [verified].
+- **`saveAs` and `save` can report success without writing.** Into a
+  directory that doesn't exist, `saveAs(path)` returns `True`, writes
+  nothing, and still re-points `fileName()` and clears `modified`;
+  `save()` returns `True`, writes nothing and leaves `modified` set.
+  `exportImage` returns `False` there. So check the file afterwards
+  (`kritamcp/fileio.py` compares its stat before and after) [verified
+  2026-11-25, kritarunner, P1.7].
+- `save()` rewrites the file even when the document isn't modified
+  [verified, P1.7].
+- `openDocument` returns `None` for a file it can't read (garbage bytes
+  named `.png`), with no dialog under app-wide batch mode. The document
+  it returns has `batchmode()` false. A PNG opened this way has an empty
+  `name()` and one paint layer named `Background` [verified, P1.7].
+- The app-wide `batchmode()` is `False` by default (kritarunner)
+  [verified, P1.7].
+- `resolution()` is an `int`, rounded: a document created at 72.5 dpi
+  reads 73, while `xRes()` gives 72.5 [verified, P1.7].
 - `projection(x, y, w, h) -> QImage` gives the composited image of a region
   [verified as BGRA→RGB-correct].
 - `refreshProjection()` then `waitForDone()` before reading pixels after a

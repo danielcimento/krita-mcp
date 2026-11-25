@@ -147,6 +147,12 @@ Setup: make a temp dir `R` (standing in for a project repo), add it to
 
 Teardown restores the config file.
 
+*Phase 1 (P1.7):* every row but `krita_export_layers` runs in
+`test_allowlist`; that row lands with P3.2 (`test_allowlist_export_layers`
+skips until then). `R` is `<system temp>/kmcp-f001-*/R`, outside the
+output dir and every root, parent included; the relative `x.png` goes
+into the run's scratch dir.
+
 ### 6. Handles · `test_handles`
 
 1. `krita_new_canvas(…, name="A")` → `a`; `krita_new_canvas(…, name="B")` → `b`.
@@ -159,3 +165,7 @@ Teardown restores the config file.
 6. A tool call with no `doc` hits `b`.
 7. `krita_close_document(a, discard=true)` (P1). If P1 isn't there yet,
    close through Krita. Then a call with `doc=a` fails with `not_found`.
+
+*Phase 1 (P1.7):* steps 2, 3 and 5 paint into each canvas's `Background`
+layer instead, since `create_layers` / `list_layers` come in P2; the full
+version replaces it after P2.3.

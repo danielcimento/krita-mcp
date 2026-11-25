@@ -105,37 +105,207 @@ def krita_health() -> dict:
             "elapsed_ms": elapsed_ms, "summary": summary}
 
 
+# --- Documents (api-design § Documents) ------------------------------------
+
+def _size(n) -> str:
+    if not isinstance(n, (int, float)) or isinstance(n, bool):
+        return "size unknown"
+    if n < 1024:
+        return f"{n} bytes"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n / (1024 * 1024):.1f} MB"
+
+
+def _layers(counts) -> str:
+    total = sum(v for v in (counts or {}).values() if isinstance(v, int))
+    return f"{total} layer{'s' if total != 1 else ''}"
+
+
+@mcp.tool()
+def krita_list_documents(timeout_s: Optional[float] = None) -> dict:
+    """
+    List every open document with its handle (``doc``, e.g. "doc-3"), which
+    other tools take as ``doc``. Each entry: doc, name (the file name when
+    the document has no title), path (null if never saved), width and
+    height in pixels, modified, and active (the document of Krita's active
+    window; false for all when Krita runs without a window).
+
+    Args:
+        timeout_s: Seconds to wait for Krita, up to 900; default per command
+    """
+    result = client.call("list_documents", {}, timeout_s=timeout_s)
+    docs = result.get("documents") or []
+    shown = [f"{d.get('doc')} '{d.get('name')}'" + (" (active)" if d.get("active") else "")
+             for d in docs[:10]]
+    more = f", and {len(docs) - 10} more" if len(docs) > 10 else ""
+    summary = (f"{len(docs)} open document{'s' if len(docs) != 1 else ''}"
+               + (": " + ", ".join(shown) + more if docs else ""))
+    return _done(result, summary)
+
+
+@mcp.tool()
+def krita_get_document_info(doc: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
+    """
+    Describe one document: name, path (null if never saved), width and
+    height in pixels, resolution (dpi, a whole number), color_model,
+    color_depth, color_profile, modified, layer_counts (nodes per type,
+    e.g. {"paintlayer": 184, "grouplayer": 38}; the global selection is not
+    counted), max_depth (nesting depth: top-level layers are depth 1, an
+    empty document 0) and selection (null, or the bounding rect
+    {x, y, w, h} of the active selection).
+
+    Args:
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        timeout_s: Seconds to wait for Krita, up to 900; default per command
+    """
+    result = client.call("get_document_info", _with({}, doc=doc), timeout_s=timeout_s)
+    summary = (f"{result.get('doc', doc or 'active document')} '{result.get('name')}': "
+               f"{result.get('width')}x{result.get('height')}, "
+               f"{result.get('color_model')}/{result.get('color_depth')} "
+               f"{result.get('color_profile')}, {_layers(result.get('layer_counts'))}, "
+               f"depth {result.get('max_depth')}"
+               + (", modified" if result.get("modified") else "")
+               + (", has a selection" if result.get("selection") else ""))
+    return _done(result, summary)
+
+
 @mcp.tool()
 def krita_new_canvas(
     width: int = 800,
     height: int = 600,
     name: str = "New Canvas",
     background: str = "#1a1a2e",
+    color_profile: Optional[str] = None,
+    resolution: Optional[float] = None,
     timeout_s: Optional[float] = None,
 ) -> dict:
     """
-    Create a new canvas in Krita and return its document handle (``doc``,
-    e.g. "doc-3"), which other tools take as ``doc``. Limits: 16384 px per side and 67108864
-    pixels in total by default, configurable by the user in the plugin's
-    ~/.krita-mcp-config.json ("limits"); over a limit fails with too_large.
+    Create a new RGBA 8-bit canvas in Krita and return its document handle
+    (``doc``, e.g. "doc-3"), which other tools take as ``doc``. Limits:
+    16384 px per side and 67108864 pixels in total by default,
+    configurable by the user in the plugin's ~/.krita-mcp-config.json
+    ("limits"); over a limit fails with too_large. The canvas has one
+    paint layer, "Background", filled with ``background``
+    (``background_layer`` is its id). The defaults are kept from earlier
+    versions for compatibility.
 
     Args:
         width: Canvas width in pixels (default 800)
         height: Canvas height in pixels (default 600)
-        name: Document name
-        background: Background color as hex (default dark blue)
+        name: Document name (default "New Canvas")
+        background: Background color as hex (default "#1a1a2e", dark blue),
+                    or "transparent" for an empty Background layer
+        color_profile: An installed RGBA/U8 profile name; default Krita's
+                       sRGB ("sRGB-elle-V2-srgbtrc.icc"). An unknown name
+                       fails with bad_request listing the available ones
+        resolution: Resolution in dpi, 1 to 10000 (default 120)
         timeout_s: Seconds to wait for Krita, up to 900; default per command
     """
-    result = client.call("new_canvas", {
+    result = client.call("new_canvas", _with({
         "width": width,
         "height": height,
         "name": name,
-        "background": background
-    }, timeout_s=timeout_s)
+        "background": background,
+    }, color_profile=color_profile, resolution=resolution), timeout_s=timeout_s)
     handle = f" ({result['doc']})" if result.get("doc") else ""
+    extra = f", {result['color_profile']}" if result.get("color_profile") else ""
+    if result.get("resolution") is not None:
+        extra += f", {result['resolution']} dpi"
     return _done(result, f"Created canvas '{result.get('name', name)}'{handle}: "
                          f"{result.get('width', width)}x{result.get('height', height)}, "
-                         f"background {background}")
+                         f"background {result.get('background', background)}{extra}")
+
+
+@mcp.tool()
+def krita_open_file(path: str, timeout_s: Optional[float] = None) -> dict:
+    """
+    Open an image file in Krita (.kra, .ora, .psd, .png, .jpg, etc.) and
+    return its document handle (``doc``, e.g. "doc-3"), which other tools
+    take as ``doc``. Only files inside the plugin's allowed directories (by
+    default ~/krita-mcp-output) can be opened. If the file is already open,
+    that document's handle comes back with ``already_open: true`` and the
+    file isn't opened again. Also returns path (resolved), name (the file
+    name when the document has no title), width and height in pixels, and
+    layer_counts.
+
+    Args:
+        path: File name or path; relative paths are resolved against the
+              output directory (e.g., "my_painting.kra")
+        timeout_s: Seconds to wait for Krita, up to 900; default per command
+    """
+    result = client.call("open_file", {"path": path}, timeout_s=timeout_s)
+    what = result.get("name") or result.get("path", path)
+    size = (f"{result.get('width')}x{result.get('height')}, "
+            f"{_layers(result.get('layer_counts'))}")
+    if result.get("already_open"):
+        summary = f"{what} is already open as {result.get('doc')} ({size})"
+    else:
+        handle = f" as {result['doc']}" if result.get("doc") else ""
+        summary = f"Opened {what}{handle} ({size})"
+    return _done(result, summary)
+
+
+@mcp.tool()
+def krita_save(path: Optional[str] = None, doc: Optional[str] = None,
+               format: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
+    """
+    Save a document. Without ``path``: save it in place, to its own file
+    (conflict if it has never been saved). With ``path`` (inside the
+    plugin's allowed directories, by default ~/krita-mcp-output; missing
+    folders are created): a .kra file is a "save as", so the document now
+    lives there; any other format is an export, and the document's own
+    path is unchanged. Existing files are overwritten. Returns path
+    (resolved), format, bytes (file size) and doc_path_changed.
+
+    Args:
+        path: File name or path; relative paths are resolved against the
+              output directory (e.g., "my_painting.png"). Omit to save in place
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        format: File format such as "kra", "png", "jpg"; default the
+                extension of ``path``. Given with a path whose extension
+                differs, fails with bad_request
+        timeout_s: Seconds to wait for Krita, up to 900; default per command
+    """
+    result = client.call("save", _with({}, path=path, doc=doc, format=format),
+                         timeout_s=timeout_s)
+    who = result.get("doc") or "document"
+    where = result.get("path", path or "its file")
+    info = f" ({result.get('format', format or '?')}, {_size(result.get('bytes'))})"
+    if path is None:
+        summary = f"Saved {who} in place to {where}{info}"
+    elif result.get("format") == "kra" or result.get("doc_path_changed"):
+        moved = "; the document now lives there" if result.get("doc_path_changed") else ""
+        summary = f"Saved {who} to {where}{info}{moved}"
+    else:
+        summary = f"Exported {who} to {where}{info}"
+    return _done(result, summary)
+
+
+@mcp.tool()
+def krita_close_document(doc: str, discard: bool = False,
+                         timeout_s: Optional[float] = None) -> dict:
+    """
+    Close a document. ``doc`` is required (there is no active-document
+    default, so the wrong document can't be closed by accident). A
+    document with unsaved changes fails with conflict unless ``discard``
+    is true, which drops the changes. The handle is retired: later calls
+    with it fail with not_found.
+
+    Args:
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document
+        discard: Close even with unsaved changes, losing them (default false)
+        timeout_s: Seconds to wait for Krita, up to 900; default per command
+    """
+    result = client.call("close_document", {"doc": doc, "discard": discard},
+                         timeout_s=timeout_s)
+    return _done(result, f"Closed {result.get('doc', doc)}"
+                         + (" (unsaved changes, if any, discarded)" if discard else ""))
 
 
 @mcp.tool()
@@ -364,25 +534,6 @@ def krita_clear(color: str = "#1a1a2e", doc: Optional[str] = None,
 
 
 @mcp.tool()
-def krita_save(path: str, doc: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
-    """
-    Save a document to a file inside the plugin's allowed
-    directories (by default ~/krita-mcp-output).
-
-    Args:
-        path: File name or path; relative paths are resolved against the
-              output directory (e.g., "my_painting.png")
-        doc: Document handle such as "doc-3" (new_canvas and open_file return
-             one), or the absolute path of an open document; default the
-             active document
-        timeout_s: Seconds to wait for Krita, up to 900; default per command
-    """
-    result = client.call("save", _with({"path": path}, doc=doc), timeout_s=timeout_s)
-    saved = f"Saved {result['doc']}" if result.get("doc") else "Saved"
-    return _done(result, f"{saved} to {result.get('path', path)}")
-
-
-@mcp.tool()
 def krita_get_color_at(x: int, y: int, doc: Optional[str] = None, layer: Optional[str] = None,
                        timeout_s: Optional[float] = None) -> dict:
     """
@@ -428,25 +579,6 @@ def krita_list_brushes(filter: str = "", limit: int = 20,
     else:
         summary = f"Found {len(brushes)} brushes" + (f" matching '{filter}'" if filter else "")
     return _done(result, summary)
-
-
-@mcp.tool()
-def krita_open_file(path: str, timeout_s: Optional[float] = None) -> dict:
-    """
-    Open an existing image file in Krita (.kra, .png, .jpg, etc) and return
-    its document handle (``doc``, e.g. "doc-3"), which other tools take as
-    ``doc``. Only files inside the plugin's allowed directories (by default
-    ~/krita-mcp-output) can be opened.
-
-    Args:
-        path: File name or path; relative paths are resolved against the
-              output directory (e.g., "my_painting.kra")
-        timeout_s: Seconds to wait for Krita, up to 900; default per command
-    """
-    result = client.call("open_file", {"path": path}, timeout_s=timeout_s)
-    handle = f" as {result['doc']}" if result.get("doc") else ""
-    return _done(result, f"Opened {result.get('name') or result.get('path', path)}{handle} "
-                         f"({result.get('width')}x{result.get('height')})")
 
 
 if __name__ == "__main__":

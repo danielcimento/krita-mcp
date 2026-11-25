@@ -165,7 +165,7 @@ class HandlerAuthTest(BridgeTestBase):
             "mutating": [n for n in names if dispatch.get(n).mutating],
         })
         self.assertEqual(body["commands"], sorted(body["commands"]))
-        self.assertEqual(len(body["commands"]), 14)
+        self.assertEqual(len(body["commands"]), 17)
         self.assertEqual(body["timeouts"]["save"], dispatch.LONG_TIMEOUT)
         self.assertEqual(body["timeouts"]["undo"], dispatch.QUERY_TIMEOUT)
         self.assertIn("new_canvas", body["mutating"])

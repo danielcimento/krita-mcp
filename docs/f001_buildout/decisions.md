@@ -177,6 +177,15 @@ All export calls, `exportImage` and `saveAs` included, go through one
 helper that sets the document's batch mode, and the app-wide one when
 needed, in `try`/`finally`.
 
+*(P1.7, 2026-11-25): the helper is `kritamcp/fileio.py`.* `batch_mode(doc,
+app_wide)` is a context manager that sets the flags and restores their
+previous values. `export_image` and `save_as` use the document flag;
+`save_in_place` uses both; `open_document` uses the app-wide flag, which
+`openDocument` passes on to the document while it loads (from Krita's
+source; no prompt-producing file was tried). Each save or export
+also checks that the file was written, since `saveAs` and `save` return
+`True` without writing when the directory is missing.
+
 ## D6. Undo granularity
 
 **Decided** (spike run 2, Q1; run 3, Q18 confirmed that a removed node

@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phase 1 in progress: P1.1–P1.6 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phase 1 built (P1.1–P1.7); exit pending the live acceptance tests 3, 5, 6. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -151,11 +151,14 @@ roots, larger canvases, handles, and `list_documents` / `get_document_info`.
   with `conflict`. `get_color_at` uses document bounds. The plugin keeps
   the foreground color itself (D15). Unit tests for `refs` over a fake
   index: UUID with and without braces, paths, escaped `/`, ambiguity.
-- [ ] **P1.7 Document tools.** `list_documents`, `get_document_info`, the
+- [x] **P1.7 Document tools.** `list_documents`, `get_document_info`, the
   reworked `new_canvas` (limits, transparent background, profile, memory
   fix), `open_file` (handle, `already_open`, name fallback), and `save`
   (in place / `saveAs` for `.kra` / `exportImage`, resolved path, size).
-  Live tests.
+  Live tests. *(Also `close_document`, pulled forward from P5.2. All file
+  I/O goes through `kritamcp/fileio.py`, the D5 batch-mode helper. The
+  live acceptance tests 3, 5 and 6 are in `tests/live/test_acceptance.py`,
+  run by hand with `make test-live`; 6 is adapted until P2.3.)*
 
 *Exit:* acceptance tests **3** (canvas cap), **5** (allowlist) and **6**
 (handles) pass. README configuration section updated.
@@ -242,6 +245,7 @@ tools.
   everything below. Memory and disk caps. Live test: create, update, move,
   delete, import, then undo × 5 restores the document.
 - **P5.2 `set_active_layer`, `duplicate_layer`, `close_document`.**
+  `close_document` done early in P1.7.
 - **P5.3 `layer_stats`, `trim_layers`.** These reuse the P4.1 stats code.
 - **P5.4 `select`.** rect / polygon (rasterized with `QPainter`) /
   alpha_of / invert / none / all, combined with replace / add / subtract /

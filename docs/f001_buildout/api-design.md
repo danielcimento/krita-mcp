@@ -79,6 +79,9 @@ nodes with no extent.
 ```
 
 `name` falls back to the basename of `path` when Krita's title is empty.
+Done in P1.7: every open document gets a handle (in `documents()`
+order); `path` is the realpath of `fileName()`, or `null` if never saved;
+`active` compares with `activeDocument()`, so headless it is always false.
 
 ### `krita_get_document_info(doc?)` · P0
 
@@ -88,21 +91,36 @@ Returns `doc`, `name`, `path`, `width`, `height`, `resolution` (dpi),
 present), `max_depth`, and `selection` (`null`, or the bounding rect of the
 active selection).
 
+Done in P1.7: `resolution` is `Document.resolution()`, a whole number
+(Krita rounds: 72.5 dpi reads 73). `layer_counts` and `max_depth` come
+from the tree walk, which skips the global selection mask; top-level
+nodes are depth 1 and an empty document is depth 0. `selection` is
+`{x, y, w, h}` from `Document.selection()`.
+
 ### `krita_new_canvas(width, height, name?, background?, color_profile?, resolution?)` · P0
 
 - Limits: 16384 per side and 67.1 MP total (D8).
 - `background`: a hex color, or `"transparent"`. `createDocument` already
   makes one opaque white paint layer named `Background` (spike Q4). That
-  layer is reused, with no second layer added as the current code does. It is filled with the color, or,
-  for `"transparent"`, replaced with an empty paint layer of the same
-  name, which is cheaper than clearing 48 MP.
-- `color_profile`: defaults to Krita's default sRGB profile for RGBA/U8.
-  Profiles that aren't installed fail with `bad_request`, and the error
-  lists the available profiles.
+  layer is reused, with no second layer added. It is filled with the
+  color (skipped for opaque white), or, for `"transparent"`, replaced
+  with an empty paint layer of the same name at the same place, which is
+  cheaper than clearing 48 MP.
+- `color_profile`: defaults to Krita's default sRGB profile for RGBA/U8
+  (`sRGB-elle-V2-srgbtrc.icc`). Profiles that aren't installed fail with
+  `bad_request`, and `details.available` lists the installed ones.
 - Returns `doc`, `name`, `width`, `height`, `color_profile` and
   `background_layer` (its ID).
-- The fill uses `bytes((b, g, r, 255)) * n`. The current code builds a
-  Python list first, about 1.6 GB of pointers at 48.7 MP.
+- The fill uses `bytes((b, g, r, 255)) * n`, about 0.2 s at 5800×8400.
+
+Done in P1.7. The defaults are kept from before F001 for compatibility:
+`width` 800, `height` 600, `name` `"New Canvas"`, `background`
+`"#1a1a2e"`, `resolution` 120 dpi (1–10000). `background` takes any
+opaque color Qt parses (`#rgb`, `#rrggbb`, SVG names); a translucent one
+is `bad_request`. All parameters are checked before the document is
+created. The result also has `resolution` (as `get_document_info`) and
+`background` (normalized `#rrggbb`, or `"transparent"`). The new document
+is not marked modified. In the GUI it opens in a view of the active window.
 
 ### `krita_open_file(path)` · P0
 
@@ -110,6 +128,12 @@ Returns `doc`, `path` (resolved), `name` (with the basename fallback),
 `width`, `height`, and `layer_counts`. If the file is already open, the
 existing handle comes back with `already_open: true` and the file is not
 opened a second time.
+
+Done in P1.7: `already_open` is in every result. "Already open" compares
+the resolved path with the realpath of each open document's
+`fileName()`. `openDocument` runs with the app-wide batch mode, so no
+import or recovery dialog can block; Krita returning nothing (an
+unreadable file) is `krita_error`. A missing file is `not_found`.
 
 ### `krita_save(doc?, path?, format?)` · P0
 
@@ -121,11 +145,37 @@ opened a second time.
 - Returns `path` (resolved), `format`, `bytes` (file size),
   `doc_path_changed`, and `elapsed_ms`.
 
+Done in P1.7 (server signature `krita_save(path=None, doc=None,
+format=None)`):
+
+- `format` is lowercase without the dot, with `jpeg` read as `jpg`; one
+  of the allowed image extensions. Given with a `path` whose extension
+  differs, or with no `path` and a document file of another type, it is
+  `bad_request`.
+- Saving in place writes the document's own file, so that file must be
+  inside an allowed root too (`forbidden_path` otherwise).
+- Missing parent directories of `path` are created (inside the root;
+  containment is checked again afterwards). Existing files are
+  overwritten.
+- `doc_path_changed` is true when `saveAs` moved the document to a new
+  file. The result also has `doc`.
+- Krita's `saveAs` and `save` return `True` without writing anything when
+  the directory is missing, so the plugin also checks the file was
+  written, and fails with `krita_error` otherwise (a `saveAs` that wrote
+  nothing leaves the document marked modified).
+
 ### `krita_close_document(doc, discard=false)` · P1
 
 Fails with `conflict` when the document is modified and `discard` is
 false. With `discard`, the plugin calls `setModified(False)` then
 `close()`. The handle is retired.
+
+Done early, in P1.7 (so live tests can clean up). `doc` is required:
+there is no active-document default, because closing the wrong document
+would be bad (missing: `bad_request`). The `conflict` has
+`details: {doc, name}`, and nothing is touched. `close()` returning
+false is `krita_error`. Returns `doc` and `closed: true`; later calls
+with the handle are `not_found`.
 
 ### `krita_set_canvas_size(doc, width, height, anchor="center")` · P2
 
@@ -456,7 +506,7 @@ of both bounds). The two documents must be the same size for pixel diffs.
 | Tool | Change |
 |---|---|
 | `krita_health` | Adds `protocol`, `version`, `krita_version` (done in P1.3, with `running` and `protocol_ok` added server-side), then `allowed_dirs` (resolved roots, the output dir first), `config_file`, `config_loaded`, `limits` and `config_errors` (done in P1.4; the summary counts the dirs and lists the errors), then `busy` (`{"action", "elapsed_ms"}` or `null`) and `queued` (done in P1.5; the summary adds e.g. "busy: save for 12.3 s, 1 queued") |
-| `krita_new_canvas`, `krita_open_file`, `krita_save` | As above. Done in P1.6: `new_canvas` and `open_file` return `doc` (the new document's handle; the registry keeps the wrapper, so a headless `new_canvas` leaves an open document) and `save` takes `doc`. The rest is P1.7 |
+| `krita_new_canvas`, `krita_open_file`, `krita_save` | As above. Done in P1.6: `new_canvas` and `open_file` return `doc` (the new document's handle; the registry keeps the wrapper, so a headless `new_canvas` leaves an open document) and `save` takes `doc`. The rest done in P1.7 |
 | `krita_get_canvas` | Takes `doc` (done in P1.6). Becomes a shortcut for `render` into the output dir |
 | `krita_set_color` | Stored plugin-side (D15) and also set on the active view when there is one; works without a view. Returns `color` (normalized `#rrggbb`) and `view_updated`. An invalid color is `bad_request`. Painting uses the stored color, else the view's foreground, else black. **No `doc`**: the color is plugin-global state that applies to every document, which is what lets painting work in a document with no view (D15). Done in P1.6 |
 | `krita_set_brush` | `size` and `opacity` are stored plugin-side (the stroke defaults) and `size` is also set on the view if there is one; a `preset` needs a view (`conflict` without one, and nothing is stored). Returns the stored `preset` (matched name or null), `size`, `opacity` and `view_updated`. No `doc`, like `set_color`. Done in P1.6 |
