@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phase 1 done (live acceptance 3, 5 and 6 passed 2026-11-25; 5 minus the export row, 6 in its Phase-1 form). Phase 2 in progress: P2.2 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phase 1 done (live acceptance 3, 5 and 6 passed 2026-11-25; 5 minus the export row, 6 in its Phase-1 form). Phase 2 in progress: P2.2, P2.6 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -182,7 +182,7 @@ row of test 5, which lands with P3.2). Test 6 ran in its Phase-1 form
   validation (unit-tested) and path resolution relative to the manifest.
 - [ ] **P2.5 `update_layers`, `move_layers`, `delete_layers`.** Including
   the cycle check for moves and subtree reporting for deletes.
-- [ ] **P2.6 `tools/ora_to_manifest.py`.** Converts the first-session
+- [x] **P2.6 `tools/ora_to_manifest.py`.** Converts the first-session
   `mao_pro_layered.ora` to manifest v1 plus PNGs. It runs outside Krita,
   using `zipfile` and `xml.etree`. Mapping: stack.xml is top to bottom, so
   reverse it; `svg:src-over`→`normal`, `svg:multiply`→`multiply`,
