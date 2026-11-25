@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phase 1 built (P1.1–P1.7); exit pending the live acceptance tests 3, 5, 6. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phase 1 done (live acceptance 3, 5 and 6 passed 2026-11-25; 5 minus the export row, 6 in its Phase-1 form). Phase 2 next. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -162,6 +162,10 @@ roots, larger canvases, handles, and `list_documents` / `get_document_info`.
 
 *Exit:* acceptance tests **3** (canvas cap), **5** (allowlist) and **6**
 (handles) pass. README configuration section updated.
+
+*Met 2026-11-25:* `make test-live` passed 4, skipped 1 (the `export_layers`
+row of test 5, which lands with P3.2). Test 6 ran in its Phase-1 form
+(painting `Background`), and gets its full form after P2.3.
 
 ### Phase 2: Layer tree (P0)
 
