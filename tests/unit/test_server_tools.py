@@ -29,6 +29,7 @@ EXPECTED_TOOLS = {
     "krita_get_document_info",
     "krita_close_document",
     "krita_list_layers",
+    "krita_create_layers",
 }
 
 # tool -> (kwargs, plugin action, canned plugin payload)
@@ -69,6 +70,11 @@ CASES = {
                                  "max_depth": 1, "selection": None}),
     "krita_close_document": ({"doc": "doc-1"}, "close_document",
                              {"doc": "doc-1", "closed": True}),
+    "krita_create_layers": ({"specs": [{"name": "a"}]}, "create_layers",
+                            {"doc": "doc-1", "dry_run": False,
+                             "created": [{"key": None, "id": "{1}", "name": "a",
+                                          "type": "paintlayer", "path": "a"}],
+                             "counts": {"paintlayer": 1, "total": 1}}),
     "krita_list_layers": ({}, "list_layers",
                           {"root": "/", "layers": [{"id": "{1}", "name": "a", "children": []}],
                            "counts": {"paintlayer": 1, "total": 1}}),
@@ -269,7 +275,8 @@ def test_health_idle_has_busy_null(monkeypatch):
 # get_color_at also take `layer`. App/UI-state tools take neither.
 DOC_TOOLS = {"krita_save", "krita_get_canvas", "krita_stroke", "krita_fill",
              "krita_draw_shape", "krita_clear", "krita_get_color_at",
-             "krita_get_document_info", "krita_close_document", "krita_list_layers"}
+             "krita_get_document_info", "krita_close_document", "krita_list_layers",
+             "krita_create_layers"}
 # close_document has no active-document default.
 REQUIRED_DOC_TOOLS = {"krita_close_document"}
 OPTIONAL_DOC_TOOLS = DOC_TOOLS - REQUIRED_DOC_TOOLS
@@ -480,3 +487,48 @@ def test_list_layers_summary(fake_call):
     fake_call.payload = {"root": "/", "layers": [],
                          "counts": {"weirdlayer": 2, "total": 2}}
     assert server.krita_list_layers()["summary"] == "2 weirdlayer in the active document"
+
+
+# P2.3: create_layers.
+
+def test_create_layers_sends_only_set_fields(fake_call):
+    from krita_mcp_server.models import LayerSpec
+    server.krita_create_layers([{"name": "G", "type": "group", "key": "g"},
+                                LayerSpec(name="A", parent="$g", visible=False, opacity=0.0,
+                                          x=0, y=0, png="a.png")])
+    action, params, timeout_s = fake_call.calls[0]
+    assert action == "create_layers" and timeout_s is None
+    assert params == {"specs": [{"name": "G", "type": "group", "key": "g"},
+                                {"name": "A", "parent": "$g", "visible": False, "opacity": 0.0,
+                                 "png": "a.png", "x": 0, "y": 0}]}
+    server.krita_create_layers([{"name": "A"}], doc="doc-2", dry_run=True, timeout_s=60)
+    assert fake_call.calls[1][1:] == ({"specs": [{"name": "A"}], "doc": "doc-2",
+                                       "dry_run": True}, 60)
+
+
+def test_create_layers_schema_and_typos():
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    tool = tools["krita_create_layers"]
+    assert set(tool.parameters["properties"]) == {"specs", "doc", "dry_run", "timeout_s"}
+    assert tool.parameters["required"] == ["specs"]
+    assert "bottom to top" in tool.description and "$<key>" in tool.description
+
+    async def go():
+        async with Client(server.mcp) as c:
+            return await c.call_tool("krita_create_layers",
+                                     {"specs": [{"name": "A", "opactiy": 0.5}]},
+                                     raise_on_error=False)
+    result = asyncio.run(go())
+    assert result.is_error
+
+
+def test_create_layers_summary(fake_call):
+    fake_call.payload = {"doc": "doc-2", "dry_run": False, "created": [{}, {}, {}],
+                         "counts": {"grouplayer": 1, "paintlayer": 2, "total": 3}}
+    assert server.krita_create_layers([{"name": "a"}])["summary"] == (
+        "Created 3 layers (1 group) in doc-2")
+    fake_call.payload = {"doc": "doc-2", "dry_run": True, "would_create": [{}],
+                         "counts": {"paintlayer": 1, "total": 1}}
+    assert server.krita_create_layers([{"name": "a"}], dry_run=True)["summary"] == (
+        "Would create 1 layer in doc-2 (dry run, nothing changed)")
+

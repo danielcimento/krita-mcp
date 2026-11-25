@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phase 1 done (live acceptance 3, 5 and 6 passed 2026-11-25; 5 minus the export row, 6 in its Phase-1 form). Phase 2 in progress: P2.1, P2.2, P2.6 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phase 1 done (live acceptance 3, 5 and 6 passed 2026-11-25; 5 minus the export row, 6 in its Phase-1 form). Phase 2 in progress: P2.1–P2.3, P2.6 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -175,7 +175,7 @@ row of test 5, which lands with P3.2). Test 6 ran in its Phase-1 form
   inverses, rollback on failure, `dry_run`. It also hands the inverse
   list to a per-document journal, which stays unused until P5.1. Unit
   tests with a fake applier: rollback order, partial failure report.
-- [ ] **P2.3 `create_layers` (specs).** Groups and paint layers, `key` / `$key`
+- [x] **P2.3 `create_layers` (specs).** Groups and paint layers, `key` / `$key`
   refs, `above`, properties, and `png` + `x`/`y`, which go through
   `pixels.load_png_bgra` (the only pixel helper this phase needs).
 - [ ] **P2.4 `manifest.py` + `create_layers(manifest=…)`.** Manifest v1 schema

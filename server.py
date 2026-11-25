@@ -25,6 +25,7 @@ from fastmcp import FastMCP  # noqa: E402
 from fastmcp.exceptions import ToolError  # noqa: E402
 
 from krita_mcp_server import client  # noqa: E402
+from krita_mcp_server.models import LayerSpec  # noqa: E402
 
 # Configuration (KRITA_URL, KRITA_MCP_TOKEN_FILE, KRITA_MCP_TOKEN) is read in
 # krita_mcp_server/client.py.
@@ -394,6 +395,65 @@ def krita_list_layers(doc: Optional[str] = None, root: Optional[str] = None,
     summary = what + (_in(result) or f" in {doc or 'the active document'}")
     if depth is not None:
         summary += f" (depth {depth})"
+    return _done(result, summary)
+
+
+@mcp.tool()
+def krita_create_layers(specs: list[LayerSpec], doc: Optional[str] = None,
+                        dry_run: bool = False, timeout_s: Optional[float] = None) -> dict:
+    """
+    Create groups and paint layers in one all-or-nothing call. Every spec is
+    validated before anything changes (refs, parents, PNG headers, names,
+    blend modes, unknown keys); the first bad spec fails the call with
+    details.index and nothing is created. If Krita fails halfway, the layers
+    made so far are removed again (details.applied / rolled_back).
+
+    Order: specs are applied in list order and each new layer goes on top
+    of its parent's children, unless "above" names a sibling to insert it
+    directly above. So listing siblings bottom to top reproduces a stack.
+    A spec's "key" lets later specs in the same call use "$<key>" as their
+    parent or above (a "$key" defined by a later spec is not_found); layers
+    made in this call are reachable only that way, not by name.
+
+    Each spec: name (required); key; type "paint" (default) or "group";
+    parent (a group ref, "$key", or "/" the root, default); above; visible
+    (default true); opacity 0.0-1.0 (default 1.0; Krita stores
+    round(opacity*255)); blend_mode (a Krita id, default "normal": e.g.
+    "multiply", "screen", "add" or "linear_dodge", which render the same);
+    locked, alpha_locked, inherit_alpha (clipping), all default false;
+    pass_through (groups only, default false); png (paint layers only: a PNG
+    inside an allowed directory, at most the canvas size limits per side;
+    needs an 8-bit RGBA document) placed with its top-left at canvas x, y
+    (default 0, 0; only with png). Pixels outside the canvas are kept, not
+    clipped. Unknown keys fail.
+
+    Returns {doc, created: [{key, id, name, type, path}], counts} (counts
+    per Krita type plus "total"); with dry_run, {doc, would_create: [{key,
+    name, type, parent, above, png?, x?, y?, w?, h?}], counts} and nothing
+    changes. One successful call is one agent undo step.
+
+    Args:
+        specs: The layers to create, 1 to 2000, in order (see above)
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        dry_run: Only validate and report what would be created
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
+    """
+    sent = [(s if isinstance(s, LayerSpec) else LayerSpec.model_validate(s)).to_params()
+            for s in specs]
+    result = client.call("create_layers",
+                         _with({"specs": sent}, doc=doc, dry_run=dry_run or None),
+                         timeout_s=timeout_s)
+    counts = result.get("counts") or {}
+    total = counts.get("total", len(result.get("created") or result.get("would_create") or []))
+    groups = counts.get("grouplayer", 0)
+    what = f"{total} layer{'s' if total != 1 else ''}"
+    if groups:
+        what += f" ({groups} group{'s' if groups != 1 else ''})"
+    where = _in(result) or f" in {doc or 'the active document'}"
+    verb = "Would create " if result.get("dry_run") else "Created "
+    summary = verb + what + where + (" (dry run, nothing changed)" if result.get("dry_run") else "")
     return _done(result, summary)
 
 

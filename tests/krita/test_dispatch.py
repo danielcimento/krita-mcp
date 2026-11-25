@@ -15,6 +15,7 @@ from kritamcp.commands import paint
 EXPECTED_REGISTRY = {
     "clear": (300, True),
     "close_document": (30, True),
+    "create_layers": (300, True),
     "draw_shape": (30, True),
     "fill": (30, True),
     "get_canvas": (300, False),

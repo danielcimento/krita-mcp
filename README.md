@@ -91,6 +91,7 @@ If using a virtual environment:
 | `krita_save` | Save in place (no path), save as `.kra` (the document moves there), or export to PNG/JPG/…; returns the resolved path and file size |
 | `krita_close_document` | Close a document by handle; refuses unsaved changes unless `discard=true` |
 | `krita_list_layers` | The layer tree as a flat list, top to bottom (Layers-docker order): id, name, path, type, parent, children, visibility, opacity, blend mode, locks, bounds (exact, may extend past the canvas). Optional `root` (a subtree), `depth`, `fields`; per-type `counts` |
+| `krita_create_layers` | Create groups and paint layers in one all-or-nothing call: list siblings bottom to top; `key` / `"$key"` to nest in layers made earlier in the call; `above`; visibility, opacity (0–1), blend mode, locks, clipping, pass-through; `png` + `x`/`y` for a layer's pixels. Unknown keys fail; `dry_run` validates only |
 | `krita_undo` / `krita_redo` | Undo/redo actions |
 | `krita_clear` | Clear a layer to a solid color, or `"transparent"` |
 | `krita_get_color_at` | Eyedropper — sample color at a pixel |

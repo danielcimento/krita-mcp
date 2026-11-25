@@ -248,7 +248,12 @@ are fast enough that per-pixel Python loops are never justified.
   re-inserts the same wrapper with the same UUID, pixels, bounds, opacity
   and parent, and `nodeByUniqueID` returns `None` while it is out
   [verified, run 3, Q18].
-- `GroupLayer.passThroughMode()` [stub].
+- `GroupLayer.passThroughMode()` / `setPassThroughMode()` round-trip;
+  `createGroupLayer(name)` returns a `GroupLayer` [verified 2026-11-25,
+  P2.3].
+- A **locked** layer (`setLocked(True)`) still takes `setPixelData`
+  headless, and `remove()` removes it [verified 2026-11-25, P2.3].
+  `create_layers` sets `locked` last anyway.
 - **ORA import, groups and blend ops** [verified 2026-11-25, P2.6]:
   - In `.kra` `maindoc.xml` a group's flag is `passthrough="1"`/`"0"`.
     Krita imported the Mao `.ora` (38 groups, all `isolation="auto"`) with

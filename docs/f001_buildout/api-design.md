@@ -239,7 +239,7 @@ D13). Each spec:
 | `above` | ref \| `"$key"` | — | Insert directly above this sibling. If omitted, the layer goes **on top** of the parent's existing children |
 | `visible` | bool | `true` | |
 | `opacity` | number | `1.0` | |
-| `blend_mode` | string | `"normal"` | Checked against a fixed list of Krita composite-op IDs in the plugin. `setBlendingMode` stores any string, invalid ones included (spike Q15) |
+| `blend_mode` | string | `"normal"` | Checked against a fixed list of Krita composite-op IDs in the plugin (`kritamcp/blendmodes.py`). `setBlendingMode` stores any string, invalid ones included (spike Q15) |
 | `locked`, `alpha_locked`, `inherit_alpha` | bool | `false` | |
 | `pass_through` | bool | `false` | Groups only |
 | `png` | path | — | Paint only. Read with QImage and converted to BGRA |
@@ -251,6 +251,55 @@ to top** reproduces a stack, and that is the order the manifest uses.
 
 Returns `{"created": [{"key", "id", "name", "path"}], "summary": …}`.
 On failure, nothing stays created (D11).
+
+Settled in P2.3 (2026-11-25), `kritamcp/commands/layers.py` (`specs`
+only; `manifest` comes with P2.4):
+
+- **Strict specs.** A spec must be an object; an unknown key is
+  `bad_request` (`details.unknown`, `details.valid`), so typos fail. An
+  explicit `null` counts as not given. On the server, `LayerSpec`
+  (`krita_mcp_server/models.py`) forbids extra keys too and sends only the
+  fields the caller set (`false` and `0` are sent).
+- **Field rules.** `name`: non-empty, at most 255 characters, no control
+  characters. `key`: non-empty, at most 255 characters, no `$` or `/`,
+  unique in the call. Bools must be JSON booleans (not `0`/`1`).
+  `opacity`: a finite number in 0–1. `blend_mode`: one of the 138 IDs in
+  `kritamcp/blendmodes.py` (Krita's registered blending modes; an error
+  suggests close matches). `pass_through` only on groups, `png` only on
+  paint layers, `x`/`y` (whole numbers within ±163840) only with `png`.
+  The shared property checks live in `kritamcp/layerprops.py`, for
+  `update_layers` too.
+- **`$key` and placeholders.** During validation a keyed spec stands for
+  a placeholder of the layer it will create. `parent` and `above` may name
+  it as `"$key"` only after the spec that defines it (a later or unknown
+  key, or a spec naming itself, is `not_found`). Layers made in this call
+  are reachable only by `$key`, not by name or path. `parent` must be `/`,
+  an existing group or a planned group (`bad_request` for anything else).
+  `above` must be an existing child of that parent or a planned spec with
+  the same parent (`bad_request` otherwise). While applying, placeholders
+  resolve to the ids just created.
+- **PNGs.** `png` goes through `resolve_allowed_path` (`forbidden_path`,
+  `not_found`), then its header is read: not a PNG or a corrupt IHDR is
+  `bad_request`, a side over `max_canvas_dim` or more than
+  `max_canvas_pixels` is `too_large`. Any `png` needs an 8-bit RGBA
+  document (`conflict` naming its color model and depth, D5). Only the
+  header is read up front, so a file corrupt past its header fails while
+  applying (`bad_request`, rolled back). Decoding is `QImage` →
+  `Format_ARGB32` (`kritamcp/pixels.py`); pixels outside the canvas are
+  kept.
+- **Apply.** Per spec: decode the PNG, `createNode` / `createGroupLayer`,
+  `addChildNode(node, above or None)`, properties, `setPixelData`, and
+  `locked` last. If a step fails after the node exists, that spec removes
+  its own node before the batch rolls back the earlier ones (newest first).
+  Each inverse removes its node by id from the live document passed at
+  call time. A successful call refreshes the projection and pushes one
+  journal entry.
+- **Result.** `{doc, dry_run: false, created: [{key, id, name, type,
+  path}], counts}`, where `counts` is per Krita type plus `total` and
+  paths come from a fresh walk. With `dry_run`: `{doc, dry_run: true,
+  would_create: [{key, name, type, parent, above, png?, x?, y?, w?, h?}],
+  counts}`. Here `parent`/`above` are `"/"`, an id or `"$key"`, and
+  nothing changes.
 
 Performance: spike Q11 puts `setPixelData` at under 40 ms even for a
 full 48 MP layer. So the 184-layer Mao build is bounded by PNG decoding

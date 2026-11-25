@@ -21,6 +21,7 @@ import re
 
 from krita import Krita
 
+from . import batch
 from .errors import CommandError
 
 _HANDLE_RE = re.compile(r"doc-[1-9][0-9]*")
@@ -34,9 +35,11 @@ def _live():
 
 
 def _prune(live):
+    """Drop the handles of closed documents, and their agent journals (D6)."""
     for handle, stored in list(_entries.items()):
         if not any(stored == d for d in live):
             del _entries[handle]
+            batch.JOURNALS.forget(handle)
 
 
 def _find(doc):
