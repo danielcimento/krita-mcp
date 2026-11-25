@@ -101,12 +101,12 @@ installable and the existing tools working.
       recorded in `spike.md`, `krita-api-notes.md` and the decisions. D6 is closed.
 - [x] Run 3: clean. Every question that blocks work is answered. D3, D6
       and D10 are closed.
+- [x] Q12: `kritarunner` works headless. D16 closed (headless suite
+      calls dispatch directly).
 - [ ] Optional: `RUN_LARGE = True` for Q11 (timings at Mao size, to tune
-      D9's default timeouts), and Q12 by hand (kritarunner, D16). Neither
-      blocks Phase 1.
+      D9's default timeouts). It doesn't block Phase 1.
 
-*Exit:* met. The only provisional decision left is D16 (headless test
-runner), which is optional.
+*Exit:* met. No open or provisional decisions remain.
 
 Phase 1 can start.
 
@@ -117,12 +117,17 @@ roots, larger canvases, handles, and `list_documents` / `get_document_info`.
 
 - **P1.1 Test and dev scaffolding.** `tests/unit`, `tests/live` with a
   `KRITA_MCP_LIVE` skip marker, `requirements-dev.txt`, `pytest.ini`,
-  `tools/install_plugin.sh` (symlink install), README dev section.
+  `tools/install_plugin.sh` (symlink install), README dev section. Also
+  the headless suite (D16): `tests/krita/` (unittest), the
+  `kmcp_test_runner.py` shim, `tools/install_test_runner.sh`, and a
+  `Makefile` with `test`, `test-krita` and `test-live`.
 - **P1.2 Split the plugin into modules, no behaviour change.** Move code
   into `bridge.py`, `extension.py`, `paths.py`, `params.py` and
   `commands/paint.py`, and keep the `if/elif` dispatch. Unit tests for
   `paths.resolve_allowed_path` and `params`, covering `..`, symlinks and
   extensions. These tests pin the current behaviour before it changes.
+  Move token creation out of import time into extension startup, so the
+  headless suite can import the package without side effects.
 - **P1.3 Dispatch registry, error envelope, protocol version.**
   `dispatch.py` + `errors.py`; handlers return payloads and raise
   `CommandError(code, …)`. The envelope and HTTP codes follow D2. `/health` reports
@@ -268,7 +273,16 @@ tools.
 
 ## Testing
 
-Per D16. Run unit tests with `.venv/bin/pytest tests/unit`. For live
+Per D16. Three suites:
+
+| Suite | Command | Needs |
+|---|---|---|
+| Unit | `make test` (`.venv/bin/pytest tests/unit`) | Nothing |
+| Headless Krita | `make test-krita` | `tools/install_test_runner.sh` once. The GUI Krita may stay open |
+| Live | `make test-live` | GUI Krita running with the plugin from this checkout |
+
+Headless tests cover the command handlers through dispatch. Live tests
+cover the HTTP bridge, `server.py` and the acceptance tests. For live
 tests, start Krita with the plugin installed from this checkout (by
 symlink, see `tools/install_plugin.sh`), then run
 `KRITA_MCP_LIVE=1 .venv/bin/pytest tests/live`. Live tests create a

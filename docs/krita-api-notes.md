@@ -56,8 +56,24 @@ so the HTTP bridge dies with it.
 - Scaling filter names for `scaleNode` / `scaleImage`: `Hermite`, `Bell`,
   `Lanczos3`, `Bilinear`, `Mitchell`, `NearestNeighbor`, `BSpline`,
   `Bicubic` [verified].
-- `kritarunner` ships in the macOS bundle (`krita.app/Contents/MacOS/kritarunner`).
-  Whether it can host our modules for headless tests is [to verify].
+- `kritarunner` (`krita.app/Contents/MacOS/kritarunner`) runs one Python
+  function in a headless Krita and exits [verified 2026-11-24, Q12]:
+  - Usage: `kritarunner -s <module> -f <function> [args…]`, with the
+    module name given without `.py`. The function is called with **one
+    positional argument, the list of extra args**: `def run(args): …`.
+  - It has its **own profile**, `~/Library/Application Support/kritarunner/`
+    (resources, `kritarunnerrc`), separate from the GUI Krita's. On first
+    run it builds a fresh resource database. It imports `<module>` only
+    from that profile's `pykrita/` folder. `PYTHONPATH` is printed in the
+    log but ignored for imports.
+  - No windows (`len(app.windows()) == 0`), so extensions' `createActions`
+    never runs. `createDocument`, `setPixelData`, batch-mode `saveAs`,
+    `openDocument` and `close` all work. Exit is quick (3–4 s, including
+    startup).
+  - Harmless log noise: "has no json!" for the preview and thumbnailer
+    appex, Fontconfig errors, many `kf.i18n` warnings, a swap-location
+    fallback, "some tiles have leaked".
+  - It doesn't conflict with a running GUI Krita.
 
 ## Threading
 

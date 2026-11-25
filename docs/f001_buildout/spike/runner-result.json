@@ -1,0 +1,28 @@
+{
+  "args": "['hello']",
+  "version": "5.3.4.1 (git bd6e8d0)",
+  "python": "3.13.5",
+  "windows": 0,
+  "sys_path_head": [
+    "/Applications/krita.app/Contents/lib/krita-python-libs/krita",
+    "/Users/daniel/Library/Application Support/kritarunner",
+    "/Applications/krita.app/Contents/Resources"
+  ],
+  "saveAs": true,
+  "bounds": [
+    2,
+    2,
+    2,
+    2
+  ],
+  "reopen_layers": [
+    "Background",
+    "p"
+  ],
+  "reopen_pixel": [
+    1,
+    2,
+    3,
+    255
+  ]
+}

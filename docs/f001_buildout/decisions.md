@@ -336,7 +336,7 @@ document doesn't depend on a view. No new painting features are added.
 
 ## D16. Testing approach
 
-**Provisional, pending spike Q12 (kritarunner).**
+**Decided** (spike Q12, 2026-11-24).
 
 - **Unit tests** (pytest, repo `.venv`): the pure plugin modules (`paths`,
   `config`, `params`, `refs`, `lint`, `manifest`) and `server.py`
@@ -345,6 +345,30 @@ document doesn't depend on a view. No new painting features are added.
 - **Live tests** (`tests/live/`, skipped unless `KRITA_MCP_LIVE=1`): go
   through `server.py`'s functions against a running Krita, using a
   scratch root added to the allowlist. The acceptance tests live here.
-- **Headless:** if the spike shows `kritarunner` can import the plugin
-  package and run commands without a window, add a `make test-krita`
-  target that runs the live suite without a GUI.
+- **Headless** (`tests/krita/`, `make test-krita`): `kritarunner` runs
+  Krita with no window, and creating, editing, saving and reopening
+  documents all work (Q12). No window means the extension's
+  `createActions` never runs and the HTTP bridge never starts. So this
+  suite calls the dispatch layer directly, `dispatch.execute({"action": …,
+  "params": …})`, which covers every handler without the GUI. It uses
+  stdlib `unittest`, since Krita's Python has no pytest.
+  - `kritarunner` uses its **own profile**,
+    `~/Library/Application Support/kritarunner/`, and ignores
+    `PYTHONPATH`. It imports `-s <module>` only from that profile's
+    `pykrita/` folder, and calls `-f <function>` with the argument list.
+  - `tools/install_test_runner.sh` symlinks a small shim,
+    `kmcp_test_runner.py`, into that folder. The shim takes the repo path
+    as its argument, puts `krita-plugin/` and `tests/krita/` on `sys.path`,
+    runs the suite, writes a JUnit-style report into the output dir, and
+    prints a pass/fail line. `make test-krita` runs
+    `kritarunner -s kmcp_test_runner -f run "$PWD"`.
+  - The headless suite is independent of the GUI Krita: separate
+    profile, no port, no extension. It can run while the GUI Krita is open.
+- **What runs where:** handler logic and pixel work in `tests/krita`,
+  headless. The HTTP bridge, auth, the queue and timeouts, plus the
+  end-to-end acceptance tests, in `tests/live` against the GUI Krita.
+  Pure logic in `tests/unit`.
+- **Import side effects:** `kritamcp/__init__.py` currently creates the
+  token file when imported. Headless tests import the package, so P1.2
+  moves token creation (and any other side effect) into the extension's
+  startup. `__init__.py` only registers the extension.
