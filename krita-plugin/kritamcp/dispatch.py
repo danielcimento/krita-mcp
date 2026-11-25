@@ -14,8 +14,9 @@ Handlers live in ``commands/`` and register themselves with ``@command``::
     {"ok": False, "error": {"code", "message", "details"?}, "elapsed_ms": 3}
 
 The registry also records each command's default timeout and whether it
-mutates documents. The bridge reads them through ``get``. (Until P1.5 the
-bridge still waits a fixed 120 s; the timeouts are only recorded.)
+mutates documents. The bridge reads them through ``get`` (from its HTTP
+threads: a plain dict read) to decide how long a request waits, and lists
+them in ``/info`` so server.py can set its transport timeout (D9).
 """
 
 import time

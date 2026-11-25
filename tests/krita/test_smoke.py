@@ -43,7 +43,7 @@ class PluginImportTest(unittest.TestCase):
         from kritamcp.extension import KritaMCPExtension
 
         self.assertIsNone(bridge.AUTH_TOKEN)
-        self.assertEqual(bridge.command_counter, 0)
+        self.assertEqual(bridge.command_queue.status(), {"busy": None, "queued": 0})
         ours = [e for e in Krita.instance().extensions() if isinstance(e, KritaMCPExtension)]
         self.assertEqual(len(ours), 1)  # registered exactly once
         # No window, so createActions never ran: no server thread, no timer.

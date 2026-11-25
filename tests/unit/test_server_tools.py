@@ -56,8 +56,8 @@ class FakeCall:
         self.payload = payload or {}
         self.calls = []
 
-    def __call__(self, action, params=None, timeout=30.0):
-        self.calls.append((action, params, timeout))
+    def __call__(self, action, params=None, timeout_s=None):
+        self.calls.append((action, params, timeout_s))
         return {**self.payload, "elapsed_ms": 4}
 
 
@@ -97,20 +97,41 @@ def test_tool_returns_payload_with_summary(fake_call, name):
     assert [c[0] for c in fake_call.calls] == [action]
 
 
-def test_slow_tools_keep_long_timeout(fake_call):
+def test_tools_default_to_the_commands_timeout(fake_call):
     server.krita_get_canvas()
     server.krita_save(path="a.png")
-    assert [c[2] for c in fake_call.calls] == [120.0, 120.0]
+    assert [c[2] for c in fake_call.calls] == [None, None]
+
+
+@pytest.mark.parametrize("name", sorted(CASES))
+def test_every_tool_passes_timeout_s(fake_call, name):
+    kwargs, action, payload = CASES[name]
+    fake_call.payload = payload
+    getattr(server, name)(**kwargs, timeout_s=42.5)
+    assert fake_call.calls[0][0] == action and fake_call.calls[0][2] == 42.5
+    assert "timeout_s" not in (fake_call.calls[0][1] or {})  # client.call adds it
+
+
+def test_timeout_s_in_every_tool_schema_but_health():
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    for name, tool in tools.items():
+        props = tool.parameters.get("properties", {})
+        if name == "krita_health":
+            assert "timeout_s" not in props
+        else:
+            assert "timeout_s" in props, name
+            assert "timeout_s" not in tool.parameters.get("required", []), name
+            assert "up to 900" in props["timeout_s"].get("description", ""), name
 
 
 def test_set_brush_sends_size_zero(fake_call):
     server.krita_set_brush(size=0)
-    assert fake_call.calls == [("set_brush", {"size": 0}, 30.0)]
+    assert fake_call.calls == [("set_brush", {"size": 0}, None)]
 
 
 def test_set_brush_omits_unset_fields(fake_call):
     server.krita_set_brush(opacity=0.0)
-    assert fake_call.calls == [("set_brush", {"opacity": 0.0}, 30.0)]
+    assert fake_call.calls == [("set_brush", {"opacity": 0.0}, None)]
 
 
 def test_stroke_with_one_point_raises_bad_request(fake_call):
@@ -121,7 +142,7 @@ def test_stroke_with_one_point_raises_bad_request(fake_call):
 
 
 def test_tool_error_propagates(monkeypatch):
-    def failing(action, params=None, timeout=30.0):
+    def failing(action, params=None, timeout_s=None):
         raise ToolError("not_found: No active layer")
     monkeypatch.setattr(client, "call", failing)
     with pytest.raises(ToolError, match="^not_found: No active layer$"):
@@ -199,3 +220,22 @@ def test_health_without_config_fields(monkeypatch):
     result = server.krita_health()
     assert result["config_errors"] == [] and "config error" not in result["summary"]
     assert "1 allowed dir" in result["summary"] and "dirs" not in result["summary"]
+
+
+def test_health_reports_busy(monkeypatch):
+    health = {"status": "ok", "plugin": "kritamcp", "protocol": 2, "version": "0.2.0",
+              "krita_version": "5.3.4", "allowed_dirs": ["/out"], "config_errors": [],
+              "busy": {"action": "save", "elapsed_ms": 12345}, "queued": 2}
+    monkeypatch.setattr(client, "get_health", lambda timeout=None: dict(health))
+    result = server.krita_health()
+    assert result["busy"] == {"action": "save", "elapsed_ms": 12345}
+    assert result["queued"] == 2
+    assert "busy: save for 12.3 s, 2 queued" in result["summary"]
+
+
+def test_health_idle_has_busy_null(monkeypatch):
+    health = {"status": "ok", "plugin": "kritamcp", "protocol": 2, "version": "0.2.0",
+              "krita_version": "5.3.4", "busy": None, "queued": 0}
+    monkeypatch.setattr(client, "get_health", lambda timeout=None: dict(health))
+    result = server.krita_health()
+    assert result["busy"] is None and "busy" not in result["summary"]

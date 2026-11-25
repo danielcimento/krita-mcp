@@ -93,30 +93,24 @@ If using a virtual environment:
 | `krita_list_brushes` | List available brush presets |
 | `krita_open_file` | Open an existing .kra, .png, .jpg, etc. |
 
-## The Export Timeout Fix
+## Timeouts
 
-**This is the main reason this repo exists.**
+This fork started as a fix for export and save timing out on large
+canvases. That fix (a matching 120 s wait in `server.py` and the plugin)
+is now replaced by per-command timeouts
+([decisions.md D9](docs/f001_buildout/decisions.md)):
 
-By default, HTTP requests and command queue operations time out after ~30 seconds. Canvas export (`get_canvas`) and file save (`save`) operations can easily exceed this on larger canvases, causing silent failures or timeout errors.
-
-The fix is applied in two places:
-
-**MCP Server (`server.py`)** — Extended timeout for export/save commands:
-```python
-# In krita_get_canvas and krita_save (LONG_TIMEOUT = 120.0):
-result = client.call("get_canvas", {"filename": filename}, timeout=LONG_TIMEOUT)
-result = client.call("save", {"path": path}, timeout=LONG_TIMEOUT)
-```
-
-**Krita Plugin (`bridge.py`)** — Matching timeout in the command queue:
-```python
-def get_result(self, command_id, timeout=120):
-    """Wait for result with timeout."""
-    for _ in range(int(timeout * 10)):  # Check every 100ms
-        ...
-```
-
-**Both sides must match.** If only the MCP server timeout is increased, the plugin's command queue will still time out at 30s. If only the plugin timeout is increased, the HTTP request from the MCP server will time out first.
+- Each plugin command has a default timeout: 30 s for queries, 300 s for
+  file I/O (`get_canvas`, `save`, `open_file`, `new_canvas`, `clear`).
+- Every tool except `krita_health` takes an optional `timeout_s` (up to
+  900 s) to override it.
+- `server.py` reads the defaults from the plugin's `/info` and waits 15 s
+  longer than the plugin, so a slow command comes back as a `timeout`
+  error from the plugin instead of a dropped connection.
+- A command that times out before it starts is cancelled. One that is
+  already running finishes in Krita (and may still change the document),
+  but its result is discarded.
+- `krita_health` answers while a command runs and reports it as `busy`.
 
 ## Configuration
 

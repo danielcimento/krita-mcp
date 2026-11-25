@@ -19,11 +19,11 @@ Plugin modules (`krita-plugin/kritamcp/`):
 | Module | Job |
 |---|---|
 | `__init__.py` | Registers `KritaMCPExtension` with Krita; nothing else. Outside Krita (`krita` not importable) it registers nothing |
-| `extension.py` | `KritaMCPExtension`: in `createActions` caches Krita's version (for `/health`), makes the output dir and logs config errors, loads the token, starts the server thread and the 50 ms timer |
-| `bridge.py` | `PaintRequestHandler` (Host/browser/token checks), `CommandQueue`, `ServerThread`, token loading. No token loaded means every authenticated request gets 401 |
+| `extension.py` | `KritaMCPExtension`: in `createActions` caches Krita's version (for `/health`), makes the output dir and logs config errors, loads the token, starts the server thread and the 50 ms timer that runs queued commands |
+| `bridge.py` | `PaintRequestHandler` (Host/browser/token checks, `timeout_s`), the shared `command_queue`, `BridgeServer` (a `ThreadingHTTPServer`) and `ServerThread`, token loading. No token loaded means every authenticated request gets 401 |
 | `dispatch.py` | The command registry (`@command(name, timeout, mutating)`, `get`, `actions`) and `execute(command)`, which returns the D2 envelope. Imports `commands/` to fill the registry |
 | `commands/` | Handlers: `paint.py` (and the brush state), `documents.py`, `history.py`; `_active.py` finds the active document/view/layer |
-| `config.py`, `errors.py`, `paths.py`, `params.py`, `refs.py`, `version.py` | Pure (no `krita`/PyQt5): fixed constants plus the user config (`~/.krita-mcp-config.json`, `KRITA_MCP_ALLOWED_DIRS`) as `config.current()`, re-read when it changes: allowed roots, output dir, canvas limits, errors for `/health`; `CommandError` and the code → HTTP status table; `resolve_allowed_path`/`resolve_output_dir`; `int_param`/`float_param`/`canvas_size`; layer-ref parsing; `PROTOCOL`/`PLUGIN_VERSION`. Unit-tested in the repo venv |
+| `config.py`, `errors.py`, `paths.py`, `params.py`, `refs.py`, `version.py`, `cmdqueue.py` | Pure (no `krita`/PyQt5): fixed constants plus the user config (`~/.krita-mcp-config.json`, `KRITA_MCP_ALLOWED_DIRS`) as `config.current()`, re-read when it changes: allowed roots, output dir, canvas limits, errors for `/health`; `CommandError` and the code → HTTP status table; `resolve_allowed_path`/`resolve_output_dir`; `int_param`/`float_param`/`canvas_size`; layer-ref parsing; `PROTOCOL`/`PLUGIN_VERSION`; the `CommandQueue` between the HTTP threads and the main thread (D9). Unit-tested in the repo venv |
 
 The server never touches pixels or files itself. All file I/O is done by
 the plugin, so the plugin's path checks are the security boundary.
@@ -31,13 +31,24 @@ the plugin, so the plugin's path checks are the security boundary.
 ## Request lifecycle
 
 1. `server.py` posts JSON to `http://localhost:5678` with the shared token
-   in `X-Krita-MCP-Token`.
-2. `bridge.PaintRequestHandler.do_POST` (HTTP thread) checks Host, browser
-   headers, the token, Content-Type and body size, then pushes the command
-   onto `CommandQueue` and blocks in `get_result()`.
-3. A `QTimer` on Krita's **main thread** fires every 50 ms,
-   pops **one** command, and runs `dispatch.execute()`. libkis calls must
-   happen on the main thread, which is why the queue exists.
+   in `X-Krita-MCP-Token`. `client.call` sets the `httpx` timeout to the
+   command's timeout plus 15 s: the caller's `timeout_s`, else the
+   command's default from `/info` `timeouts` (fetched once per process,
+   after the protocol check; 300 s until it answers).
+2. The plugin's `ThreadingHTTPServer` gives each request its own thread.
+   `bridge.PaintRequestHandler.do_POST` checks Host, browser headers, the
+   token, Content-Type and body size, then takes the timeout: the registry
+   default for the action (30 s for queries, 300 s for file I/O), or
+   `params.timeout_s` (a number, 0 < t ≤ 900, else 400 `bad_request`;
+   removed from the params the handler sees). It calls
+   `cmdqueue.CommandQueue.submit()` and blocks in `wait()` on a condition
+   variable.
+3. A `QTimer` on Krita's **main thread** fires every 50 ms, takes **one**
+   command with `next()` (which marks it busy), runs `dispatch.execute()`,
+   and hands the envelope back with `finish()`, which wakes the waiting
+   HTTP thread. libkis calls must happen on the main thread, which is why
+   the queue exists. The HTTP threads never call libkis; they only read
+   the registry and the queue.
 4. The handler returns a payload dict or raises `CommandError(code, message,
    details)`. `dispatch.execute` wraps it in the envelope
    `{"ok": true, "result": {...}, "elapsed_ms": n}` or
@@ -55,16 +66,20 @@ the plugin, so the plugin's path checks are the security boundary.
 
 Consequences:
 
-- Commands run strictly one at a time. A 40 s export blocks every other
-  command, and the Krita UI too, for 40 s.
-- `HTTPServer` is single-threaded, so `/health` also waits behind a long
-  command.
-- The wait limit exists twice: `get_result(timeout=120)` in the plugin
-  (`bridge.RESULT_TIMEOUT_S`; the per-command timeouts in the registry are
-  recorded but not used until P1.5) and
-  the `httpx` timeout in `server.py`. Both have to allow for the slowest
-  command. When the plugin side times out, the command still runs later,
-  and its result is never collected.
+- Commands run strictly one at a time, in order. A 40 s export blocks
+  every other command, and the Krita UI too, for 40 s. `elapsed_ms` is
+  measured on the main thread, so it excludes time spent queued.
+- `/health` and `/info` don't wait behind a command. `/health` reports
+  `busy` (`{"action", "elapsed_ms"}` of the running command, or `null`) and
+  `queued` (how many wait behind it).
+- When a wait times out, the plugin answers `timeout` (504) with
+  `details: {action, timeout_s, started}` and abandons the command. One
+  that hadn't started is removed from the queue and never runs. One that
+  is running can't be stopped: it finishes, Krita may still apply it, and
+  its result is dropped. No result is kept that nobody will collect.
+- The transport timeout is 15 s longer than the plugin's, so the plugin's
+  `timeout` answer arrives first; `httpx` giving up means Krita stopped
+  answering altogether.
 
 ## Security model
 
@@ -96,10 +111,13 @@ canvases (configurable), strokes and request bodies.
    and 300 s for slow file I/O (D9). `mutating` marks commands that change
    a document or the set of open documents (not UI state such as the
    color). A new module must be imported at the bottom of `dispatch.py`.
-   `/info` lists the registry, so nothing else needs updating plugin-side.
-2. Add a `@mcp.tool()` wrapper in `server.py` that calls
-   `client.call(action, params, timeout=…)` and returns the result with a
-   one-line `summary`. Raise `ToolError("<code>: …")` for checks done
+   `/info` lists the registry (`commands`, `timeouts`, `mutating`), so
+   nothing else needs updating plugin-side.
+2. Add a `@mcp.tool()` wrapper in `server.py` that takes an optional
+   `timeout_s: Optional[float] = None` (documented as "Seconds to wait for
+   Krita, up to 900; default per command"), calls
+   `client.call(action, params, timeout_s=timeout_s)` and returns the
+   result with a one-line `summary`. Raise `ToolError("<code>: …")` for checks done
    server-side.
 3. Add a headless test calling `dispatch.execute` in `tests/krita/`
    (`make test-krita`) and a wrapper test in `tests/unit/test_server_tools.py`.

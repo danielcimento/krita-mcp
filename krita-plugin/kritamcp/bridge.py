@@ -5,7 +5,12 @@ the status for its error code (``errors.HTTP_STATUS``). Requests refused
 before a command runs (auth, Host/browser, body size, Content-Type, bad
 JSON, unknown endpoint) keep the plain ``{"error": "<string>"}`` form.
 
-The HTTP thread never calls libkis (``krita``); only the main thread does.
+The server is a ``ThreadingHTTPServer``: each request has its own thread,
+so ``/health`` answers while a long command runs. Commands still run one
+at a time on Krita's main thread, through ``cmdqueue.CommandQueue``. Each
+POST waits for the command's timeout: the registry's default, or the
+request's ``params.timeout_s`` (D9). The HTTP threads never call libkis
+(``krita``); they only read the registry (a dict) and the queue.
 
 Nothing here has side effects at import. The shared token is loaded by
 ``ensure_token()``, which the extension calls at startup; until then
@@ -16,21 +21,16 @@ import hmac
 import json
 import os
 import secrets
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 from PyQt5.QtCore import QThread
 
-from . import config, dispatch, version
-from .errors import HTTP_STATUS
+from . import cmdqueue, config, dispatch, version
+from .errors import HTTP_STATUS, CommandError
 
 # Set by ensure_token() at extension startup. None = refuse authenticated requests.
 AUTH_TOKEN = None
-
-# How long do_POST waits for the main thread. (P1.5 replaces this with the
-# per-command timeouts from the dispatch registry.)
-RESULT_TIMEOUT_S = 120
 
 
 def load_or_create_token():
@@ -54,53 +54,15 @@ def ensure_token():
     return AUTH_TOKEN
 
 
-class CommandQueue:
-    """Thread-safe command queue for passing commands from HTTP thread to main thread."""
-    def __init__(self):
-        self.queue = []
-        self.results = {}
-        self.lock = threading.Lock()
-        self.result_event = threading.Event()
+# The one queue between the HTTP threads and the main thread (extension.py).
+command_queue = cmdqueue.CommandQueue()
 
-    def push(self, command_id, command):
-        with self.lock:
-            self.queue.append((command_id, command))
 
-    def pop(self):
-        with self.lock:
-            if self.queue:
-                return self.queue.pop(0)
-            return None
+class BridgeServer(ThreadingHTTPServer):
+    """One thread per request; daemon threads, so a request stuck waiting
+    for a command never keeps Krita from quitting."""
+    daemon_threads = True
 
-    def set_result(self, command_id, result):
-        with self.lock:
-            self.results[command_id] = result
-        self.result_event.set()
-
-    def get_result(self, command_id, timeout=120):
-        """Wait for result with timeout.
-
-        The default timeout of 120s is important — canvas export and save
-        operations can take a long time on large canvases. The original 30s
-        default caused frequent timeouts. The MCP server's httpx timeout
-        (krita_mcp_server/client.py) must match or exceed this value.
-        """
-        start = threading.Event()
-        for _ in range(int(timeout * 10)):  # Check every 100ms
-            with self.lock:
-                if command_id in self.results:
-                    result = self.results.pop(command_id)
-                    return result
-            self.result_event.wait(0.1)
-            self.result_event.clear()
-        return {"ok": False, "error": {
-            "code": "timeout",
-            "message": f"Timed out after {timeout:g} s waiting for the command to run; "
-                       "it may still finish later"}}
-
-# Global command queue
-command_queue = CommandQueue()
-command_counter = 0
 
 def config_health():
     """The config fields of ``/health``. Never raises: if loading the config
@@ -200,22 +162,24 @@ class PaintRequestHandler(BaseHTTPRequestHandler):
                 "version": version.PLUGIN_VERSION,
                 "krita_version": version.KRITA_VERSION,  # cached at startup
                 **config_health(),
+                **command_queue.status(),  # busy, queued
             })
         elif parsed.path == '/info':
             if self.reject_untrusted():
                 return
+            names = dispatch.actions()
             self.send_json_response({
                 "status": "ok",
                 "protocol": version.PROTOCOL,
-                "commands": dispatch.actions(),
+                "commands": names,
+                "timeouts": {n: dispatch.get(n).timeout for n in names},  # seconds
+                "mutating": [n for n in names if dispatch.get(n).mutating],
             })
         else:
             self.send_json_response({"error": "Unknown endpoint"}, 404)
 
     def do_POST(self):
         """Handle POST requests - paint commands."""
-        global command_counter
-
         if self.reject_untrusted():
             self.discard_body()
             return
@@ -245,13 +209,21 @@ class PaintRequestHandler(BaseHTTPRequestHandler):
             self.send_json_response({"error": "Command must be a JSON object"}, 400)
             return
 
-        # Assign command ID and queue it
-        command_counter += 1
-        command_id = command_counter
-        command_queue.push(command_id, command)
+        # Unknown actions are queued too; dispatch answers them bad_request.
+        action = command.get("action")
+        entry = dispatch.get(action) if isinstance(action, str) else None
+        default = entry.timeout if entry else dispatch.QUERY_TIMEOUT
+        try:
+            timeout, params = cmdqueue.pop_timeout(command.get("params", {}), default)
+        except CommandError as e:
+            result = {"ok": False, "error": e.to_dict(), "elapsed_ms": 0}
+            self.send_json_response(result, envelope_status(result))
+            return
+        if "params" in command:
+            command = dict(command, params=params)
 
-        # Wait for result from main thread
-        result = command_queue.get_result(command_id, timeout=RESULT_TIMEOUT_S)
+        command_id = command_queue.submit(command)
+        result = command_queue.wait(command_id, timeout)
         self.send_json_response(result, envelope_status(result))
 
 
@@ -264,9 +236,10 @@ class ServerThread(QThread):
         self.server = None
 
     def run(self):
-        self.server = HTTPServer(('127.0.0.1', self.port), PaintRequestHandler)
+        self.server = BridgeServer(('127.0.0.1', self.port), PaintRequestHandler)
         self.server.serve_forever()
 
     def stop(self):
         if self.server:
             self.server.shutdown()
+            self.server.server_close()

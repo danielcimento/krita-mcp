@@ -13,7 +13,7 @@ The contract for every tool after the buildout. The rationale is in
 | Param | Type | Meaning |
 |---|---|---|
 | `doc` | string, optional | Document handle (`doc-3`), or the absolute path of an open document. Defaults to the active document (D3) |
-| `timeout_s` | number, optional | Overrides the command's default timeout, up to 900 (D9) |
+| `timeout_s` | number, optional | Overrides the command's default timeout (30 s for queries, 300 s for file I/O), up to 900 (D9). Every tool except `krita_health`. Sent as `params.timeout_s`; the plugin checks 0 < t ≤ 900 (else `bad_request`) and strips it before the handler. On expiry: `timeout` with `details: {action, timeout_s, started}` |
 | `dry_run` | bool, optional | On mutating batch tools: validate only (D11) |
 
 **Layer refs.** A UUID, a `/`-separated name path from the root, or a
@@ -455,7 +455,7 @@ of both bounds). The two documents must be the same size for pixel diffs.
 
 | Tool | Change |
 |---|---|
-| `krita_health` | Adds `protocol`, `version`, `krita_version` (done in P1.3, with `running` and `protocol_ok` added server-side), then `allowed_dirs` (resolved roots, the output dir first), `config_file`, `config_loaded`, `limits` and `config_errors` (done in P1.4; the summary counts the dirs and lists the errors), then `busy` |
+| `krita_health` | Adds `protocol`, `version`, `krita_version` (done in P1.3, with `running` and `protocol_ok` added server-side), then `allowed_dirs` (resolved roots, the output dir first), `config_file`, `config_loaded`, `limits` and `config_errors` (done in P1.4; the summary counts the dirs and lists the errors), then `busy` (`{"action", "elapsed_ms"}` or `null`) and `queued` (done in P1.5; the summary adds e.g. "busy: save for 12.3 s, 1 queued") |
 | `krita_new_canvas`, `krita_open_file`, `krita_save` | As above |
 | `krita_get_canvas` | Becomes a shortcut for `render` into the output dir |
 | `krita_set_color` | Also stored plugin-side (D15). Accepts `doc` |

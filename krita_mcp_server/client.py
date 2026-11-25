@@ -1,8 +1,13 @@
 """HTTP client for the Krita plugin (D2, plan.md finding 11).
 
-``call(action, params, timeout)`` posts one command and returns the
+``call(action, params, timeout_s)`` posts one command and returns the
 plugin's payload plus ``elapsed_ms``, or raises ``ToolError`` with a message
 of the form ``"<code>: <message>"`` (details appended as JSON).
+
+Timeouts (D9): the plugin waits for the command's timeout, the registry's
+default (``/info`` ``timeouts``) or the caller's ``timeout_s``, and then
+answers ``timeout``. The HTTP timeout here is that plus ``TRANSPORT_MARGIN_S``,
+so the plugin's answer arrives before the transport gives up.
 
 Codes are the plugin's (D2: ``bad_request``, ``not_found``, ``conflict``,
 ``timeout``, ``krita_error``, ...), plus the ones this side adds for
@@ -16,10 +21,13 @@ failures that happen before a command runs:
 - ``protocol_mismatch``: the plugin speaks another protocol version.
 
 Before the first command of the process, ``call`` checks ``/health`` for
-``protocol == PROTOCOL``. Only a successful check is remembered.
+``protocol == PROTOCOL``, then reads the default timeouts from ``/info``.
+Only successful fetches are remembered; until ``/info`` has answered,
+``FALLBACK_TIMEOUT_S`` is used.
 """
 
 import json
+import math
 import os
 import threading
 
@@ -34,6 +42,12 @@ TOKEN_FILE = os.path.expanduser(os.environ.get("KRITA_MCP_TOKEN_FILE", "~/.krita
 TOKEN_HEADER = "X-Krita-MCP-Token"
 
 HEALTH_TIMEOUT = 10.0
+
+# D9: transport timeout = command timeout + margin. The fallback is used for
+# actions /info doesn't list, or while /info can't be read.
+TRANSPORT_MARGIN_S = 15.0
+FALLBACK_TIMEOUT_S = 300.0
+MAX_TIMEOUT_S = 900.0  # the plugin refuses a larger timeout_s
 
 UNAVAILABLE = "unavailable: Cannot connect to Krita. Is Krita running with the MCP plugin enabled?"
 
@@ -50,6 +64,7 @@ _LEGACY_CODES = {
 
 _protocol_lock = threading.Lock()
 _protocol_ok = False
+_timeouts = None  # action -> default seconds, from /info; None until fetched
 
 
 def auth_headers() -> dict:
@@ -69,10 +84,12 @@ def auth_headers() -> dict:
 
 
 def reset_protocol_check():
-    """Forget a successful protocol check (tests; or after Krita restarts)."""
-    global _protocol_ok
+    """Forget the protocol check and the cached timeouts (tests; or after
+    Krita restarts)."""
+    global _protocol_ok, _timeouts
     with _protocol_lock:
         _protocol_ok = False
+        _timeouts = None
 
 
 def protocol_mismatch_message(reported):
@@ -173,13 +190,51 @@ def check_protocol():
         _protocol_ok = True
 
 
-def call(action, params=None, timeout=30.0) -> dict:
-    """Run one plugin command. Returns its payload plus ``elapsed_ms``."""
+def command_timeouts():
+    """The plugin's default timeout per action (``/info`` ``timeouts``),
+    fetched once per process with the token. None if ``/info`` fails; it is
+    tried again on the next call.
+    """
+    global _timeouts
+    if _timeouts is not None:
+        return _timeouts
+    with _protocol_lock:
+        if _timeouts is None:
+            try:
+                response = httpx.get(_url("/info"), headers=auth_headers(),
+                                     timeout=HEALTH_TIMEOUT)
+                data = response.json() if response.status_code == 200 else None
+            except (httpx.HTTPError, ValueError):
+                data = None
+            timeouts = data.get("timeouts") if isinstance(data, dict) else None
+            if isinstance(timeouts, dict):
+                _timeouts = {k: float(v) for k, v in timeouts.items()
+                             if isinstance(v, (int, float)) and not isinstance(v, bool)}
+        return _timeouts
+
+
+def call(action, params=None, timeout_s=None) -> dict:
+    """Run one plugin command. Returns its payload plus ``elapsed_ms``.
+
+    ``timeout_s`` overrides the command's default timeout (the plugin
+    accepts up to 900 s); it is sent as ``params["timeout_s"]``.
+    """
     check_protocol()
+    params = dict(params or {})
+    if timeout_s is None:
+        wait = (command_timeouts() or {}).get(action, FALLBACK_TIMEOUT_S)
+    else:
+        params["timeout_s"] = timeout_s
+        wait = timeout_s
+    # A timeout_s the plugin will refuse still needs a sane transport timeout.
+    wait = float(wait)
+    if not math.isfinite(wait):
+        wait = FALLBACK_TIMEOUT_S
+    timeout = min(max(wait, 0.0), MAX_TIMEOUT_S) + TRANSPORT_MARGIN_S
     try:
         response = httpx.post(
             _url(),
-            json={"action": action, "params": params or {}},
+            json={"action": action, "params": params},
             headers=auth_headers(),
             timeout=timeout,
         )

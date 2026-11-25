@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phase 1 in progress: P1.1–P1.4 done (P1.6 `refs.py` landed early). Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phase 1 in progress: P1.1–P1.5 done (P1.6 `refs.py` landed early). Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -140,7 +140,7 @@ roots, larger canvases, handles, and `list_documents` / `get_document_info`.
   (create, check emptiness) and the `.json` manifest exception.
   `/health` reports roots and config errors. Unit tests use temp dirs and
   symlinks.
-- [ ] **P1.5 Queue and timeouts.** `ThreadingHTTPServer`, locked counter,
+- [x] **P1.5 Queue and timeouts.** `ThreadingHTTPServer`, locked counter,
   per-command default timeout plus `timeout_s`, abandoned-command
   handling, `elapsed_ms` measured on the main thread, `busy` in `/health`
   (D9). `server.py` derives its `httpx` timeout from the command's.

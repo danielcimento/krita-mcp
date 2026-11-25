@@ -53,11 +53,16 @@ class KritaMCPExtension(Extension):
             self.timer.start(50)  # Check every 50ms
 
     def process_commands(self):
-        """Process commands from queue in main thread."""
-        item = bridge.command_queue.pop()
+        """Run the next queued command, on the main thread (one per tick)."""
+        item = bridge.command_queue.next()
         if item is None:
             return
-
         command_id, command = item
-        # execute() never raises; it returns the D2 envelope.
-        bridge.command_queue.set_result(command_id, dispatch.execute(command))
+        envelope = None
+        try:
+            envelope = dispatch.execute(command)  # never raises; the D2 envelope
+        finally:
+            # finish() also clears busy, so it must run whatever happens.
+            bridge.command_queue.finish(command_id, envelope or {
+                "ok": False, "error": {"code": "krita_error", "message": "command failed"},
+                "elapsed_ms": 0})
