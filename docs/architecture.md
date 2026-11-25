@@ -69,12 +69,18 @@ the plugin into modules. See
 ## Development install
 
 Krita loads the plugin from its `pykrita` directory (macOS:
-`~/Library/Application Support/krita/pykrita/`). Symlinking it there
-removes the copy step:
+`~/Library/Application Support/krita/pykrita/`). `tools/install_plugin.sh`
+symlinks `krita-plugin/kritamcp` and `kritamcp.desktop` from this
+checkout into it, which removes the copy step:
 
 ```bash
-ln -s "$PWD/krita-plugin/kritamcp" ~/Library/Application\ Support/krita/pykrita/kritamcp
-ln -s "$PWD/krita-plugin/kritamcp.desktop" ~/Library/Application\ Support/krita/pykrita/kritamcp.desktop
+tools/install_plugin.sh          # refuses if a copied install is in the way
+tools/install_plugin.sh --force  # moves a copied install aside to <name>.bak-<timestamp>
 ```
 
-You still have to restart Krita after a change.
+Set `KRITA_PYKRITA_DIR` to install somewhere else. You still have to
+restart Krita after a change.
+
+The headless test suite runs in `kritarunner`, which has its own profile;
+`tools/install_test_runner.sh` sets it up. See the README's Development
+section.

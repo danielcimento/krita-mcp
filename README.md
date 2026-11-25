@@ -149,6 +149,44 @@ The plugin paints using **direct pixel manipulation** (not Krita's native brush 
 
 The `set_brush` tool does set Krita's brush preset (for potential future use), but `stroke` currently uses its own pixel-level rendering.
 
+## Development
+
+Install the dev dependencies (pytest, Pillow) into the repo venv:
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt
+```
+
+Install the plugin from this checkout by symlink, so edits only need a
+Krita restart:
+
+```bash
+tools/install_plugin.sh          # refuses if a copied install is in the way
+tools/install_plugin.sh --force  # moves a copied install aside to <name>.bak-<timestamp>
+```
+
+There are three test suites:
+
+| Suite | Command | Needs |
+|---|---|---|
+| Unit (`tests/unit`) | `make test` | Nothing |
+| Headless Krita (`tests/krita`) | `make test-krita` | `tools/install_test_runner.sh` once. The GUI Krita may stay open |
+| Live (`tests/live`) | `make test-live` | GUI Krita running with the plugin from this checkout |
+
+- **Headless** tests are stdlib `unittest` and run inside Krita's own
+  Python via `kritarunner` (no window, separate profile).
+  `tools/install_test_runner.sh` symlinks the runner shim into that
+  profile. Results are written to `~/krita-mcp-output/test-krita/`
+  (`report.xml`, plus `run.log` with the full Krita log). Run a subset with
+  `make test-krita KRITA_TESTS=pixel`; point at another Krita with
+  `KRITARUNNER=/path/to/kritarunner`.
+- **Live** tests are skipped unless `KRITA_MCP_LIVE=1`, which
+  `make test-live` sets. Plain `.venv/bin/pytest` runs unit tests and skips
+  live ones.
+
+Plugin and headless test code runs on Krita's Python (3.13), so keep it
+3.13-compatible even though the venv may be newer.
+
 ## Further Documentation
 
 Architecture, Krita API notes and feature buildout plans are in [`docs/`](docs/README.md).

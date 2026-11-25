@@ -74,6 +74,12 @@ so the HTTP bridge dies with it.
     appex, Fontconfig errors, many `kf.i18n` warnings, a swap-location
     fallback, "some tiles have leaked".
   - It doesn't conflict with a running GUI Krita.
+  - **Its exit code is always 0**: on test failures, when the module
+    can't be imported, and when the function returns nonzero. Python's
+    stdout reaches kritarunner's stdout, mixed into the log noise. So
+    `make test-krita` judges the run by a marker line the shim prints
+    (`KMCP_TEST_RESULT: PASS|FAIL`), and a missing line counts as failure
+    [verified 2026-11-24, P1.1].
 
 ## Performance at Live2D size
 

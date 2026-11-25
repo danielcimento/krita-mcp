@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phase 0 done. Phase 1 next. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phase 1 in progress: P1.1 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -115,43 +115,43 @@ Phase 1 can start.
 Mostly internal. User-visible changes: structured results, configurable
 roots, larger canvases, handles, and `list_documents` / `get_document_info`.
 
-- **P1.1 Test and dev scaffolding.** `tests/unit`, `tests/live` with a
+- [x] **P1.1 Test and dev scaffolding.** `tests/unit`, `tests/live` with a
   `KRITA_MCP_LIVE` skip marker, `requirements-dev.txt`, `pytest.ini`,
   `tools/install_plugin.sh` (symlink install), README dev section. Also
   the headless suite (D16): `tests/krita/` (unittest), the
   `kmcp_test_runner.py` shim, `tools/install_test_runner.sh`, and a
   `Makefile` with `test`, `test-krita` and `test-live`.
-- **P1.2 Split the plugin into modules, no behaviour change.** Move code
+- [ ] **P1.2 Split the plugin into modules, no behaviour change.** Move code
   into `bridge.py`, `extension.py`, `paths.py`, `params.py` and
   `commands/paint.py`, and keep the `if/elif` dispatch. Unit tests for
   `paths.resolve_allowed_path` and `params`, covering `..`, symlinks and
   extensions. These tests pin the current behaviour before it changes.
   Move token creation out of import time into extension startup, so the
   headless suite can import the package without side effects.
-- **P1.3 Dispatch registry, error envelope, protocol version.**
+- [ ] **P1.3 Dispatch registry, error envelope, protocol version.**
   `dispatch.py` + `errors.py`; handlers return payloads and raise
   `CommandError(code, …)`. The envelope and HTTP codes follow D2. `/health` reports
   `protocol: 2`. In `server.py`, `client.call()` checks the protocol once per process,
   raises `ToolError`, and all 15 existing tools return dicts with a
   `summary`. Unit tests for the server wrappers with the HTTP call mocked.
-- **P1.4 Config and limits.** `config.py` (D7, D8): config file, env
+- [ ] **P1.4 Config and limits.** `config.py` (D7, D8): config file, env
   var, mtime reload, permission check, root checks, limit overrides.
   `paths.py` uses the resolved roots, and gains `resolve_output_dir`
   (create, check emptiness) and the `.json` manifest exception.
   `/health` reports roots and config errors. Unit tests use temp dirs and
   symlinks.
-- **P1.5 Queue and timeouts.** `ThreadingHTTPServer`, locked counter,
+- [ ] **P1.5 Queue and timeouts.** `ThreadingHTTPServer`, locked counter,
   per-command default timeout plus `timeout_s`, abandoned-command
   handling, `elapsed_ms` measured on the main thread, `busy` in `/health`
   (D9). `server.py` derives its `httpx` timeout from the command's.
   Unit-test `CommandQueue` with a fake executor thread.
-- **P1.6 Handles and refs.** `registry.py` (D3), `nodes.py` (tree walk,
+- [ ] **P1.6 Handles and refs.** `registry.py` (D3), `nodes.py` (tree walk,
   index, layer object), `refs.py` (D4). Every existing tool gains `doc`,
   and painting tools gain `layer`. Painting into a non-paint layer fails
   with `conflict`. `get_color_at` uses document bounds. The plugin keeps
   the foreground color itself (D15). Unit tests for `refs` over a fake
   index: UUID with and without braces, paths, escaped `/`, ambiguity.
-- **P1.7 Document tools.** `list_documents`, `get_document_info`, the
+- [ ] **P1.7 Document tools.** `list_documents`, `get_document_info`, the
   reworked `new_canvas` (limits, transparent background, profile, memory
   fix), `open_file` (handle, `already_open`, name fallback), and `save`
   (in place / `saveAs` for `.kra` / `exportImage`, resolved path, size).

@@ -1,0 +1,5 @@
+# Dev and test dependencies (repo .venv). PyQt5 is deliberately absent:
+# PyQt5 code is tested headless, in Krita's own Python (make test-krita).
+-r requirements.txt
+pytest==9.2.0
+Pillow==13.0.0
