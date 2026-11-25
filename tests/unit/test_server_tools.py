@@ -239,3 +239,84 @@ def test_health_idle_has_busy_null(monkeypatch):
     monkeypatch.setattr(client, "get_health", lambda timeout=None: dict(health))
     result = server.krita_health()
     assert result["busy"] is None and "busy" not in result["summary"]
+
+
+# P1.6: tools that act on a document take `doc`; painting tools and
+# get_color_at also take `layer`. App/UI-state tools take neither.
+DOC_TOOLS = {"krita_save", "krita_get_canvas", "krita_stroke", "krita_fill",
+             "krita_draw_shape", "krita_clear", "krita_get_color_at"}
+LAYER_TOOLS = {"krita_stroke", "krita_fill", "krita_draw_shape", "krita_clear",
+               "krita_get_color_at"}
+
+
+def test_doc_and_layer_in_schemas():
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    for name, tool in tools.items():
+        props = tool.parameters.get("properties", {})
+        required = tool.parameters.get("required", [])
+        assert ("doc" in props) == (name in DOC_TOOLS), name
+        assert ("layer" in props) == (name in LAYER_TOOLS), name
+        for key in ("doc", "layer"):
+            if key in props:
+                assert key not in required, name
+                assert props[key].get("default") is None, name
+        if "doc" in props:
+            assert "doc-3" in props["doc"]["description"], name
+            assert "absolute path" in props["doc"]["description"], name
+        if "layer" in props:
+            assert "UUID" in props["layer"]["description"], name
+            assert "unique name" in props["layer"]["description"], name
+
+
+@pytest.mark.parametrize("name", sorted(DOC_TOOLS))
+def test_doc_and_layer_not_sent_when_unset(fake_call, name):
+    kwargs, action, payload = CASES[name]
+    getattr(server, name)(**kwargs)
+    params = fake_call.calls[0][1]
+    assert "doc" not in params and "layer" not in params
+
+
+@pytest.mark.parametrize("name", sorted(DOC_TOOLS))
+def test_doc_and_layer_forwarded(fake_call, name):
+    kwargs, action, payload = CASES[name]
+    extra = {"doc": "doc-2"}
+    if name in LAYER_TOOLS:
+        extra["layer"] = "Head/Eyes"
+    getattr(server, name)(**kwargs, **extra)
+    action_sent, params, _ = fake_call.calls[0]
+    assert action_sent == action
+    for key, value in extra.items():
+        assert params[key] == value
+    # The tool's own params are still there.
+    for key, value in kwargs.items():
+        if key in params:
+            assert params[key] == value
+
+
+@pytest.mark.parametrize("name", sorted(DOC_TOOLS | {"krita_new_canvas", "krita_open_file"}))
+def test_summary_mentions_doc_handle(fake_call, name):
+    kwargs, action, payload = CASES[name]
+    fake_call.payload = {**payload, "doc": "doc-7"}
+    result = getattr(server, name)(**kwargs)
+    assert "doc-7" in result["summary"], result["summary"]
+    assert result["doc"] == "doc-7"
+
+
+def test_summary_without_doc_has_no_placeholder(fake_call):
+    fake_call.payload = {"x": 1, "y": 2, "radius": 3}
+    result = server.krita_fill(x=1, y=2, radius=3)
+    assert result["summary"] == "Filled circle at (1, 2) with radius 3"
+
+
+def test_clear_transparent_and_set_color_docstrings():
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    assert '"transparent"' in tools["krita_clear"].parameters["properties"]["color"]["description"]
+    assert "without a Krita window" in tools["krita_set_color"].description
+
+
+def test_set_color_summary_notes_no_view(fake_call):
+    fake_call.payload = {"color": "#ff0000", "view_updated": False}
+    assert server.krita_set_color("#ff0000")["summary"] == \
+        "Color set to #ff0000 (stored; no Krita window to update)"
+    fake_call.payload = {"color": "#ff0000", "view_updated": True}
+    assert server.krita_set_color("#ff0000")["summary"] == "Color set to #ff0000"

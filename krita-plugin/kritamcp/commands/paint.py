@@ -1,79 +1,133 @@
-"""Painting commands: color, brush, stroke, fill, shapes, clear, eyedropper."""
+"""Painting commands: color, brush, stroke, fill, shapes, clear, eyedropper.
+
+Painting tools take ``doc`` (D3) and ``layer`` (D4, default the document's
+active node) and need no view. The foreground color and brush size and
+opacity are kept here, plugin-side (D15), and mirrored to the active view
+when there is one.
+"""
 
 from krita import Krita, ManagedColor
+from PyQt5.QtCore import QRect
 from PyQt5.QtGui import QColor
 
+from .. import nodes, registry
 from ..config import COORD, MAX_BRUSH_SIZE, MAX_LIMIT, MAX_STROKE_POINTS
 from ..dispatch import LONG_TIMEOUT, command
 from ..errors import CommandError
 from ..params import float_param, int_param
-from ._active import get_active_document, get_active_layer, get_active_view
+from ._active import get_active_view
 
-# Brush state, set by set_brush and used as the stroke default.
+# Brush state, set by set_brush and used as the stroke defaults.
 current_brush_size = 20
 current_opacity = 1.0
+# The foreground color as "#rrggbb", or None until set_color (D15).
+current_color = None
 
-# set_color and set_brush change UI state (the view's foreground color and
-# brush), not a document, so they are registered as non-mutating.
+# set_color and set_brush change plugin and UI state, not a document, so
+# they are registered as non-mutating.
 
 
-def _no_view():
-    # Headless, or no window open: the state doesn't allow it.
-    return CommandError("conflict", "No active view")
+def _color_param(params, key="color", default=None):
+    value = params.get(key, default)
+    if not isinstance(value, str) or not QColor(value).isValid():
+        raise CommandError("bad_request",
+                           f"'{key}' must be a color such as '#ff6b6b', got {value!r}")
+    return QColor(value)
+
+
+def _paint_rgb():
+    """The paint color: the stored one; else the active view's foreground;
+    else black."""
+    if current_color is not None:
+        color = QColor(current_color)
+    else:
+        view = get_active_view()
+        if view is None:
+            return 0, 0, 0
+        color = view.foregroundColor().colorForCanvas(view.canvas())
+    return color.red(), color.green(), color.blue()
+
+
+def _paint_target(params):
+    """``(handle, doc, node)``: the document and paint layer to paint into.
+
+    ``layer`` absent: the document's active node. Anything but a paint
+    layer (a group, a mask, …) is ``conflict``.
+    """
+    handle, doc = registry.resolve_doc(params)
+    ref = params.get("layer")
+    if ref is None:
+        node = nodes.active_node(doc)
+        if node is None:
+            raise CommandError("not_found", f"No active layer in {handle}; pass 'layer'",
+                               {"doc": handle})
+    else:
+        node = nodes.resolve_node(doc, ref)
+    kind = node.type()
+    if kind != "paintlayer":
+        nid = nodes.node_id(node)
+        raise CommandError(
+            "conflict",
+            f"Layer '{node.name()}' is a {kind}, not a paint layer; pass a paint layer as 'layer'",
+            {"doc": handle, "layer": nid, "type": kind})
+    return handle, doc, node
 
 
 @command("set_color")
 def cmd_set_color(params):
-    """Set foreground color."""
-    color_hex = params.get("color", "#ffffff")
-
+    """Set the foreground color: stored plugin-side, and set on the active
+    view too when there is one."""
+    global current_color
+    color = _color_param(params)
+    current_color = color.name()
     view = get_active_view()
-    if not view:
-        raise _no_view()
-
-    color = QColor(color_hex)
-    mc = ManagedColor.fromQColor(color, view.canvas())
-    view.setForeGroundColor(mc)
-
-    return {"color": color_hex}
+    if view is not None:
+        view.setForeGroundColor(ManagedColor.fromQColor(color, view.canvas()))
+    return {"color": current_color, "view_updated": view is not None}
 
 
 @command("set_brush")
 def cmd_set_brush(params):
-    """Set brush preset and size."""
+    """Set the brush preset (needs a view), size and opacity (stored)."""
     global current_brush_size, current_opacity
     preset_name = params.get("preset", None)
     size = params.get("size", None)
     opacity = params.get("opacity", None)
 
-    view = get_active_view()
-    if not view:
-        raise _no_view()
-
-    if preset_name:
-        # Find brush preset
-        presets = Krita.instance().resources("preset")
-        found = None
-        for name, preset in presets.items():
-            if preset_name.lower() in name.lower():
-                found = preset
-                break
-        if found:
-            view.setCurrentBrushPreset(found)
-        else:
-            raise CommandError("not_found", f"Brush preset not found: {preset_name}")
-
     if size is not None:
         size = int_param(params, "size", None, 1, MAX_BRUSH_SIZE)
-        current_brush_size = size
-        view.setBrushSize(size)
-
     if opacity is not None:
         opacity = float_param(params, "opacity", None, 0.0, 1.0)
-        current_opacity = opacity
-        # Opacity is set per-stroke, store for later
 
-    return {"preset": preset_name, "size": size, "opacity": opacity}
+    view = get_active_view()
+    found = None
+    if preset_name:
+        if not isinstance(preset_name, str):
+            raise CommandError("bad_request", "'preset' must be a string")
+        if view is None:
+            raise CommandError("conflict",
+                               "No active view: a brush preset can only be set in a Krita window")
+        for name, preset in Krita.instance().resources("preset").items():
+            if preset_name.lower() in name.lower():
+                found = (name, preset)
+                break
+        if found is None:
+            raise CommandError("not_found", f"Brush preset not found: {preset_name}")
+
+    view_updated = False
+    if found is not None:
+        view.setCurrentBrushPreset(found[1])
+        view_updated = True
+    if size is not None:
+        current_brush_size = size
+        if view is not None:
+            view.setBrushSize(size)
+            view_updated = True
+    if opacity is not None:
+        current_opacity = opacity  # used per stroke; not set on the view
+
+    return {"preset": found[0] if found else None, "size": current_brush_size,
+            "opacity": current_opacity, "view_updated": view_updated}
 
 
 @command("stroke", mutating=True)
@@ -82,7 +136,7 @@ def cmd_stroke(params):
     points = params.get("points", [])
     brush_size = int_param(params, "size", current_brush_size, 1, MAX_BRUSH_SIZE)
     hardness = float_param(params, "hardness", 0.5, 0.0, 1.0)  # 0.0 = very soft, 1.0 = hard edge
-    opacity = float_param(params, "opacity", 1.0, 0.0, 1.0)
+    opacity = float_param(params, "opacity", current_opacity, 0.0, 1.0)
 
     if not isinstance(points, list) or len(points) < 2:
         raise CommandError("bad_request", "Need at least 2 points for a stroke")
@@ -94,20 +148,8 @@ def cmd_stroke(params):
                            and -COORD <= c <= COORD for c in p)):
             raise CommandError("bad_request", "Each point must be an [x, y] pair of numbers")
 
-    layer = get_active_layer()
-    if not layer:
-        raise CommandError("not_found", "No active layer")
-
-    doc = get_active_document()
-    view = get_active_view()
-
-    if not view:
-        raise _no_view()
-
-    # Get current foreground color
-    fg = view.foregroundColor()
-    qcolor = fg.colorForCanvas(view.canvas())
-    r, g, b = qcolor.red(), qcolor.green(), qcolor.blue()
+    handle, doc, layer = _paint_target(params)
+    r, g, b = _paint_rgb()
 
     width = doc.width()
     height = doc.height()
@@ -199,7 +241,8 @@ def cmd_stroke(params):
     layer.setPixelData(bytes(pixels), min_x, min_y, w, h)
     doc.refreshProjection()
 
-    return {"points_count": len(points), "hardness": hardness}
+    return {"points_count": len(points), "hardness": hardness,
+            "doc": handle, "layer": nodes.node_id(layer)}
 
 
 @command("fill", mutating=True)
@@ -209,20 +252,8 @@ def cmd_fill(params):
     y = int_param(params, "y", 0, -COORD, COORD)
     radius = int_param(params, "radius", 50, 1, COORD)  # the box is clipped to the document
 
-    layer = get_active_layer()
-    if not layer:
-        raise CommandError("not_found", "No active layer")
-
-    doc = get_active_document()
-    view = get_active_view()
-
-    if not view:
-        raise _no_view()
-
-    # Get current foreground color
-    fg = view.foregroundColor()
-    qcolor = fg.colorForCanvas(view.canvas())
-    r, g, b = qcolor.red(), qcolor.green(), qcolor.blue()
+    handle, doc, layer = _paint_target(params)
+    r, g, b = _paint_rgb()
 
     # Paint a filled circle using pixel data
     # Create a bounding box
@@ -256,7 +287,7 @@ def cmd_fill(params):
     layer.setPixelData(bytes(pixels), x1, y1, w, h)
     doc.refreshProjection()
 
-    return {"x": x, "y": y, "radius": radius}
+    return {"x": x, "y": y, "radius": radius, "doc": handle, "layer": nodes.node_id(layer)}
 
 
 @command("draw_shape", mutating=True)
@@ -269,20 +300,8 @@ def cmd_draw_shape(params):
     height = int_param(params, "height", 100, 0, COORD)
     fill = params.get("fill", True)
 
-    layer = get_active_layer()
-    if not layer:
-        raise CommandError("not_found", "No active layer")
-
-    doc = get_active_document()
-    view = get_active_view()
-
-    if not view:
-        raise _no_view()
-
-    # Get current foreground color
-    fg = view.foregroundColor()
-    qcolor = fg.colorForCanvas(view.canvas())
-    r, g, b = qcolor.red(), qcolor.green(), qcolor.blue()
+    handle, doc, layer = _paint_target(params)
+    r, g, b = _paint_rgb()
 
     if shape == "line":
         # Draw line using pixel data
@@ -372,57 +391,78 @@ def cmd_draw_shape(params):
 
     doc.refreshProjection()
 
-    return {"shape": shape}
+    return {"shape": shape, "doc": handle, "layer": nodes.node_id(layer)}
 
 
 # clear writes a full-canvas buffer, so it gets the long timeout.
 @command("clear", timeout=LONG_TIMEOUT, mutating=True)
 def cmd_clear(params):
-    """Clear the canvas."""
-    layer = get_active_layer()
-    if not layer:
-        raise CommandError("not_found", "No active layer")
+    """Fill the layer's canvas area with a color, or with "transparent"
+    erase it everywhere (the canvas plus anything past its edges)."""
+    raw = params.get("color", "#1a1a2e")
+    transparent = isinstance(raw, str) and raw.lower() == "transparent"
+    color = None if transparent else _color_param(params, default="#1a1a2e")
 
-    doc = get_active_document()
+    handle, doc, layer = _paint_target(params)
+    canvas = QRect(0, 0, doc.width(), doc.height())
 
-    # Get canvas dimensions
-    width = doc.width()
-    height = doc.height()
-
-    # Clear by filling with background color
-    bg_color = params.get("color", "#1a1a2e")
-    color = QColor(bg_color)
-    r, g, b = color.red(), color.green(), color.blue()
-
-    # Fill entire layer with color
-    pixel_data = bytes((b, g, r, 255)) * (width * height)
-    layer.setPixelData(pixel_data, 0, 0, width, height)
+    if transparent:
+        # bounds() is not clipped to the canvas; united() with an empty
+        # (0, 0, 0, 0) rect gives the canvas.
+        rect = canvas.united(layer.bounds())
+        x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
+        layer.setPixelData(bytes(w * h * 4), x, y, w, h)
+        result_color = "transparent"
+    else:
+        w, h = canvas.width(), canvas.height()
+        pixel = bytes((color.blue(), color.green(), color.red(), 255))
+        layer.setPixelData(pixel * (w * h), 0, 0, w, h)
+        result_color = color.name()
 
     doc.refreshProjection()
 
-    return {"color": bg_color}
+    return {"color": result_color, "doc": handle, "layer": nodes.node_id(layer)}
 
 
 @command("get_color_at")
 def cmd_get_color_at(params):
-    """Get color at specific pixel (eyedropper)."""
-    # A static bound only (P1.6 checks against the document's size).
-    x = int_param(params, "x", 0, 0, COORD)
-    y = int_param(params, "y", 0, 0, COORD)
+    """Sample one pixel (eyedropper): the composite, or one layer."""
+    x = int_param(params, "x", None, -COORD, COORD)
+    y = int_param(params, "y", None, -COORD, COORD)
 
-    doc = get_active_document()
-    if not doc:
-        raise CommandError("not_found", "No active document")
+    handle, doc = registry.resolve_doc(params)
+    width, height = doc.width(), doc.height()
+    if not (0 <= x < width and 0 <= y < height):
+        raise CommandError(
+            "bad_request",
+            f"({x}, {y}) is outside the document ({width}x{height}); "
+            f"use 0 <= x < {width} and 0 <= y < {height}",
+            {"x": x, "y": y, "width": width, "height": height})
 
-    # Get projection pixel data at point
-    layer = doc.rootNode()
-    pixel_data = layer.projectionPixelData(x, y, 1, 1)
+    ref = params.get("layer")
+    layer_id = None
+    if ref is None:
+        pixel_data = doc.rootNode().projectionPixelData(x, y, 1, 1)
+    else:
+        node = nodes.resolve_node(doc, ref)
+        layer_id = nodes.node_id(node)
+        kind = node.type()
+        if kind == "paintlayer":
+            pixel_data = node.pixelData(x, y, 1, 1)
+        elif kind == "grouplayer":
+            pixel_data = node.projectionPixelData(x, y, 1, 1)
+        else:
+            raise CommandError(
+                "conflict",
+                f"Layer '{node.name()}' is a {kind}; only paint layers and groups can be sampled",
+                {"doc": handle, "layer": layer_id, "type": kind})
 
+    pixel_data = bytes(pixel_data)  # QByteArray indexing gives bytes, not ints
     if len(pixel_data) >= 4:
-        # RGBA
         b, g, r, a = pixel_data[0], pixel_data[1], pixel_data[2], pixel_data[3]
         hex_color = "#{:02x}{:02x}{:02x}".format(r, g, b)
-        return {"color": hex_color, "r": r, "g": g, "b": b, "a": a}
+        return {"color": hex_color, "r": r, "g": g, "b": b, "a": a,
+                "doc": handle, "layer": layer_id}
 
     raise CommandError("krita_error", "Could not read pixel")
 

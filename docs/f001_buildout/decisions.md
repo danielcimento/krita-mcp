@@ -83,6 +83,23 @@ Auth and transport errors (401, 403 for host/browser, 413 for body size,
   they aren't written into the file: stamping them into document
   annotations would mark the document modified and leak into saved files.
 
+Settled in P1.6 (2026-11-24), `kritamcp/registry.py`:
+
+- Handles count up from `doc-1` and are never reused in a process. A
+  `doc` value is a handle if it looks like `doc-<n>`, a path if it is
+  absolute (or starts with `~`), and anything else is `bad_request`.
+- A path is compared after `os.path.realpath` with every open document's
+  `fileName()` (Krita keeps the path as given, e.g. `/var/…` for
+  `/private/var/…`). It only identifies an open document, so it isn't
+  checked against the allowed roots. Two matches are `ambiguous` with
+  `details.matches` listing their handles.
+- The active document from `activeDocument()` is matched against
+  `documents()` like any stored wrapper before use. Headless it is always
+  `None`, so `doc` is effectively required there.
+- The registry holding the wrapper keeps a headless document from
+  `createDocument` alive (it is destroyed with its last reference
+  otherwise), so a headless `new_canvas` leaves an open document.
+
 ## D4. Layer references
 
 **Decided.**
@@ -390,6 +407,15 @@ are in [api-design.md § Lint rules](api-design.md#lint-rules).
 parameters, structured results, and the BGRA helper. The plugin keeps
 the current foreground color itself, so painting into a non-active
 document doesn't depend on a view. No new painting features are added.
+
+Settled in P1.6 (2026-11-24): the color is plugin-global, like the
+brush, so `set_color` and `set_brush` take no `doc`. `set_color` stores
+the color and also sets the active view's foreground when there is a
+view (`view_updated`); no view is not an error. Painting uses the stored
+color, else the view's foreground, else black. `set_brush` stores `size`
+and `opacity` (the stroke defaults) and mirrors `size` to the view; a
+`preset` still needs a view (`conflict`). The color a user picks in
+Krita's UI after a `set_color` doesn't reach the agent's painting.
 
 ## D16. Testing approach
 

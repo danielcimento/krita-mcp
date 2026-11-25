@@ -79,8 +79,8 @@ If using a virtual environment:
 | Tool | Description |
 |------|-------------|
 | `krita_health` | Check if Krita is running with the plugin active |
-| `krita_new_canvas` | Create a new canvas (width, height, background color) |
-| `krita_set_color` | Set foreground paint color (hex) |
+| `krita_new_canvas` | Create a new canvas (width, height, background color); returns its `doc` handle |
+| `krita_set_color` | Set foreground paint color (hex); kept by the plugin, so it works without a window |
 | `krita_set_brush` | Set brush preset, size, and opacity |
 | `krita_stroke` | Paint a stroke through a list of [x, y] points |
 | `krita_fill` | Fill a circular area at a point |
@@ -88,10 +88,18 @@ If using a virtual environment:
 | `krita_get_canvas` | Export canvas to PNG (for AI to see progress) |
 | `krita_save` | Save canvas to a specific file path |
 | `krita_undo` / `krita_redo` | Undo/redo actions |
-| `krita_clear` | Clear canvas to a solid color |
+| `krita_clear` | Clear a layer to a solid color, or `"transparent"` |
 | `krita_get_color_at` | Eyedropper — sample color at a pixel |
 | `krita_list_brushes` | List available brush presets |
-| `krita_open_file` | Open an existing .kra, .png, .jpg, etc. |
+| `krita_open_file` | Open an existing .kra, .png, .jpg, etc.; returns its `doc` handle |
+
+Tools that act on a document take an optional `doc`: a handle such as
+`doc-3` (returned by `krita_new_canvas` and `krita_open_file`), or the
+absolute path of an open document. Without it they use the active
+document. The painting tools and `krita_get_color_at` also take `layer`:
+a layer's UUID, a name path such as `Head/Eyes` (`\/` for a slash in a
+name), or a unique name. Painting defaults to the active layer and must
+target a paint layer.
 
 ## Timeouts
 

@@ -5,12 +5,11 @@ import os
 from krita import InfoObject, Krita
 from PyQt5.QtGui import QColor
 
-from .. import config
+from .. import config, registry
 from ..dispatch import LONG_TIMEOUT, command
 from ..errors import CommandError
 from ..params import canvas_size
 from ..paths import resolve_allowed_path
-from ._active import get_active_document
 
 
 def _export(doc, filepath):
@@ -22,13 +21,6 @@ def _export(doc, filepath):
         doc.setBatchmode(False)
     if not ok:
         raise CommandError("krita_error", f"Krita failed to export to {filepath}")
-
-
-def _active_document():
-    doc = get_active_document()
-    if not doc:
-        raise CommandError("not_found", "No active document")
-    return doc
 
 
 # new_canvas writes a full-canvas buffer, so it gets the long timeout too.
@@ -64,7 +56,9 @@ def cmd_new_canvas(params):
 
     doc.refreshProjection()
 
-    return {"width": width, "height": height, "name": name}
+    # The registry keeps the wrapper, and with it the document: headless
+    # (no view) it would be destroyed when ``doc`` goes out of scope.
+    return {"doc": registry.handle_for(doc), "width": width, "height": height, "name": name}
 
 
 @command("get_canvas", timeout=LONG_TIMEOUT)
@@ -74,7 +68,7 @@ def cmd_get_canvas(params):
     if not isinstance(filename, str) or not filename:
         raise CommandError("bad_request", "Invalid filename")
 
-    doc = _active_document()
+    handle, doc = registry.resolve_doc(params)
 
     # Strip any directory components so the export stays in the output dir
     filename = os.path.basename(filename)
@@ -85,7 +79,7 @@ def cmd_get_canvas(params):
 
     _export(doc, filepath)
 
-    return {"path": filepath}
+    return {"path": filepath, "doc": handle}
 
 
 @command("save", timeout=LONG_TIMEOUT)
@@ -93,11 +87,11 @@ def cmd_save(params):
     """Save to specific path."""
     filepath = resolve_allowed_path(params.get("path"))
 
-    doc = _active_document()
+    handle, doc = registry.resolve_doc(params)
 
     _export(doc, filepath)
 
-    return {"path": filepath}
+    return {"path": filepath, "doc": handle}
 
 
 @command("open_file", timeout=LONG_TIMEOUT, mutating=True)
@@ -117,4 +111,5 @@ def cmd_open_file(params):
     if window:
         window.addView(doc)
 
-    return {"path": filepath, "name": doc.name(), "width": doc.width(), "height": doc.height()}
+    return {"doc": registry.handle_for(doc), "path": filepath, "name": doc.name(),
+            "width": doc.width(), "height": doc.height()}

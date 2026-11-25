@@ -7,9 +7,9 @@ import unittest
 
 from krita import Krita
 
-from helpers import scratch_document, temp_config
-from kritamcp import config, dispatch
-from kritamcp.commands import documents
+from helpers import add_paint_layer, scratch_document, settle, temp_config
+from kritamcp import config, dispatch, nodes, registry
+from kritamcp.commands import documents, paint
 
 # action -> (timeout, mutating), as declared with @command (D9).
 EXPECTED_REGISTRY = {
@@ -117,14 +117,8 @@ class DispatchTest(EnvelopeAssertions, unittest.TestCase):
         try:
             result = self.assertOk(run("new_canvas", width=64, height=48,
                                        name="kmcp-dispatch-test"))
+            self.assertRegex(result.pop("doc"), r"^doc-[1-9][0-9]*$")
             self.assertEqual(result, {"width": 64, "height": 48, "name": "kmcp-dispatch-test"})
-            # Headless there is no window, so no view is added. The document
-            # is owned by the Python wrapper createDocument returned, and is
-            # destroyed when cmd_new_canvas returns and drops it. So nothing
-            # stays open (pinned; a handle registry must keep the wrapper).
-            created = [d for d in Krita.instance().documents()
-                       if not any(d == b for b in before)]
-            self.assertEqual(created, [])
         finally:
             # Defensive: close anything new without touching it otherwise.
             for d in Krita.instance().documents():
@@ -162,19 +156,19 @@ class DispatchTest(EnvelopeAssertions, unittest.TestCase):
     def test_get_canvas_writes_to_current_output_dir(self):
         # get_canvas reads config.current().output_dir per call (it follows
         # CANVAS_OUTPUT_DIR, which current() keys on). Headless there is no
-        # active document, so documents' lookup is patched to a scratch one.
+        # active document, so the document is passed as a handle.
         out = tempfile.mkdtemp(prefix="kmcp-out-")
-        saved = (config.CANVAS_OUTPUT_DIR, documents.get_active_document)
+        saved = config.CANVAS_OUTPUT_DIR
         try:
             config.CANVAS_OUTPUT_DIR = out
             with scratch_document(8, 8) as doc:
-                documents.get_active_document = lambda: doc
-                result = self.assertOk(run("get_canvas", filename="../kmcp-shot"))
+                handle = registry.handle_for(doc)
+                result = self.assertOk(run("get_canvas", filename="../kmcp-shot", doc=handle))
             expected = os.path.join(os.path.realpath(out), "kmcp-shot.png")
-            self.assertEqual(result, {"path": expected})
+            self.assertEqual(result, {"path": expected, "doc": handle})
             self.assertTrue(os.path.isfile(expected))
         finally:
-            config.CANVAS_OUTPUT_DIR, documents.get_active_document = saved
+            config.CANVAS_OUTPUT_DIR = saved
             config.reset_cache()
             shutil.rmtree(out, ignore_errors=True)
 
@@ -208,9 +202,9 @@ class DispatchTest(EnvelopeAssertions, unittest.TestCase):
         self.assertIs(err["ok"], False)
         self.assertEqual(err["error"]["message"], "File type not allowed: notes.txt")
 
-    def test_view_commands_need_a_view(self):
-        self.assertError(run("set_color", color="#ff0000"), "conflict", "No active view")
-        self.assertError(run("set_brush", size=5), "conflict", "No active view")
+    def test_brush_preset_needs_a_view(self):
+        self.assertError(run("set_brush", preset="Basic"), "conflict",
+                         "No active view: a brush preset can only be set in a Krita window")
 
     def test_stroke_validation_before_view(self):
         self.assertError(run("stroke", points=[[0, 0]]),
@@ -221,10 +215,12 @@ class DispatchTest(EnvelopeAssertions, unittest.TestCase):
     def test_no_document_is_not_found(self):
         if Krita.instance().activeDocument() is not None:
             self.skipTest("a document is active")
-        self.assertError(run("fill", x=1, y=1), "not_found", "No active layer")
-        self.assertError(run("clear"), "not_found", "No active layer")
-        self.assertError(run("get_color_at", x=0, y=0), "not_found", "No active document")
-        self.assertError(run("get_canvas"), "not_found", "No active document")
+        msg = "No active document; pass 'doc' (a handle like 'doc-1')"
+        for action, params in (("fill", {"x": 1, "y": 1}), ("clear", {}),
+                               ("stroke", {"points": [[0, 0], [1, 1]]}),
+                               ("draw_shape", {}), ("get_color_at", {"x": 0, "y": 0}),
+                               ("get_canvas", {}), ("save", {"path": "kmcp-x.png"})):
+            self.assertError(run(action, **params), "not_found", msg)
 
 
 class ExportTest(unittest.TestCase):
@@ -251,3 +247,255 @@ class ExportTest(unittest.TestCase):
             self.assertFalse(doc.batchmode())
         self.assertEqual(cm.exception.code, "krita_error")
         self.assertFalse(os.path.exists(path))
+
+
+RED = bytes((0, 0, 255, 255))      # BGRA
+GREEN = bytes((0, 255, 0, 255))
+WHITE = bytes((255, 255, 255, 255))
+CLEAR = bytes(4)
+
+
+class PaintStateMixin:
+    """Save and restore the plugin-side paint state (D15) around each test,
+    and stand-in hooks the tests replace."""
+
+    def setUp(self):
+        self._paint_state = (paint.current_color, paint.current_brush_size,
+                             paint.current_opacity)
+        self._active_node = nodes.active_node
+
+    def tearDown(self):
+        (paint.current_color, paint.current_brush_size,
+         paint.current_opacity) = self._paint_state
+        nodes.active_node = self._active_node
+
+
+class PaintTest(PaintStateMixin, EnvelopeAssertions, unittest.TestCase):
+    """Painting with doc + layer, headless (no view)."""
+
+    def test_fill_targets_doc_and_layer_only(self):
+        with scratch_document(16, 16, name="kmcp-paint-a") as a, \
+                scratch_document(16, 16, name="kmcp-paint-b") as b:
+            ink_a, ink_b = add_paint_layer(a, "Ink"), add_paint_layer(b, "Ink")
+            ha, hb = registry.handle_for(a), registry.handle_for(b)
+            self.assertOk(run("set_color", color="#ff0000"))
+            result = self.assertOk(run("fill", doc=ha, layer="Ink", x=8, y=8, radius=3))
+            self.assertEqual(result, {"x": 8, "y": 8, "radius": 3, "doc": ha,
+                                      "layer": nodes.node_id(ink_a)})
+            settle(a)
+            settle(b)
+            self.assertEqual(bytes(ink_a.pixelData(8, 8, 1, 1)), RED)
+            self.assertEqual(bytes(ink_a.pixelData(0, 0, 1, 1)), CLEAR)
+            self.assertEqual(bytes(ink_b.pixelData(0, 0, 16, 16)), CLEAR * 256)
+            self.assertEqual(bytes(b.rootNode().projectionPixelData(8, 8, 1, 1)), WHITE)
+
+            # draw_shape and stroke, by id and by path.
+            result = self.assertOk(run("draw_shape", doc=hb, layer=nodes.node_id(ink_b),
+                                       shape="rectangle", x=0, y=0, width=4, height=4))
+            self.assertEqual((result["doc"], result["layer"]), (hb, nodes.node_id(ink_b)))
+            result = self.assertOk(run("stroke", doc=hb, layer="/Ink",
+                                       points=[[2, 12], [12, 12]], size=3, hardness=1.0))
+            self.assertEqual((result["doc"], result["layer"]), (hb, nodes.node_id(ink_b)))
+            settle(b)
+            self.assertEqual(bytes(ink_b.pixelData(1, 1, 1, 1)), RED)
+            self.assertEqual(bytes(ink_b.pixelData(7, 12, 1, 1)), RED)
+            self.assertEqual(bytes(ink_a.pixelData(1, 1, 1, 1)), CLEAR)
+
+    def test_non_paint_layers_conflict(self):
+        with scratch_document(16, 16, name="kmcp-paint-group") as doc:
+            group = doc.createGroupLayer("G")
+            doc.rootNode().addChildNode(group, None)
+            handle = registry.handle_for(doc)
+            gid = nodes.node_id(group)
+            err = self.assertError(run("fill", doc=handle, layer="G", x=1, y=1), "conflict")
+            self.assertIn("grouplayer", err["message"])
+            self.assertEqual(err["details"], {"doc": handle, "layer": gid, "type": "grouplayer"})
+            self.assertError(run("clear", doc=handle, layer=gid), "conflict")
+            # Default layer: the active node, which headless is always None.
+            self.assertError(run("fill", doc=handle, x=1, y=1), "not_found",
+                             f"No active layer in {handle}; pass 'layer'")
+            # An active group is a conflict too (plan finding 9).
+            nodes.active_node = lambda d: d.nodeByUniqueID(group.uniqueId())
+            err = self.assertError(run("draw_shape", doc=handle, shape="rectangle"), "conflict")
+            self.assertEqual(err["details"]["layer"], gid)
+            # And unknown / ambiguous layer refs.
+            self.assertError(run("fill", doc=handle, layer="Nope", x=1, y=1), "not_found")
+            add_paint_layer(doc, "Twin")
+            add_paint_layer(doc, "Twin")
+            err = self.assertError(run("fill", doc=handle, layer="Twin", x=1, y=1), "ambiguous")
+            self.assertEqual(len(err["details"]["matches"]), 2)
+
+    def test_default_layer_is_the_active_paint_layer(self):
+        with scratch_document(16, 16, name="kmcp-paint-active") as doc:
+            ink = add_paint_layer(doc, "Ink")
+            handle = registry.handle_for(doc)
+            nodes.active_node = lambda d: d.nodeByUniqueID(ink.uniqueId())
+            paint.current_color = "#00ff00"
+            result = self.assertOk(run("fill", doc=handle, x=2, y=2, radius=1))
+            self.assertEqual(result["layer"], nodes.node_id(ink))
+            settle(doc)
+            self.assertEqual(bytes(ink.pixelData(2, 2, 1, 1)), GREEN)
+
+    def test_unknown_or_bad_doc(self):
+        self.assertError(run("fill", doc="doc-999999", layer="Ink", x=1, y=1), "not_found")
+        self.assertError(run("get_color_at", doc="doc-999999", x=0, y=0), "not_found")
+        self.assertError(run("get_canvas", doc="doc-999999"), "not_found")
+        self.assertError(run("fill", doc=5, x=1, y=1), "bad_request")
+
+    def test_set_color(self):
+        self.assertError(run("set_color", color="#zzzzzz"), "bad_request")
+        self.assertError(run("set_color", color=123), "bad_request")
+        self.assertError(run("set_color"), "bad_request")
+        result = self.assertOk(run("set_color", color="#00FF00"))
+        self.assertEqual(result, {"color": "#00ff00", "view_updated": False})
+        self.assertEqual(paint.current_color, "#00ff00")
+        with scratch_document(8, 8, name="kmcp-paint-color") as doc:
+            ink = add_paint_layer(doc, "Ink")
+            handle = registry.handle_for(doc)
+            self.assertOk(run("fill", doc=handle, layer="Ink", x=4, y=4, radius=2))
+            settle(doc)
+            self.assertEqual(bytes(ink.pixelData(4, 4, 1, 1)), GREEN)
+
+    def test_color_never_set_paints_black(self):
+        paint.current_color = None
+        with scratch_document(8, 8, name="kmcp-paint-black") as doc:
+            ink = add_paint_layer(doc, "Ink")
+            handle = registry.handle_for(doc)
+            self.assertOk(run("fill", doc=handle, layer="Ink", x=4, y=4, radius=2))
+            settle(doc)
+            self.assertEqual(bytes(ink.pixelData(4, 4, 1, 1)), bytes((0, 0, 0, 255)))
+
+    def test_set_brush_without_view(self):
+        result = self.assertOk(run("set_brush", size=7, opacity=0.5))
+        self.assertEqual(result, {"preset": None, "size": 7, "opacity": 0.5,
+                                  "view_updated": False})
+        self.assertEqual((paint.current_brush_size, paint.current_opacity), (7, 0.5))
+        self.assertError(run("set_brush", size=0), "bad_request")
+        # A preset needs a view; nothing is stored when it fails.
+        self.assertError(run("set_brush", preset="Basic", size=9), "conflict")
+        self.assertEqual(paint.current_brush_size, 7)
+
+    def test_clear(self):
+        with scratch_document(16, 16, name="kmcp-clear") as doc:
+            ink = add_paint_layer(doc, "Ink")
+            handle = registry.handle_for(doc)
+            # Pixels inside and past the canvas edges (bounds aren't clipped).
+            ink.setPixelData(RED * 16, -5, -5, 4, 4)
+            ink.setPixelData(RED * 4, 20, 20, 2, 2)
+            ink.setPixelData(RED * 4, 3, 3, 2, 2)
+            settle(doc)
+            r = ink.bounds()
+            self.assertEqual((r.x(), r.y(), r.width(), r.height()), (-5, -5, 27, 27))
+
+            result = self.assertOk(run("clear", doc=handle, layer="Ink", color="#0000ff"))
+            self.assertEqual(result, {"color": "#0000ff", "doc": handle,
+                                      "layer": nodes.node_id(ink)})
+            settle(doc)
+            self.assertEqual(bytes(ink.pixelData(0, 0, 16, 16)),
+                             bytes((255, 0, 0, 255)) * 256)
+            self.assertEqual(bytes(ink.pixelData(-5, -5, 1, 1)), RED)  # outside: kept
+
+            result = self.assertOk(run("clear", doc=handle, layer="Ink", color="Transparent"))
+            self.assertEqual(result["color"], "transparent")
+            settle(doc)
+            # Bounds shrink to nothing, but hasExtents() stays True after
+            # zeroing (pinned; krita-api-notes § Nodes), so the layer object
+            # checks the size too.
+            r = ink.bounds()
+            self.assertEqual((r.x(), r.y(), r.width(), r.height()), (0, 0, 0, 0))
+            self.assertTrue(ink.hasExtents())
+            self.assertIsNone(nodes.layer_object(ink, nodes.build_index(doc))["bounds"])
+            self.assertEqual(bytes(ink.pixelData(-5, -5, 27, 27)), CLEAR * 27 * 27)
+            # Clearing an empty layer works too.
+            self.assertOk(run("clear", doc=handle, layer="Ink", color="transparent"))
+
+            self.assertError(run("clear", doc=handle, layer="Ink", color="#nothex"),
+                             "bad_request")
+
+    def test_get_color_at(self):
+        with scratch_document(16, 10, name="kmcp-sample") as doc:
+            ink = add_paint_layer(doc, "Ink")
+            group = doc.createGroupLayer("G")
+            doc.rootNode().addChildNode(group, None)
+            inner = doc.createNode("Inner", "paintlayer")
+            group.addChildNode(inner, None)
+            ink.setPixelData(RED, 2, 3, 1, 1)
+            inner.setPixelData(GREEN, 5, 5, 1, 1)
+            mask = doc.createNode("Mask", "transparencymask")
+            ink.addChildNode(mask, None)
+            settle(doc)
+            handle = registry.handle_for(doc)
+
+            # Bounds come from the document (16x10).
+            for x, y in ((16, 0), (0, 10), (-1, 0), (0, -1)):
+                err = self.assertError(run("get_color_at", doc=handle, x=x, y=y), "bad_request")
+                self.assertIn("16x10", err["message"])
+            self.assertError(run("get_color_at", doc=handle, y=0), "bad_request")
+
+            got = self.assertOk(run("get_color_at", doc=handle, x=15, y=9))
+            self.assertEqual(got, {"color": "#ffffff", "r": 255, "g": 255, "b": 255, "a": 255,
+                                   "doc": handle, "layer": None})
+            got = self.assertOk(run("get_color_at", doc=handle, x=2, y=3))
+            self.assertEqual(got["color"], "#ff0000")  # composite
+
+            got = self.assertOk(run("get_color_at", doc=handle, x=2, y=3, layer="Ink"))
+            self.assertEqual((got["color"], got["a"], got["layer"]),
+                             ("#ff0000", 255, nodes.node_id(ink)))
+            got = self.assertOk(run("get_color_at", doc=handle, x=5, y=5, layer="Ink"))
+            self.assertEqual(got["a"], 0)  # the layer alone, not the composite
+            got = self.assertOk(run("get_color_at", doc=handle, x=5, y=5, layer="G"))
+            self.assertEqual((got["color"], got["a"], got["layer"]),
+                             ("#00ff00", 255, nodes.node_id(group)))
+            err = self.assertError(run("get_color_at", doc=handle, x=0, y=0, layer="Ink/Mask"),
+                                   "conflict")
+            self.assertEqual(err["details"]["type"], "transparencymask")
+
+
+class DocumentHandleTest(EnvelopeAssertions, unittest.TestCase):
+    """new_canvas / open_file / save return and take handles."""
+
+    def setUp(self):
+        self.out = tempfile.mkdtemp(prefix="kmcp-docs-")
+        self._saved_out = config.CANVAS_OUTPUT_DIR
+        config.CANVAS_OUTPUT_DIR = self.out
+
+    def tearDown(self):
+        config.CANVAS_OUTPUT_DIR = self._saved_out
+        config.reset_cache()
+        shutil.rmtree(self.out, ignore_errors=True)
+
+    def _close(self, handle):
+        doc = registry.lookup(handle)
+        doc.setModified(False)
+        doc.close()
+
+    def test_new_canvas_document_stays_open(self):
+        result = self.assertOk(run("new_canvas", width=24, height=12, name="kmcp-handle"))
+        handle = result["doc"]
+        try:
+            # The registry holds the wrapper, so the headless document lives.
+            doc = registry.lookup(handle)
+            self.assertEqual((doc.width(), doc.height(), doc.name()), (24, 12, "kmcp-handle"))
+            del doc
+            got = self.assertOk(run("get_color_at", doc=handle, x=0, y=0))
+            self.assertEqual(got["color"], "#1a1a2e")
+            self.assertEqual(got["doc"], handle)
+        finally:
+            self._close(handle)
+        self.assertError(run("get_color_at", doc=handle, x=0, y=0), "not_found")
+
+    def test_save_and_open_file(self):
+        with scratch_document(8, 6, name="kmcp-save") as doc:
+            handle = registry.handle_for(doc)
+            result = self.assertOk(run("save", doc=handle, path="kmcp-saved.png"))
+            expected = os.path.join(os.path.realpath(self.out), "kmcp-saved.png")
+            self.assertEqual(result, {"path": expected, "doc": handle})
+            self.assertTrue(os.path.isfile(expected))
+        result = self.assertOk(run("open_file", path="kmcp-saved.png"))
+        opened = result["doc"]
+        try:
+            self.assertNotEqual(opened, handle)
+            self.assertEqual((result["width"], result["height"]), (8, 6))
+            self.assertTrue(registry.lookup(opened) is not None)
+        finally:
+            self._close(opened)

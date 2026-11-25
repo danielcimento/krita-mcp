@@ -211,11 +211,12 @@ class PostEnvelopeTest(BridgeTestBase):
         self.assertIsInstance(body["elapsed_ms"], int)
 
     def test_conflict_is_409(self):
-        self.assertEnvelopeError(self.post({"action": "set_color", "params": {"color": "#f00"}}),
+        self.assertEnvelopeError(self.post({"action": "set_brush", "params": {"preset": "Basic"}}),
                                  409, "conflict")
 
     def test_not_found_is_404(self):
-        self.assertEnvelopeError(self.post({"action": "get_color_at", "params": {}}),
+        self.assertEnvelopeError(self.post({"action": "get_color_at",
+                                             "params": {"x": 0, "y": 0, "doc": "doc-999999"}}),
                                  404, "not_found")
 
     def test_bad_request_is_400(self):

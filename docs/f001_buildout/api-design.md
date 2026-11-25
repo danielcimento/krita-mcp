@@ -12,7 +12,7 @@ The contract for every tool after the buildout. The rationale is in
 
 | Param | Type | Meaning |
 |---|---|---|
-| `doc` | string, optional | Document handle (`doc-3`), or the absolute path of an open document. Defaults to the active document (D3) |
+| `doc` | string, optional | Document handle (`doc-3`), or the absolute path of an open document. Defaults to the active document (D3). Every tool that acts on one document takes it; tools that act on app or UI state (`health`, `set_color`, `set_brush`, `list_brushes`, `ui_undo`/`ui_redo`) don't. Details (P1.6, 2026-11-24): a path (absolute or `~`) is compared after `realpath` with each open document's `fileName()`; it only identifies an open document, so it isn't checked against the allowed roots. Several matches are `ambiguous` (`details.matches` lists their handles). With no `doc` and no active document (always so headless), `not_found`. Results of document tools include `doc` |
 | `timeout_s` | number, optional | Overrides the command's default timeout (30 s for queries, 300 s for file I/O), up to 900 (D9). Every tool except `krita_health`. Sent as `params.timeout_s`; the plugin checks 0 < t ≤ 900 (else `bad_request`) and strips it before the handler. On expiry: `timeout` with `details: {action, timeout_s, started}` |
 | `dry_run` | bool, optional | On mutating batch tools: validate only (D11) |
 
@@ -456,10 +456,11 @@ of both bounds). The two documents must be the same size for pixel diffs.
 | Tool | Change |
 |---|---|
 | `krita_health` | Adds `protocol`, `version`, `krita_version` (done in P1.3, with `running` and `protocol_ok` added server-side), then `allowed_dirs` (resolved roots, the output dir first), `config_file`, `config_loaded`, `limits` and `config_errors` (done in P1.4; the summary counts the dirs and lists the errors), then `busy` (`{"action", "elapsed_ms"}` or `null`) and `queued` (done in P1.5; the summary adds e.g. "busy: save for 12.3 s, 1 queued") |
-| `krita_new_canvas`, `krita_open_file`, `krita_save` | As above |
-| `krita_get_canvas` | Becomes a shortcut for `render` into the output dir |
-| `krita_set_color` | Also stored plugin-side (D15). Accepts `doc` |
-| `krita_set_brush`, `krita_list_brushes` | Structured results only |
-| `krita_stroke`, `krita_fill`, `krita_draw_shape`, `krita_clear` | Accept `doc`, `layer`. Structured results. `clear` takes `"transparent"` |
-| `krita_get_color_at` | Accepts `doc`, `layer` (sample one layer instead of the composite). Bounds checked against the document size |
-| `krita_undo` / `krita_redo` | Become the agent journal (D6). The UI-stack triggers move to `krita_ui_undo` / `krita_ui_redo` |
+| `krita_new_canvas`, `krita_open_file`, `krita_save` | As above. Done in P1.6: `new_canvas` and `open_file` return `doc` (the new document's handle; the registry keeps the wrapper, so a headless `new_canvas` leaves an open document) and `save` takes `doc`. The rest is P1.7 |
+| `krita_get_canvas` | Takes `doc` (done in P1.6). Becomes a shortcut for `render` into the output dir |
+| `krita_set_color` | Stored plugin-side (D15) and also set on the active view when there is one; works without a view. Returns `color` (normalized `#rrggbb`) and `view_updated`. An invalid color is `bad_request`. Painting uses the stored color, else the view's foreground, else black. **No `doc`**: the color is plugin-global state that applies to every document, which is what lets painting work in a document with no view (D15). Done in P1.6 |
+| `krita_set_brush` | `size` and `opacity` are stored plugin-side (the stroke defaults) and `size` is also set on the view if there is one; a `preset` needs a view (`conflict` without one, and nothing is stored). Returns the stored `preset` (matched name or null), `size`, `opacity` and `view_updated`. No `doc`, like `set_color`. Done in P1.6 |
+| `krita_list_brushes` | Structured results only |
+| `krita_stroke`, `krita_fill`, `krita_draw_shape`, `krita_clear` | Accept `doc`, `layer`. `layer` defaults to the document's active node; anything but a paint layer (including an active group or mask) is `conflict` with `details: {doc, layer, type}`. Headless there is never an active node, so `layer` is required there (`not_found` otherwise). No view needed. Results include `doc` and `layer` (id). `clear` takes `"transparent"`, which zeroes the layer over the union of its bounds and the canvas; a color fills the canvas rect. Done in P1.6 |
+| `krita_get_color_at` | Accepts `doc`, `layer` (sample one layer instead of the composite): a paint layer gives its own pixel, a group its projection, other types `conflict`. `0 <= x < width`, `0 <= y < height` of the document, else `bad_request` naming the size. Results include `doc` and `layer` (id, or null for the composite). Done in P1.6 |
+| `krita_undo` / `krita_redo` | Become the agent journal (D6). The UI-stack triggers move to `krita_ui_undo` / `krita_ui_redo`. Until then (P5.1) they take no `doc`: they act on the active view's document |

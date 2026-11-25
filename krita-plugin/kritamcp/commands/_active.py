@@ -1,26 +1,12 @@
-"""Helpers to find the active document, view and layer."""
+"""The active view (UI state). Documents come from ``registry.resolve_doc``
+and layers from ``nodes``."""
 
 from krita import Krita
 
 
-def get_active_document():
-    """Get active document or return None."""
-    app = Krita.instance()
-    return app.activeDocument()
-
-
 def get_active_view():
-    """Get active view or return None."""
-    app = Krita.instance()
-    window = app.activeWindow()
+    """The active window's active view, or None (always None headless)."""
+    window = Krita.instance().activeWindow()
     if window:
         return window.activeView()
-    return None
-
-
-def get_active_layer():
-    """Get active paint layer."""
-    doc = get_active_document()
-    if doc:
-        return doc.activeNode()
     return None

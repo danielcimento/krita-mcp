@@ -42,6 +42,16 @@ def _done(result: dict, summary: str) -> dict:
     return {"summary": summary, **result}
 
 
+def _with(params: dict, **optional) -> dict:
+    """``params`` plus each optional argument that is not None."""
+    return {**params, **{k: v for k, v in optional.items() if v is not None}}
+
+
+def _in(result: dict) -> str:
+    """" in doc-3" when the plugin reported the document's handle."""
+    return f" in {result['doc']}" if result.get("doc") else ""
+
+
 @mcp.tool()
 def krita_health() -> dict:
     """Check if Krita is running and the MCP plugin is active.
@@ -104,7 +114,8 @@ def krita_new_canvas(
     timeout_s: Optional[float] = None,
 ) -> dict:
     """
-    Create a new canvas in Krita. Limits: 16384 px per side and 67108864
+    Create a new canvas in Krita and return its document handle (``doc``,
+    e.g. "doc-3"), which other tools take as ``doc``. Limits: 16384 px per side and 67108864
     pixels in total by default, configurable by the user in the plugin's
     ~/.krita-mcp-config.json ("limits"); over a limit fails with too_large.
 
@@ -121,7 +132,8 @@ def krita_new_canvas(
         "name": name,
         "background": background
     }, timeout_s=timeout_s)
-    return _done(result, f"Created canvas '{result.get('name', name)}': "
+    handle = f" ({result['doc']})" if result.get("doc") else ""
+    return _done(result, f"Created canvas '{result.get('name', name)}'{handle}: "
                          f"{result.get('width', width)}x{result.get('height', height)}, "
                          f"background {background}")
 
@@ -129,14 +141,18 @@ def krita_new_canvas(
 @mcp.tool()
 def krita_set_color(color: str, timeout_s: Optional[float] = None) -> dict:
     """
-    Set the foreground (paint) color.
+    Set the foreground (paint) color used by stroke, fill and draw_shape.
+    The plugin stores it, so it works without a Krita window and applies to
+    every document; when a window is open its foreground color is set too
+    (``view_updated``).
 
     Args:
         color: Hex color code (e.g., "#ff6b6b", "#b8a9c9")
         timeout_s: Seconds to wait for Krita, up to 900; default per command
     """
     result = client.call("set_color", {"color": color}, timeout_s=timeout_s)
-    return _done(result, f"Color set to {result.get('color', color)}")
+    note = " (stored; no Krita window to update)" if result.get("view_updated") is False else ""
+    return _done(result, f"Color set to {result.get('color', color)}{note}")
 
 
 @mcp.tool()
@@ -147,7 +163,10 @@ def krita_set_brush(
     timeout_s: Optional[float] = None,
 ) -> dict:
     """
-    Set brush preset and properties.
+    Set brush preset and properties. Size and opacity are stored by the
+    plugin (used by stroke) and work without a Krita window; a preset needs
+    one (conflict otherwise). ``view_updated`` says whether the window's
+    brush changed.
 
     Args:
         preset: Brush preset name (partial match, e.g., "Basic", "Soft", "Airbrush")
@@ -170,27 +189,37 @@ def krita_set_brush(
 
 @mcp.tool()
 def krita_stroke(points: list[list[int]], pressure: float = 1.0,
+                 doc: Optional[str] = None, layer: Optional[str] = None,
                  timeout_s: Optional[float] = None) -> dict:
     """
-    Paint a stroke through a series of points.
+    Paint a stroke through a series of points with the current color.
 
     Args:
         points: List of [x, y] coordinate pairs, e.g., [[100, 100], [150, 120], [200, 150]]
         pressure: Brush pressure (0.0 to 1.0, affects stroke thickness/opacity)
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        layer: Paint layer to paint into: its id (UUID), a name path from
+               the root such as "Head/Eyes" (write \\/ for a "/" in a name),
+               or a unique name; default the document's active layer. Groups
+               and masks fail with conflict
         timeout_s: Seconds to wait for Krita, up to 900; default per command
     """
     if len(points) < 2:
         raise ToolError("bad_request: Need at least 2 points for a stroke")
 
-    result = client.call("stroke", {
+    result = client.call("stroke", _with({
         "points": points,
         "pressure": pressure
-    }, timeout_s=timeout_s)
-    return _done(result, f"Stroke painted with {result.get('points_count', len(points))} points")
+    }, doc=doc, layer=layer), timeout_s=timeout_s)
+    return _done(result, f"Stroke painted with {result.get('points_count', len(points))} points"
+                         + _in(result))
 
 
 @mcp.tool()
-def krita_fill(x: int, y: int, radius: int = 50, timeout_s: Optional[float] = None) -> dict:
+def krita_fill(x: int, y: int, radius: int = 50, doc: Optional[str] = None,
+               layer: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
     """
     Fill an area with current color (paints a filled circle at the point).
 
@@ -198,10 +227,18 @@ def krita_fill(x: int, y: int, radius: int = 50, timeout_s: Optional[float] = No
         x: X coordinate
         y: Y coordinate
         radius: Fill radius in pixels
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        layer: Paint layer to paint into: its id (UUID), a name path from
+               the root such as "Head/Eyes" (write \\/ for a "/" in a name),
+               or a unique name; default the document's active layer. Groups
+               and masks fail with conflict
         timeout_s: Seconds to wait for Krita, up to 900; default per command
     """
-    result = client.call("fill", {"x": x, "y": y, "radius": radius}, timeout_s=timeout_s)
-    return _done(result, f"Filled circle at ({x}, {y}) with radius {radius}")
+    result = client.call("fill", _with({"x": x, "y": y, "radius": radius}, doc=doc, layer=layer),
+                         timeout_s=timeout_s)
+    return _done(result, f"Filled circle at ({x}, {y}) with radius {radius}" + _in(result))
 
 
 @mcp.tool()
@@ -215,10 +252,12 @@ def krita_draw_shape(
     stroke: bool = False,
     x2: Optional[int] = None,
     y2: Optional[int] = None,
+    doc: Optional[str] = None,
+    layer: Optional[str] = None,
     timeout_s: Optional[float] = None,
 ) -> dict:
     """
-    Draw a shape on the canvas.
+    Draw a shape on the canvas with the current color.
 
     Args:
         shape: Type of shape - "rectangle", "ellipse", or "line"
@@ -230,6 +269,13 @@ def krita_draw_shape(
         stroke: Whether to draw outline
         x2: End X for lines (optional)
         y2: End Y for lines (optional)
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        layer: Paint layer to paint into: its id (UUID), a name path from
+               the root such as "Head/Eyes" (write \\/ for a "/" in a name),
+               or a unique name; default the document's active layer. Groups
+               and masks fail with conflict
         timeout_s: Seconds to wait for Krita, up to 900; default per command
     """
     params = {
@@ -246,22 +292,27 @@ def krita_draw_shape(
     if y2 is not None:
         params["y2"] = y2
 
-    result = client.call("draw_shape", params, timeout_s=timeout_s)
-    return _done(result, f"Drew {result.get('shape', shape)} at ({x}, {y})")
+    result = client.call("draw_shape", _with(params, doc=doc, layer=layer), timeout_s=timeout_s)
+    return _done(result, f"Drew {result.get('shape', shape)} at ({x}, {y})" + _in(result))
 
 
 @mcp.tool()
-def krita_get_canvas(filename: str = "canvas.png", timeout_s: Optional[float] = None) -> dict:
+def krita_get_canvas(filename: str = "canvas.png", doc: Optional[str] = None,
+                     timeout_s: Optional[float] = None) -> dict:
     """
-    Export current canvas to a PNG file and return the path.
+    Export a document's canvas to a PNG file and return the path.
     Use this to see your painting progress.
 
     Args:
         filename: Output filename (saved to configured output directory)
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
         timeout_s: Seconds to wait for Krita, up to 900; default per command
     """
-    result = client.call("get_canvas", {"filename": filename}, timeout_s=timeout_s)
-    return _done(result, f"Canvas saved to: {result.get('path', '')}")
+    result = client.call("get_canvas", _with({"filename": filename}, doc=doc),
+                         timeout_s=timeout_s)
+    return _done(result, f"Canvas{_in(result)} saved to: {result.get('path', '')}")
 
 
 @mcp.tool()
@@ -289,45 +340,71 @@ def krita_redo(timeout_s: Optional[float] = None) -> dict:
 
 
 @mcp.tool()
-def krita_clear(color: str = "#1a1a2e", timeout_s: Optional[float] = None) -> dict:
+def krita_clear(color: str = "#1a1a2e", doc: Optional[str] = None,
+                layer: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
     """
-    Clear the canvas to a solid color.
+    Clear a paint layer to a solid color over the whole canvas, or erase it.
 
     Args:
-        color: Color to fill canvas with (default dark blue)
+        color: Color to fill the layer's canvas area with (default dark
+               blue), or "transparent" to erase the layer completely,
+               including pixels past the canvas edges
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        layer: Paint layer to paint into: its id (UUID), a name path from
+               the root such as "Head/Eyes" (write \\/ for a "/" in a name),
+               or a unique name; default the document's active layer. Groups
+               and masks fail with conflict
         timeout_s: Seconds to wait for Krita, up to 900; default per command
     """
-    result = client.call("clear", {"color": color}, timeout_s=timeout_s)
-    return _done(result, f"Canvas cleared to {result.get('color', color)}")
+    result = client.call("clear", _with({"color": color}, doc=doc, layer=layer),
+                         timeout_s=timeout_s)
+    return _done(result, f"Layer{_in(result)} cleared to {result.get('color', color)}")
 
 
 @mcp.tool()
-def krita_save(path: str, timeout_s: Optional[float] = None) -> dict:
+def krita_save(path: str, doc: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
     """
-    Save the current canvas to a file inside the plugin's allowed
+    Save a document to a file inside the plugin's allowed
     directories (by default ~/krita-mcp-output).
 
     Args:
         path: File name or path; relative paths are resolved against the
               output directory (e.g., "my_painting.png")
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
         timeout_s: Seconds to wait for Krita, up to 900; default per command
     """
-    result = client.call("save", {"path": path}, timeout_s=timeout_s)
-    return _done(result, f"Saved to {result.get('path', path)}")
+    result = client.call("save", _with({"path": path}, doc=doc), timeout_s=timeout_s)
+    saved = f"Saved {result['doc']}" if result.get("doc") else "Saved"
+    return _done(result, f"{saved} to {result.get('path', path)}")
 
 
 @mcp.tool()
-def krita_get_color_at(x: int, y: int, timeout_s: Optional[float] = None) -> dict:
+def krita_get_color_at(x: int, y: int, doc: Optional[str] = None, layer: Optional[str] = None,
+                       timeout_s: Optional[float] = None) -> dict:
     """
-    Sample the color at a specific pixel (eyedropper).
+    Sample the color at a specific pixel (eyedropper). The point must be
+    inside the document (0 <= x < width, 0 <= y < height).
 
     Args:
         x: X coordinate
         y: Y coordinate
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        layer: Sample one layer instead of the composite: its id (UUID), a
+               name path from the root such as "Head/Eyes" (write \\/ for
+               a "/" in a name), or a unique name. A paint layer gives its
+               own pixel, a group its composite; other types fail with
+               conflict. Default: the whole image's composite
         timeout_s: Seconds to wait for Krita, up to 900; default per command
     """
-    result = client.call("get_color_at", {"x": x, "y": y}, timeout_s=timeout_s)
-    return _done(result, f"Color at ({x}, {y}): {result.get('color', 'unknown')} "
+    result = client.call("get_color_at", _with({"x": x, "y": y}, doc=doc, layer=layer),
+                         timeout_s=timeout_s)
+    return _done(result, f"Color at ({x}, {y}){_in(result)}: {result.get('color', 'unknown')} "
                          f"(R:{result.get('r')}, G:{result.get('g')}, B:{result.get('b')}, "
                          f"A:{result.get('a')})")
 
@@ -356,9 +433,10 @@ def krita_list_brushes(filter: str = "", limit: int = 20,
 @mcp.tool()
 def krita_open_file(path: str, timeout_s: Optional[float] = None) -> dict:
     """
-    Open an existing image file in Krita (.kra, .png, .jpg, etc). Only files
-    inside the plugin's allowed directories (by default ~/krita-mcp-output)
-    can be opened.
+    Open an existing image file in Krita (.kra, .png, .jpg, etc) and return
+    its document handle (``doc``, e.g. "doc-3"), which other tools take as
+    ``doc``. Only files inside the plugin's allowed directories (by default
+    ~/krita-mcp-output) can be opened.
 
     Args:
         path: File name or path; relative paths are resolved against the
@@ -366,7 +444,8 @@ def krita_open_file(path: str, timeout_s: Optional[float] = None) -> dict:
         timeout_s: Seconds to wait for Krita, up to 900; default per command
     """
     result = client.call("open_file", {"path": path}, timeout_s=timeout_s)
-    return _done(result, f"Opened {result.get('name') or result.get('path', path)} "
+    handle = f" as {result['doc']}" if result.get("doc") else ""
+    return _done(result, f"Opened {result.get('name') or result.get('path', path)}{handle} "
                          f"({result.get('width')}x{result.get('height')})")
 
 

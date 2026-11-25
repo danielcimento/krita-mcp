@@ -131,6 +131,15 @@ are fast enough that per-pixel Python loops are never justified.
   reference destroys it: it disappears from `documents()` [verified
   2026-11-24, kritarunner]. So headless `new_canvas` returns `ok` but
   leaves nothing open; a handle registry must keep the wrapper.
+- **Headless, `activeDocument()` is always `None`**: with documents open,
+  and also right after `setActiveDocument(doc)` [verified 2026-11-24,
+  kritarunner, P1.6]. So tools called without `doc` get `not_found`
+  headless, and tests pass a handle.
+- `saveAs(path)` sets `fileName()` to `path` exactly as given, not
+  resolved: a temp dir under `/var/folders/…` stays `/var/…`, although
+  its realpath is `/private/var/…`. Compare paths after `os.path.realpath`
+  [verified 2026-11-24, P1.6]. Two documents saved to one path both
+  report it.
 - `app.profiles("RGBA", "U8")` lists the 21 installed profiles,
   including `sRGB-elle-V2-srgbtrc.icc`, `sRGB built-in`, `sRGB IEC61966-2.1`
   [verified].
@@ -176,6 +185,16 @@ are fast enough that per-pixel Python loops are never justified.
   original wrapper [verified].
 - `childNodes()` is ordered **bottom to top**. `index()` is the position
   in that list.
+- `childNodes()` and `nodeByUniqueID` return a `GroupLayer` for groups
+  (so `passThroughMode()` is there, `False` by default) and a
+  `SelectionMask` for the selection mask, but a plain `Node` for paint
+  layers. `rootNode().type()` is `grouplayer`. The global `Selection
+  Mask` is added **on top** (last in `childNodes()`). A group's
+  `bounds()` is the union of its children's. `layerStyleToAsl()` is `''`
+  for a group too [verified 2026-11-24, P1.6].
+- **Headless, `Document.activeNode()` is always `None`**, also right
+  after `setActiveNode(node)` [verified 2026-11-24, P1.6]. Painting tools
+  without `layer` then fail with `not_found`.
 - `addChildNode(child, above)` inserts `child` directly above `above`.
   With `above = None` it appends on top [verified: `add_paint` with
   `None` put the layer above `Background`]. To reorder, `removeChildNode`
@@ -183,7 +202,10 @@ are fast enough that per-pixel Python loops are never justified.
 - `bounds()` is **exact**: a 10×10 write at (13, 17) gives
   `(13, 17, 10, 10)`. It shrinks to `(0, 0, 0, 0)` when the pixels are
   cleared to transparent. An empty layer gives `(0, 0, 0, 0)` with
-  `hasExtents() == False`. Bounds are **not clipped to the canvas**:
+  `hasExtents() == False`. But a layer whose pixels were zeroed with
+  `setPixelData` has `bounds() == (0, 0, 0, 0)` while `hasExtents()`
+  **stays `True`** [verified 2026-11-24, P1.6], so check the size, not
+  only `hasExtents()`. Bounds are **not clipped to the canvas**:
   pixels written past the edge are kept and readable [verified].
 - `opacity()` / `setOpacity()` use **0–255**.
 - `setBlendingMode()` **accepts any string**: `"not-a-mode"` is stored
@@ -227,6 +249,11 @@ are fast enough that per-pixel Python loops are never justified.
 
 ## Pixels
 
+- `pixelData()` / `projectionPixelData()` return a `QByteArray`.
+  Indexing it gives one-byte `bytes`, not `int`s, so convert with
+  `bytes(...)` before reading values [verified 2026-11-24, P1.6: the old
+  `get_color_at` failed with "unsupported format string passed to
+  bytes.__format__"].
 - For 8-bit RGBA documents, `pixelData()` / `setPixelData()` bytes are
   **B, G, R, A** per pixel, non-premultiplied. The round trip is exact,
   including partial and zero alpha [verified].

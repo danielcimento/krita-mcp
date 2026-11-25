@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phase 1 in progress: P1.1–P1.5 done (P1.6 `refs.py` landed early). Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phase 1 in progress: P1.1–P1.6 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -145,7 +145,7 @@ roots, larger canvases, handles, and `list_documents` / `get_document_info`.
   handling, `elapsed_ms` measured on the main thread, `busy` in `/health`
   (D9). `server.py` derives its `httpx` timeout from the command's.
   Unit-test `CommandQueue` with a fake executor thread.
-- [ ] **P1.6 Handles and refs.** `registry.py` (D3), `nodes.py` (tree walk,
+- [x] **P1.6 Handles and refs.** `registry.py` (D3), `nodes.py` (tree walk,
   index, layer object), `refs.py` (D4). Every existing tool gains `doc`,
   and painting tools gain `layer`. Painting into a non-paint layer fails
   with `conflict`. `get_color_at` uses document bounds. The plugin keeps
