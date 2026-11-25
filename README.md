@@ -108,7 +108,7 @@ result = send_command("get_canvas", {"filename": filename}, timeout=120.0)
 result = send_command("save", {"path": path}, timeout=120.0)
 ```
 
-**Krita Plugin (`__init__.py`)** — Matching timeout in the command queue:
+**Krita Plugin (`bridge.py`)** — Matching timeout in the command queue:
 ```python
 def get_result(self, command_id, timeout=120):
     """Wait for result with timeout."""
@@ -122,12 +122,12 @@ def get_result(self, command_id, timeout=120):
 
 | Setting | Default | How to Change |
 |---------|---------|---------------|
-| Plugin HTTP port | `5678` | Edit `SERVER_PORT` in plugin `__init__.py` |
+| Plugin HTTP port | `5678` | Edit `SERVER_PORT` in plugin `config.py` |
 | MCP server URL | `http://localhost:5678` | Set `KRITA_URL` env var |
-| Canvas output dir | `~/krita-mcp-output` | Edit `CANVAS_OUTPUT_DIR` in plugin `__init__.py` |
-| Dirs that save/open may use | output dir only | Edit `ALLOWED_DIRS` in plugin `__init__.py` |
-| Auth token file | `~/.krita-mcp-token` | Plugin: `TOKEN_FILE`; MCP server: `KRITA_MCP_TOKEN_FILE` env var (or pass the token itself in `KRITA_MCP_TOKEN`) |
-| Size limits | 8192 px per side, 16 MP total, 5 MB requests | `MAX_*` constants in plugin `__init__.py` |
+| Canvas output dir | `~/krita-mcp-output` | Edit `CANVAS_OUTPUT_DIR` in plugin `config.py` |
+| Dirs that save/open may use | output dir only | Edit `ALLOWED_DIRS` in plugin `config.py` |
+| Auth token file | `~/.krita-mcp-token` | Plugin: `TOKEN_FILE` in `config.py`; MCP server: `KRITA_MCP_TOKEN_FILE` env var (or pass the token itself in `KRITA_MCP_TOKEN`) |
+| Size limits | 8192 px per side, 16 MP total, 5 MB requests | `MAX_*` constants in plugin `config.py` |
 
 ## Security
 

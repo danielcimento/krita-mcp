@@ -1,0 +1,425 @@
+"""Painting commands: color, brush, stroke, fill, shapes, clear, eyedropper."""
+
+from krita import Krita, ManagedColor
+from PyQt5.QtGui import QColor
+
+from ..config import COORD, MAX_BRUSH_SIZE, MAX_CANVAS_DIM, MAX_LIMIT, MAX_STROKE_POINTS
+from ..params import float_param, int_param
+from ._active import get_active_document, get_active_layer, get_active_view
+
+# Brush state, set by set_brush and used as the stroke default.
+current_brush_size = 20
+current_opacity = 1.0
+
+
+def cmd_set_color(params):
+    """Set foreground color."""
+    color_hex = params.get("color", "#ffffff")
+
+    view = get_active_view()
+    if not view:
+        return {"error": "No active view"}
+
+    color = QColor(color_hex)
+    mc = ManagedColor.fromQColor(color, view.canvas())
+    view.setForeGroundColor(mc)
+
+    return {"status": "ok", "color": color_hex}
+
+
+def cmd_set_brush(params):
+    """Set brush preset and size."""
+    global current_brush_size, current_opacity
+    preset_name = params.get("preset", None)
+    size = params.get("size", None)
+    opacity = params.get("opacity", None)
+
+    view = get_active_view()
+    if not view:
+        return {"error": "No active view"}
+
+    if preset_name:
+        # Find brush preset
+        presets = Krita.instance().resources("preset")
+        found = None
+        for name, preset in presets.items():
+            if preset_name.lower() in name.lower():
+                found = preset
+                break
+        if found:
+            view.setCurrentBrushPreset(found)
+        else:
+            return {"error": f"Brush preset not found: {preset_name}"}
+
+    if size is not None:
+        size = int_param(params, "size", None, 1, MAX_BRUSH_SIZE)
+        current_brush_size = size
+        view.setBrushSize(size)
+
+    if opacity is not None:
+        opacity = float_param(params, "opacity", None, 0.0, 1.0)
+        current_opacity = opacity
+        # Opacity is set per-stroke, store for later
+
+    return {"status": "ok", "preset": preset_name, "size": size, "opacity": opacity}
+
+
+def cmd_stroke(params):
+    """Paint a stroke along points using pixel-level drawing with soft edges."""
+    points = params.get("points", [])
+    brush_size = int_param(params, "size", current_brush_size, 1, MAX_BRUSH_SIZE)
+    hardness = float_param(params, "hardness", 0.5, 0.0, 1.0)  # 0.0 = very soft, 1.0 = hard edge
+    opacity = float_param(params, "opacity", 1.0, 0.0, 1.0)
+
+    if not isinstance(points, list) or len(points) < 2:
+        return {"error": "Need at least 2 points for a stroke"}
+    if len(points) > MAX_STROKE_POINTS:
+        return {"error": f"Too many points (max {MAX_STROKE_POINTS})"}
+    for p in points:
+        if (not isinstance(p, list) or len(p) != 2
+                or not all(isinstance(c, (int, float)) and not isinstance(c, bool)
+                           and -COORD <= c <= COORD for c in p)):
+            return {"error": "Each point must be an [x, y] pair of numbers"}
+
+    layer = get_active_layer()
+    if not layer:
+        return {"error": "No active layer"}
+
+    doc = get_active_document()
+    view = get_active_view()
+
+    if not view:
+        return {"error": "No active view"}
+
+    # Get current foreground color
+    fg = view.foregroundColor()
+    qcolor = fg.colorForCanvas(view.canvas())
+    r, g, b = qcolor.red(), qcolor.green(), qcolor.blue()
+
+    width = doc.width()
+    height = doc.height()
+    radius = max(1, brush_size // 2)
+
+    # Calculate bounding box for all points plus brush radius
+    min_x = max(0, int(min(p[0] for p in points)) - radius - 2)
+    min_y = max(0, int(min(p[1] for p in points)) - radius - 2)
+    max_x = min(width, int(max(p[0] for p in points)) + radius + 2)
+    max_y = min(height, int(max(p[1] for p in points)) + radius + 2)
+
+    w = max_x - min_x
+    h = max_y - min_y
+
+    if w <= 0 or h <= 0:
+        return {"error": "Stroke out of bounds"}
+
+    # Get existing pixel data for the affected region
+    existing = layer.pixelData(min_x, min_y, w, h)
+    pixels = bytearray(existing)
+
+    import math
+
+    def draw_soft_circle(cx, cy, point_opacity=1.0):
+        """Draw a soft circle with falloff at canvas coordinates."""
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                dist_sq = dx*dx + dy*dy
+                if dist_sq <= radius*radius:
+                    px = int(cx) + dx - min_x
+                    py = int(cy) + dy - min_y
+                    if 0 <= px < w and 0 <= py < h:
+                        # Calculate distance from center (0.0 to 1.0)
+                        dist = math.sqrt(dist_sq) / radius if radius > 0 else 0
+
+                        # Apply hardness curve
+                        # hardness=1.0: sharp edge, hardness=0.0: gradual fade from center
+                        if hardness >= 1.0:
+                            alpha_factor = 1.0
+                        else:
+                            # Soft falloff: starts fading at hardness point
+                            if dist < hardness:
+                                alpha_factor = 1.0
+                            else:
+                                # Smooth falloff from hardness to edge
+                                falloff = (dist - hardness) / (1.0 - hardness) if hardness < 1.0 else 0
+                                alpha_factor = 1.0 - falloff
+
+                        final_alpha = int(255 * alpha_factor * opacity * point_opacity)
+
+                        if final_alpha > 0:
+                            idx = (py * w + px) * 4
+                            # Alpha blending with existing pixel
+                            existing_b = pixels[idx]
+                            existing_g = pixels[idx+1]
+                            existing_r = pixels[idx+2]
+                            existing_a = pixels[idx+3]
+
+                            # Simple alpha blend
+                            blend = final_alpha / 255.0
+                            new_r = int(existing_r * (1 - blend) + r * blend)
+                            new_g = int(existing_g * (1 - blend) + g * blend)
+                            new_b = int(existing_b * (1 - blend) + b * blend)
+                            new_a = max(existing_a, final_alpha)
+
+                            pixels[idx] = new_b
+                            pixels[idx+1] = new_g
+                            pixels[idx+2] = new_r
+                            pixels[idx+3] = new_a
+
+    def draw_line(x1, y1, x2, y2):
+        """Draw a line using interpolation with soft brush circles."""
+        dist = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+        # More steps for smoother lines
+        steps = max(1, int(dist / max(1, radius / 3)))
+
+        for i in range(steps + 1):
+            t = i / steps if steps > 0 else 0
+            x = x1 + t * (x2 - x1)
+            y = y1 + t * (y2 - y1)
+            draw_soft_circle(x, y)
+
+    # Draw soft circles at each point and lines between them
+    for i in range(len(points)):
+        draw_soft_circle(points[i][0], points[i][1])
+        if i > 0:
+            draw_line(points[i-1][0], points[i-1][1], points[i][0], points[i][1])
+
+    layer.setPixelData(bytes(pixels), min_x, min_y, w, h)
+    doc.refreshProjection()
+
+    return {"status": "ok", "points_count": len(points), "hardness": hardness}
+
+
+def cmd_fill(params):
+    """Fill a circular area with current color."""
+    x = int_param(params, "x", 0, -COORD, COORD)
+    y = int_param(params, "y", 0, -COORD, COORD)
+    radius = int_param(params, "radius", 50, 1, MAX_CANVAS_DIM)
+
+    layer = get_active_layer()
+    if not layer:
+        return {"error": "No active layer"}
+
+    doc = get_active_document()
+    view = get_active_view()
+
+    if not view:
+        return {"error": "No active view"}
+
+    # Get current foreground color
+    fg = view.foregroundColor()
+    qcolor = fg.colorForCanvas(view.canvas())
+    r, g, b = qcolor.red(), qcolor.green(), qcolor.blue()
+
+    # Paint a filled circle using pixel data
+    # Create a bounding box
+    x1 = max(0, x - radius)
+    y1 = max(0, y - radius)
+    x2 = min(doc.width(), x + radius)
+    y2 = min(doc.height(), y + radius)
+    w = x2 - x1
+    h = y2 - y1
+
+    if w <= 0 or h <= 0:
+        return {"error": "Fill area out of bounds"}
+
+    # Get existing pixel data
+    existing = layer.pixelData(x1, y1, w, h)
+    pixels = bytearray(existing)
+
+    # Draw circle
+    for py in range(h):
+        for px in range(w):
+            # Check if point is in circle
+            dx = (x1 + px) - x
+            dy = (y1 + py) - y
+            if dx*dx + dy*dy <= radius*radius:
+                idx = (py * w + px) * 4
+                pixels[idx] = b      # B
+                pixels[idx+1] = g    # G
+                pixels[idx+2] = r    # R
+                pixels[idx+3] = 255  # A
+
+    layer.setPixelData(bytes(pixels), x1, y1, w, h)
+    doc.refreshProjection()
+
+    return {"status": "ok", "x": x, "y": y, "radius": radius}
+
+
+def cmd_draw_shape(params):
+    """Draw a shape (rectangle, ellipse, line)."""
+    shape = params.get("shape", "rectangle")
+    x = int_param(params, "x", 0, -COORD, COORD)
+    y = int_param(params, "y", 0, -COORD, COORD)
+    width = int_param(params, "width", 100, 0, COORD)
+    height = int_param(params, "height", 100, 0, COORD)
+    fill = params.get("fill", True)
+
+    layer = get_active_layer()
+    if not layer:
+        return {"error": "No active layer"}
+
+    doc = get_active_document()
+    view = get_active_view()
+
+    if not view:
+        return {"error": "No active view"}
+
+    # Get current foreground color
+    fg = view.foregroundColor()
+    qcolor = fg.colorForCanvas(view.canvas())
+    r, g, b = qcolor.red(), qcolor.green(), qcolor.blue()
+
+    if shape == "line":
+        # Draw line using pixel data
+        x2 = int_param(params, "x2", x + width, -COORD, COORD)
+        y2 = int_param(params, "y2", y + height, -COORD, COORD)
+        line_width = int_param(params, "line_width", 2, 1, MAX_BRUSH_SIZE)
+
+        # Calculate bounding box
+        x1_bound = max(0, int(min(x, x2)) - line_width)
+        y1_bound = max(0, int(min(y, y2)) - line_width)
+        x2_bound = min(doc.width(), int(max(x, x2)) + line_width)
+        y2_bound = min(doc.height(), int(max(y, y2)) + line_width)
+        w = x2_bound - x1_bound
+        h = y2_bound - y1_bound
+
+        if w > 0 and h > 0:
+            existing = layer.pixelData(x1_bound, y1_bound, w, h)
+            pixels = bytearray(existing)
+
+            # Draw line with thickness
+            dist = max(abs(x2 - x), abs(y2 - y))
+            steps = max(1, int(dist))
+            radius = max(1, line_width // 2)
+
+            for i in range(steps + 1):
+                t = i / steps if steps > 0 else 0
+                cx = x + t * (x2 - x)
+                cy = y + t * (y2 - y)
+                for dy in range(-radius, radius + 1):
+                    for dx in range(-radius, radius + 1):
+                        if dx*dx + dy*dy <= radius*radius:
+                            px = int(cx) + dx - x1_bound
+                            py = int(cy) + dy - y1_bound
+                            if 0 <= px < w and 0 <= py < h:
+                                idx = (py * w + px) * 4
+                                pixels[idx] = b
+                                pixels[idx+1] = g
+                                pixels[idx+2] = r
+                                pixels[idx+3] = 255
+
+            layer.setPixelData(bytes(pixels), x1_bound, y1_bound, w, h)
+    elif shape == "rectangle" and fill:
+        # Draw filled rectangle using pixel data
+        x1 = max(0, int(x))
+        y1 = max(0, int(y))
+        x2 = min(doc.width(), int(x + width))
+        y2 = min(doc.height(), int(y + height))
+        w = x2 - x1
+        h = y2 - y1
+
+        if w > 0 and h > 0:
+            pixel_data = bytes([b, g, r, 255] * (w * h))
+            layer.setPixelData(pixel_data, x1, y1, w, h)
+    elif shape == "ellipse" and fill:
+        # Draw filled ellipse using pixel data
+        cx = x + width / 2
+        cy = y + height / 2
+        rx = width / 2
+        ry = height / 2
+
+        x1 = max(0, int(x))
+        y1 = max(0, int(y))
+        x2 = min(doc.width(), int(x + width))
+        y2 = min(doc.height(), int(y + height))
+        w = x2 - x1
+        h = y2 - y1
+
+        if w > 0 and h > 0:
+            existing = layer.pixelData(x1, y1, w, h)
+            pixels = bytearray(existing)
+
+            for py in range(h):
+                for px in range(w):
+                    # Check if point is in ellipse
+                    dx = (x1 + px - cx) / rx if rx > 0 else 0
+                    dy = (y1 + py - cy) / ry if ry > 0 else 0
+                    if dx*dx + dy*dy <= 1:
+                        idx = (py * w + px) * 4
+                        pixels[idx] = b
+                        pixels[idx+1] = g
+                        pixels[idx+2] = r
+                        pixels[idx+3] = 255
+
+            layer.setPixelData(bytes(pixels), x1, y1, w, h)
+    else:
+        return {"error": f"Shape '{shape}' with current options not supported"}
+
+    doc.refreshProjection()
+
+    return {"status": "ok", "shape": shape}
+
+
+def cmd_clear(params):
+    """Clear the canvas."""
+    layer = get_active_layer()
+    if not layer:
+        return {"error": "No active layer"}
+
+    doc = get_active_document()
+
+    # Get canvas dimensions
+    width = doc.width()
+    height = doc.height()
+
+    # Clear by filling with background color
+    bg_color = params.get("color", "#1a1a2e")
+    color = QColor(bg_color)
+    r, g, b = color.red(), color.green(), color.blue()
+
+    # Fill entire layer with color
+    pixel_data = bytes([b, g, r, 255] * (width * height))
+    layer.setPixelData(pixel_data, 0, 0, width, height)
+
+    doc.refreshProjection()
+
+    return {"status": "ok", "color": bg_color}
+
+
+def cmd_get_color_at(params):
+    """Get color at specific pixel (eyedropper)."""
+    x = int_param(params, "x", 0, 0, MAX_CANVAS_DIM)
+    y = int_param(params, "y", 0, 0, MAX_CANVAS_DIM)
+
+    doc = get_active_document()
+    if not doc:
+        return {"error": "No active document"}
+
+    # Get projection pixel data at point
+    layer = doc.rootNode()
+    pixel_data = layer.projectionPixelData(x, y, 1, 1)
+
+    if len(pixel_data) >= 4:
+        # RGBA
+        b, g, r, a = pixel_data[0], pixel_data[1], pixel_data[2], pixel_data[3]
+        hex_color = "#{:02x}{:02x}{:02x}".format(r, g, b)
+        return {"status": "ok", "color": hex_color, "r": r, "g": g, "b": b, "a": a}
+
+    return {"error": "Could not read pixel"}
+
+
+def cmd_list_brushes(params):
+    """List available brush presets."""
+    filter_str = str(params.get("filter", ""))
+    limit = int_param(params, "limit", 50, 1, MAX_LIMIT)
+
+    presets = Krita.instance().resources("preset")
+    brush_list = []
+
+    for name, preset in presets.items():
+        if filter_str.lower() in name.lower():
+            brush_list.append(name)
+            if len(brush_list) >= limit:
+                break
+
+    return {"status": "ok", "brushes": brush_list, "count": len(brush_list)}

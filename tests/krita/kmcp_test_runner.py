@@ -57,7 +57,8 @@ class _Tee(io.TextIOBase):
 
     def flush(self):
         for stream in self._streams:
-            stream.flush()
+            if not getattr(stream, "closed", False):
+                stream.flush()
 
 
 class _RecordingResult(unittest.TextTestResult):

@@ -14,6 +14,17 @@ MCP client ──stdio──▶ server.py (FastMCP) ──HTTP POST :5678──�
 | MCP server | `server.py` | Its own Python (the repo's `.venv`) | Declares the MCP tools and their argument schemas, turns each call into `{"action", "params"}` and posts it to the plugin |
 | Krita plugin | `krita-plugin/kritamcp/` + `kritamcp.desktop` | Krita's bundled Python (3.13 in Krita 5.3.4), with PyQt5 | HTTP listener, auth, command queue, and the command handlers that call Krita's Python API (`libkis`) |
 
+Plugin modules (`krita-plugin/kritamcp/`):
+
+| Module | Job |
+|---|---|
+| `__init__.py` | Registers `KritaMCPExtension` with Krita; nothing else. Outside Krita (`krita` not importable) it registers nothing |
+| `extension.py` | `KritaMCPExtension`: in `createActions` makes the output dir, loads the token, starts the server thread and the 50 ms timer |
+| `bridge.py` | `PaintRequestHandler` (Host/browser/token checks), `CommandQueue`, `ServerThread`, token loading. No token loaded means every authenticated request gets 401 |
+| `dispatch.py` | `execute(command)`: action name → handler, any exception → `{"error": str(e)}` |
+| `commands/` | Handlers: `paint.py` (and the brush state), `documents.py`, `history.py`; `_active.py` finds the active document/view/layer |
+| `config.py`, `errors.py`, `paths.py`, `params.py` | Pure (no `krita`/PyQt5): constants, `CommandError`, `resolve_allowed_path`, `int_param`/`float_param`. Unit-tested in the repo venv |
+
 The server never touches pixels or files itself. All file I/O is done by
 the plugin, so the plugin's path checks are the security boundary.
 
@@ -21,11 +32,11 @@ the plugin, so the plugin's path checks are the security boundary.
 
 1. `server.py` posts JSON to `http://localhost:5678` with the shared token
    in `X-Krita-MCP-Token`.
-2. `PaintRequestHandler.do_POST` (HTTP thread) checks Host, browser
+2. `bridge.PaintRequestHandler.do_POST` (HTTP thread) checks Host, browser
    headers, the token, Content-Type and body size, then pushes the command
    onto `CommandQueue` and blocks in `get_result()`.
 3. A `QTimer` on Krita's **main thread** fires every 50 ms,
-   pops **one** command, and runs `execute_command()`. libkis calls must
+   pops **one** command, and runs `dispatch.execute()`. libkis calls must
    happen on the main thread, which is why the queue exists.
 4. The handler's return dict goes back to the HTTP thread and out as JSON.
    A dict containing `"error"` is sent with HTTP 500.
@@ -51,19 +62,20 @@ strokes and request bodies.
 
 ## Adding a command (current layout)
 
-1. Add `cmd_<name>(self, params)` to `KritaMCPExtension` in
-   `krita-plugin/kritamcp/__init__.py`. Validate inputs with `int_param`,
-   `float_param` and `resolve_allowed_path`, and raise `CommandError` for
-   bad input.
-2. Add the action to the `if/elif` chain in `execute_command()` and to the
-   `/info` command list.
+1. Add `cmd_<name>(params)` to the fitting module in
+   `krita-plugin/kritamcp/commands/`. Validate inputs with `int_param`,
+   `float_param` (`params.py`) and `resolve_allowed_path` (`paths.py`),
+   and raise `CommandError` (`errors.py`) for bad input.
+2. Add the action to the `if/elif` chain in `dispatch.execute()` and to the
+   `/info` command list in `bridge.py`.
 3. Add a `@mcp.tool()` wrapper in `server.py` and pass a larger `timeout`
    to `send_command` if the command can be slow.
-4. Copy the plugin into Krita's `pykrita` directory and restart Krita.
+4. Add a headless test calling `dispatch.execute` in `tests/krita/`
+   (`make test-krita`).
+5. Copy the plugin into Krita's `pykrita` directory and restart Krita.
    Krita does not reload plugin code while it runs.
 
-The F001 buildout replaces steps 1–3 with a dispatch registry and splits
-the plugin into modules. See
+The F001 buildout replaces steps 1–3 with a dispatch registry. See
 [f001_buildout/plan.md § Target layout](f001_buildout/plan.md#target-layout).
 
 ## Development install

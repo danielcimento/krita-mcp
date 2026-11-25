@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phase 1 in progress: P1.1 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phase 1 in progress: P1.1–P1.2 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -121,7 +121,7 @@ roots, larger canvases, handles, and `list_documents` / `get_document_info`.
   the headless suite (D16): `tests/krita/` (unittest), the
   `kmcp_test_runner.py` shim, `tools/install_test_runner.sh`, and a
   `Makefile` with `test`, `test-krita` and `test-live`.
-- [ ] **P1.2 Split the plugin into modules, no behaviour change.** Move code
+- [x] **P1.2 Split the plugin into modules, no behaviour change.** Move code
   into `bridge.py`, `extension.py`, `paths.py`, `params.py` and
   `commands/paint.py`, and keep the `if/elif` dispatch. Unit tests for
   `paths.resolve_allowed_path` and `params`, covering `..`, symlinks and

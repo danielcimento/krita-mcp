@@ -385,7 +385,9 @@ document doesn't depend on a view. No new painting features are added.
   headless. The HTTP bridge, auth, the queue and timeouts, plus the
   end-to-end acceptance tests, in `tests/live` against the GUI Krita.
   Pure logic in `tests/unit`.
-- **Import side effects:** `kritamcp/__init__.py` currently creates the
+- **Import side effects:** `kritamcp/__init__.py` used to create the
   token file when imported. Headless tests import the package, so P1.2
-  moves token creation (and any other side effect) into the extension's
-  startup. `__init__.py` only registers the extension.
+  moved token creation into the extension's startup (`createActions`).
+  `__init__.py` only registers the extension, and registers nothing when
+  `krita` isn't importable, so pure modules import under pytest. Done in
+  P1.2 (2026-11-24).

@@ -126,6 +126,11 @@ are fast enough that per-pixel Python loops are never justified.
   `sRGB-elle-V2-srgbtrc.icc`. The new document has `fileName() == ""` and
   `modified() == False` [verified]. Note that the current `new_canvas` adds a
   *second* layer on top of it.
+- A document from `createDocument` is owned by the Python wrapper it
+  returns. With no view added (headless, no window), dropping the last
+  reference destroys it: it disappears from `documents()` [verified
+  2026-11-24, kritarunner]. So headless `new_canvas` returns `ok` but
+  leaves nothing open; a handle registry must keep the wrapper.
 - `app.profiles("RGBA", "U8")` lists the 21 installed profiles,
   including `sRGB-elle-V2-srgbtrc.icc`, `sRGB built-in`, `sRGB IEC61966-2.1`
   [verified].

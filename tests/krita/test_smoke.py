@@ -32,9 +32,20 @@ class DocumentTest(unittest.TestCase):
 
 
 class PluginImportTest(unittest.TestCase):
-    # TODO(P1.2): enable once importing kritamcp has no side effects.
-    # Today the import creates ~/.krita-mcp-token and registers the
-    # extension, so the headless suite must not import it yet.
-    @unittest.skip("P1.2: kritamcp import still has side effects")
+    """Importing kritamcp headless has no side effects (D16)."""
+
     def test_import_kritamcp(self):
         import kritamcp  # noqa: F401
+
+    def test_import_registers_extension_but_starts_nothing(self):
+        import kritamcp
+        from kritamcp import bridge
+        from kritamcp.extension import KritaMCPExtension
+
+        self.assertIsNone(bridge.AUTH_TOKEN)
+        self.assertEqual(bridge.command_counter, 0)
+        ours = [e for e in Krita.instance().extensions() if isinstance(e, KritaMCPExtension)]
+        self.assertEqual(len(ours), 1)  # registered exactly once
+        # No window, so createActions never ran: no server thread, no timer.
+        self.assertIsNone(ours[0].server_thread)
+        self.assertIsNone(ours[0].timer)
