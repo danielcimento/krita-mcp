@@ -47,7 +47,7 @@ Run 3 repeated every run-2 result unchanged.
 | Q8 | Group projection: own opacity? clipping baked? | `merge_layers` | **Excludes** the group's own opacity and **includes** clipping baked in |
 | Q9 | `Selection.cut`/`paste`; `setSelection(None)` | `selection_to_layer`, `select(none)` | `cut` clears the source and `paste` writes into the destination, with no new layer. **`setSelection` adds a root-level `Selection Mask` node.** `setSelection(None)` makes `selection()` return `None`. *Run 3:* the mask node **goes away** after deselecting, and `cut` puts `application/x-krita-selection` + `application/x-qt-image` on the **system clipboard** |
 | Q10 | `Selection.grow` as dilation | lint `stray-alpha`, `trim_layers` | Works, with a roughly round kernel: 1 px grown by 4 gives 69 px in a 9×9 box. `setPixelData` works after `resize` |
-| Q11 | Timings at 5800×8400 | D9, D10, `create_layers` budget | Not run (`RUN_LARGE = False`) |
+| Q11 | Timings at 5800×8400 | D9, D10, `create_layers` budget | (`spike/probe-results-q11.json`) In-Krita pixel work is milliseconds: full `setPixelData` 39, `pixelData` 20, `projection` 17–27, **`clone` 4–10 ms (copy-on-write)**. File I/O dominates: QImage PNG save 1.7 s, `exportImage` 1.3 s, `saveAs .kra` 1.9 s, open Mao `.ora` 2.6 s. Mao: 222 nodes, empty `name()`. D9 confirmed; D10 switched to clone |
 | Q12 | `kritarunner` headless | D16 | **Works** (2026-11-24, `spike/runner-result.json`). No windows; create, `setPixelData`, `saveAs`, reopen and pixel read-back all correct. Own profile (`~/Library/Application Support/kritarunner/`); imports only from its `pykrita/`; `PYTHONPATH` ignored; the function gets the arg list. The bridge can't start (no `createActions`), so headless tests call dispatch directly. D16 closed |
 | Q13 | Batch-mode save, export, close | `save`, `close_document` | No dialogs. `exportImage`/`saveAs` return `True`. `exportImage` leaves `fileName()` alone, `saveAs` re-points it and clears `modified`. `close()` after `setModified(False)` returns `True` with no prompt |
 | Q14 | `layerStyleToAsl()` on a plain layer | lint `layer-style` | `''` |
@@ -129,6 +129,10 @@ imported. It then failed with `run() takes 0 positional arguments but 1
 was given` (kritarunner passes the arg list), and passed once the
 signature was `run(args=None)`. The test module was removed from the
 runner profile afterwards.
+
+**2026-11-24, Q11** (`RUN_LARGE = True`, other probes skipped). Clean.
+The surprise was `clone()`, effectively free even for Mao, which made the
+clone-based render (D10 B) the better default.
 
 ## Not covered by the probe
 

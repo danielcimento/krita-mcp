@@ -161,9 +161,10 @@ to top** reproduces a stack, and that is the order the manifest uses.
 Returns `{"created": [{"key", "id", "name", "path"}], "summary": …}`.
 On failure, nothing stays created (D11).
 
-Performance: the 184-layer Mao build means 184 PNG decodes plus
-`setPixelData` calls, measured in spike Q11. The default timeout for this
-command is 300 s.
+Performance: spike Q11 puts `setPixelData` at under 40 ms even for a
+full 48 MP layer. So the 184-layer Mao build is bounded by PNG decoding
+(cropped PNGs, mostly far smaller than the canvas), and should take
+seconds. The default timeout for this command is 300 s.
 
 ### `krita_update_layers(doc?, changes, dry_run?)` · P0
 
@@ -284,7 +285,12 @@ document.
   list of refs hidden for the render. Combining both means: only these,
   minus those.
 - `background`: `null` for transparent (the default), or a hex color composited underneath.
-- Visibility and the `modified` flag are restored afterwards (D10).
+- With `only` / `hide`, the render happens in a `clone()` of the document
+  (≈10 ms even for Mao), so the user's document is never touched (D10).
+- Cost is mostly PNG encoding, ≈1.7 s per full Mao-size image (Q11).
+  Use `scale` (e.g. 0.25) for previews.
+- `png_level`: optional zlib level 0–9 for the output (default Qt's).
+  Lower is faster and bigger. The same option exists on `export_layers`.
 - Returns `path`, `width`, `height` and `elapsed_ms`.
 - `krita_get_canvas(filename)` stays as a shortcut for
   `render(path=<output dir>/<filename>)`.

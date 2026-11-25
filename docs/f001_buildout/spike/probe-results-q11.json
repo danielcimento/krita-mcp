@@ -1,0 +1,94 @@
+{
+  "Q0": {
+    "title": "Environment",
+    "status": "skipped"
+  },
+  "Q1": {
+    "title": "Which libkis calls create undo steps",
+    "status": "skipped"
+  },
+  "Q2": {
+    "title": "Node.bounds(): exact or tile-aligned; empty layers",
+    "status": "skipped"
+  },
+  "Q3": {
+    "title": "UUIDs: format, lookup, clone, .kra/.ora persistence",
+    "status": "skipped"
+  },
+  "Q4": {
+    "title": "createDocument defaults, profiles, Document equality",
+    "status": "skipped"
+  },
+  "Q5": {
+    "title": "BGRA order and bit-exact PNG round trip via QImage",
+    "status": "skipped"
+  },
+  "Q6": {
+    "title": "move / scaleNode / rotateNode semantics",
+    "status": "skipped"
+  },
+  "Q7": {
+    "title": "Visibility toggles: modified flag and projection refresh",
+    "status": "skipped"
+  },
+  "Q8": {
+    "title": "Group projection: own opacity included? clipping baked?",
+    "status": "skipped"
+  },
+  "Q9": {
+    "title": "Selection copy/cut/paste and document selection",
+    "status": "skipped"
+  },
+  "Q10": {
+    "title": "Selection.grow as dilation",
+    "status": "skipped"
+  },
+  "Q11": {
+    "title": "Timing at Mao size (RUN_LARGE only)",
+    "status": "ok",
+    "elapsed_ms": 7850,
+    "result": {
+      "createDocument_ms": 37,
+      "build_buffer_ms": 11,
+      "setPixelData_full_ms": 39,
+      "settle_ms": 23,
+      "pixelData_full_ms": 20,
+      "alpha_slice_ms": 17,
+      "qimage_save_png_ms": 1702,
+      "projection_full_ms": 27,
+      "exportImage_png_ms": 1336,
+      "saveAs_kra_ms": 1858,
+      "clone_ms": 4,
+      "open_mao_ora_ms": 2633,
+      "mao_settle_ms": 77,
+      "mao_projection_ms": 17,
+      "mao_clone_ms": 10,
+      "mao_name": "",
+      "mao_nodes": 222
+    }
+  },
+  "Q13": {
+    "title": "Batch-mode save/export/close: return values, fileName, dialogs",
+    "status": "skipped"
+  },
+  "Q14": {
+    "title": "layerStyleToAsl on a plain layer",
+    "status": "skipped"
+  },
+  "Q15": {
+    "title": "Blend mode IDs and invalid values",
+    "status": "skipped"
+  },
+  "Q16": {
+    "title": "Node.save with exportRect, under app-wide batch mode (runs last)",
+    "status": "skipped"
+  },
+  "Q17": {
+    "title": "Liveness check on a closed Document (== only)",
+    "status": "skipped"
+  },
+  "Q18": {
+    "title": "Re-inserting a removed node (journal inverse for delete)",
+    "status": "skipped"
+  }
+}

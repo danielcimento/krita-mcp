@@ -75,6 +75,30 @@ so the HTTP bridge dies with it.
     fallback, "some tiles have leaked".
   - It doesn't conflict with a running GUI Krita.
 
+## Performance at Live2D size
+
+Spike Q11, 5800×8400 (48.7 MP), Krita 5.3.4 on an M-series Mac
+[verified 2026-11-24, `f001_buildout/spike/probe-results-q11.json`]:
+
+| Operation | ms |
+|---|---|
+| `createDocument` | 37 |
+| `bytes((b, g, r, a)) * n` (195 MB buffer) | 11 |
+| Full-layer `setPixelData` / settle / `pixelData` | 39 / 23 / 20 |
+| `data[3::4]` (alpha slice of 195 MB) | 17 |
+| `projection()` full canvas, one layer / Mao | 27 / 17 |
+| `clone()` one layer / Mao | 4 / 10 |
+| **QImage → PNG, full canvas** (solid fill) | **1702** |
+| `exportImage` PNG / `saveAs` `.kra` | 1336 / 1858 |
+| Open Mao `.ora` (184 layers) + settle | 2633 + 77 |
+
+Krita's own pixel operations are effectively free at this size. **PNG
+encoding dominates**, and real art compresses worse than a solid fill.
+Keep PNG writes to what the caller asked for, and prefer scaled renders
+for previews. QImage's `save(path, "PNG", quality)` trades size for speed
+(Qt maps quality to the zlib level). Whole-buffer `bytes` operations
+are fast enough that per-pixel Python loops are never justified.
+
 ## Threading
 
 - Call libkis only from the main thread. The plugin's command queue and
@@ -111,9 +135,10 @@ so the HTTP bridge dies with it.
   [verified as BGRA→RGB-correct].
 - `refreshProjection()` then `waitForDone()` before reading pixels after a
   change.
-- `clone()` copies the whole document, **keeping node UUIDs**. It took
-  1 ms for a 256² document [verified]. The cost at Mao size is still
-  [to verify] (Q11).
+- `clone()` copies the whole document, **keeping node UUIDs**. It is
+  copy-on-write and nearly free: 1 ms for 256², 4 ms for a 5800×8400
+  one-layer document, **10 ms for the 222-node Mao document**
+  [verified, Q11].
 - `resizeImage(x, y, w, h)` changes the canvas without scaling.
   `scaleImage` scales content. `crop` crops [stub].
 - `colorModel()` / `colorDepth()` / `colorProfile()` return `"RGBA"`,

@@ -249,7 +249,12 @@ and other coordinate checks use the document's real size, not
 
 - Each command declares a default timeout in the dispatch registry: 30 s
   for queries, 300 s for save, export, render and batches. A caller may
-  pass `timeout_s` (up to 900).
+  pass `timeout_s` (up to 900). Spike Q11 confirmed these leave plenty of
+  room. At Mao size (5800×8400), Krita itself is fast: full-canvas
+  `setPixelData` takes 39 ms, `pixelData` 20 ms, `projection` 17–27 ms. The
+  slow parts are file I/O: **PNG encoding ≈ 1.7 s** per full-canvas
+  image (QImage, a solid fill, so real art will be slower), `exportImage`
+  1.3 s, `saveAs .kra` 1.9 s, and opening the Mao `.ora` 2.6 s.
 - `server.py` sets the `httpx` timeout to the command timeout plus 15 s,
   so the plugin's `timeout` error arrives before the transport gives up.
 - When the plugin's wait times out, it marks the command ID abandoned. The
@@ -264,25 +269,33 @@ and other coordinate checks use the document's real size, not
 
 ## D10. How `render` hides layers
 
-**Decided: A, with B as fallback** (spike runs 2 and 3, Q1 and Q7).
-`setVisible` sets neither the modified flag nor an undo step, and the
-projection follows visibility after `refreshProjection()` +
-`waitForDone()`. So an in-place toggle leaves no trace once it's
-restored. B remains the fallback if Q11 shows in-place re-rendering is
-much slower than a clone at Mao size.
+**Decided: B (clone), with A as fallback** (spike Q1, Q3, Q7, Q11).
+Originally A. Q11 showed that `clone()` of the full Mao document takes
+**10 ms**: it is copy-on-write, not "one full document copy". So B costs
+almost nothing, and it never touches the user's document. That means no
+canvas flicker, no visibility state to restore, and nothing left behind if
+anything fails midway. Clones keep node UUIDs (Q3), so `only` / `hide`
+refs map straight across. A is still safe (`setVisible` sets neither the
+modified flag nor an undo step, and the projection follows it), and
+stays as the fallback.
+
+Run 2 confirmed it's safe to close the clone once done. It is never
+touched after `close()` (D3). The headless suite (D16) must check that a
+clone's projection follows visibility changes made in the clone. If that
+fails, switch to A.
 
 `render(only=…, hide=…)` must not leave visibility changed. There are two ways:
 
-- **A (default):** toggle visibility in place, `refreshProjection()` +
-  `waitForDone()`, read `projection(region)`, and restore visibility and
-  the `modified()` flag in `finally`. It is cheap. The canvas flickers
+- **B (default):** `doc.clone()`, toggle visibility in the clone,
+  `refreshProjection()` + `waitForDone()`, read the clone's
+  `projection(region)`, and close the clone in `finally`.
+- **A (fallback):** toggle in place, read the projection, and restore
+  visibility and the `modified()` flag in `finally`. The canvas flickers
   while it runs.
-- **B:** `doc.clone()`, toggle in the clone, read the clone's projection,
-  and close the clone. The original is untouched, but memory and time are
-  about one full document copy.
 
-The restore runs in `finally`. If Krita crashes mid-render, it can't
-run, but nothing is saved either, so the file on disk is unaffected.
+Renders without `only` / `hide` skip both and read `projection()`
+directly. The cost of `render` is dominated by PNG encoding (≈1.7 s at
+full Mao size), so agents should pass `scale` < 1 for previews.
 
 ## D11. Batch semantics
 
@@ -340,8 +353,12 @@ document doesn't depend on a view. No new painting features are added.
 
 - **Unit tests** (pytest, repo `.venv`): the pure plugin modules (`paths`,
   `config`, `params`, `refs`, `lint`, `manifest`) and `server.py`
-  wrappers with the HTTP call mocked. `pixels.py` tests run when PyQt5 is
-  installed in the venv (add it to a `requirements-dev.txt`).
+  wrappers with the HTTP call mocked. The repo venv is Python 3.14, while the
+  plugin runs on Krita's 3.13. Plugin code must stay 3.13-compatible, so
+  don't use 3.14-only syntax or stdlib APIs. `pixels.py` and anything else
+  needing PyQt5 is tested in the headless suite below, which has
+  Krita's PyQt5. The venv doesn't get PyQt5. `requirements-dev.txt` is
+  `pytest` + `Pillow` (Pillow is for comparing renders in live tests).
 - **Live tests** (`tests/live/`, skipped unless `KRITA_MCP_LIVE=1`): go
   through `server.py`'s functions against a running Krita, using a
   scratch root added to the allowlist. The acceptance tests live here.

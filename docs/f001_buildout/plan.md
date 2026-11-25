@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phase 0 done (Q11/Q12 optional). Phase 1 next |
+| Status | Phase 0 done. Phase 1 next. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -75,7 +75,7 @@ tests/
 tools/
   ora_to_manifest.py           # first-session .ora → manifest v1 + PNGs (acceptance 1)
   install_plugin.sh            # symlink plugin into pykrita
-requirements-dev.txt           # pytest, Pillow, PyQt5 (for pixels.py tests)
+requirements-dev.txt           # pytest, Pillow (PyQt5 code is tested headless, in Krita's Python)
 ```
 
 `(pure)` modules don't import `krita` or need a running Krita, so they can be unit-tested in the
@@ -103,8 +103,8 @@ installable and the existing tools working.
       and D10 are closed.
 - [x] Q12: `kritarunner` works headless. D16 closed (headless suite
       calls dispatch directly).
-- [ ] Optional: `RUN_LARGE = True` for Q11 (timings at Mao size, to tune
-      D9's default timeouts). It doesn't block Phase 1.
+- [x] Q11: timings at Mao size. Krita is fast and PNG encoding
+      dominates. D9's defaults hold. D10 switched to clone-based rendering.
 
 *Exit:* met. No open or provisional decisions remain.
 
@@ -192,17 +192,19 @@ roots, larger canvases, handles, and `list_documents` / `get_document_info`.
 - **P3.1 `pixels.py`.** BGRA↔QImage wrap and copy, PNG load/save,
   alpha extraction, opaque-bounds scan (row and column passes over the alpha
   bytes), source-over compositing with `QPainter`, and a guard for
-  8-bit RGBA documents. Unit tests in the venv with PyQt5 cover byte order and
-  bit-exact round trip (mirroring Q5).
+  8-bit RGBA documents. Headless tests (`tests/krita`) cover byte order
+  and bit-exact round trip (mirroring Q5).
 - **P3.2 `export_layers`.** Per-layer PNGs, cropping to opaque bounds,
   hidden layers, empty layers recorded with `png: null`, optional group
-  projections, and the manifest. Use `Node.save` instead of the
-  `pixelData` path only if Q14 shows it gives the same bytes and is faster.
+  projections, and the manifest. Always the `pixelData` → QImage path,
+  never `Node.save`, which bakes opacity in and can open a dialog (D5).
 - **P3.3 `import_png`.** `replace` / `over` / `clear_outside`, paint-layer
   check, and the changed rectangle in the result.
 - **P3.4 `render`.** Region, scale, `only` / `hide` resolution
   (ancestors shown, descendants keep their state), background, and
-  visibility plus modified-flag restore in `finally` (D10 A or B, per Q7).
+  `png_level`. Subset renders go through a `clone()` closed in `finally`
+  (D10 B). A headless test checks that the clone's projection follows
+  visibility changes in the clone.
   `get_canvas` becomes a shortcut for `render`.
 
 *Exit:* acceptance test **2** (round trip, pixel-identical) passes. It
@@ -301,7 +303,7 @@ committed to this repo. Tests read them from the user's machine.
 | libkis edits aren't undoable (Q1) | The spec's "one undo per action" can't use Krita's undo | Agent journal (D6). Document how it interacts with UI edits |
 | `Node.bounds()` is tile-aligned (Q2) | Crops and lint would be wrong | Compute `opaque_bounds` from alpha (P3.1), and use Krita's bounds only as the scan window |
 | PNG round trip not bit-exact (Q5), e.g. zero-alpha colors | Acceptance test 2 fails | Compare renders, which are composites, not layer bytes. If needed, normalize zero-alpha pixels on export and document it |
-| Large docs are slow on the main thread (Q11) | Timeouts, frozen UI | Per-command timeouts up to 900 s, batch cap, `busy` in health. Note in the docs that Krita is unresponsive during big batches |
+| Large docs are slow on the main thread | Timeouts, frozen UI | Q11: Krita's own operations take milliseconds at Mao size; file I/O takes 1–3 s per file. Per-command timeouts up to 900 s, batch cap, `busy` in health, `png_level` and `scale` for speed. Note in the docs that Krita is unresponsive during big exports |
 | Rendering by toggling visibility leaves state behind after a crash mid-render | Visibility changed in the user's doc | `finally` restore. Fall back to clone rendering (D10 B) |
 | A dialog blocks the main thread during save/export/close. **Seen:** `Node.save` opened the PNG export dialog, and dismissing it crashed Krita | The command hangs; Krita may crash | Never call `Node.save`. Run every export through one batch-mode helper (D5). `setModified(False)` only when the caller passes `discard`. Probe results Q13 and Q16 decide the rest |
 | The plugin and server get out of step after an update | Confusing errors | Protocol version check (P1.3) |
