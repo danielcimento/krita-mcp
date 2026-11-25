@@ -243,6 +243,24 @@ To document in the tool docs and README:
   manifest that `export_layers` writes and `create_layers` reads.
 - Directory outputs (`export_layers`) must resolve inside a root. The
   directory is created if missing. It must be empty unless `overwrite: true`.
+- *(P1.4, 2026-11-24): details settled in `config.py` / `paths.py`.*
+  - Root order: the output dir first (included even before it exists),
+    then the file's `allowed_dirs`, then the env var. Duplicates after
+    `realpath` are dropped silently. Besides `/` and the home directory,
+    any ancestor of home (e.g. `/Users`) is refused too.
+  - A symlinked config file is accepted if both the link and its target
+    are owned by the user; the mode check applies to the target. A
+    non-regular file (directory, FIFO) is ignored with an error.
+  - Re-reading is keyed on the file's stat (mtime, size, mode, owner,
+    inode, ctime, so a `chmod` is noticed), the env vars, and whether each
+    requested root now resolves elsewhere or (stops) existing, so creating
+    a configured directory later needs no restart. Bad values never
+    raise: they go to `Settings.errors`. Unknown keys are reported and the
+    rest is used; an invalid limit keeps its default.
+  - A directory output equal to a root is treated like any other
+    directory (allowed when empty or with `overwrite`). Containment is
+    re-checked after `makedirs`; if a symlink race sent the directory
+    outside, the call fails with `forbidden_path`.
 
 ## D8. Size limits
 
