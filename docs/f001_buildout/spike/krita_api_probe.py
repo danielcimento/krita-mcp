@@ -15,8 +15,15 @@ them at the end without saving. Several probes open a view so that
 Edit > Undo has a target, so tabs will flash. Set RUN_LARGE = True for the
 Mao-sized timing probe (Q11): it needs about 2 GB of RAM and a minute or two.
 
-If a probe hangs on a dialog (a save or close prompt), that is itself the
-answer for Q13: dismiss it and record that in spike.md.
+Results are written after every probe, and the probe about to run is
+recorded in probe-progress.txt first. If Krita hangs or crashes, the
+results so far are kept and probe-progress.txt names the culprit. To
+skip probes on a rerun, list them in SKIP.
+
+Known hazard (first run, 2026-11-24): Node.save() ignores the document's
+batch mode and shows the "PNG image" export dialog; dismissing it crashed
+Krita 5.3.4. Q16 now sets the app-wide batch mode around the call. Set
+RUN_NODE_SAVE = False if it still misbehaves.
 """
 
 import json
@@ -32,6 +39,8 @@ from PyQt5.QtGui import QImage
 
 OUT_DIR = os.path.expanduser("~/krita-mcp-output/spike")
 RUN_LARGE = False
+RUN_NODE_SAVE = True
+SKIP = set()  # e.g. {"Q16"}
 MAO_ORA = os.path.expanduser("~/krita-mcp-output/mao_pro_layered.ora")
 
 app = Krita.instance()
@@ -42,9 +51,28 @@ SCRATCH = []
 
 # ---------------------------------------------------------------- helpers
 
+def _write(name, text):
+    """Write a file and fsync it, so it survives a crash right after."""
+    os.makedirs(OUT_DIR, exist_ok=True)
+    with open(os.path.join(OUT_DIR, name), "w") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def save_results():
+    _write("probe-results.json", json.dumps(results, indent=2, default=str))
+
+
 def probe(qid, title):
     def deco(fn):
         def run():
+            if qid in SKIP:
+                results[qid] = {"title": title, "status": "skipped"}
+                save_results()
+                return
+            _write("probe-progress.txt", f"started {qid}: {title}\n")
+            print(f"[{qid}] starting: {title}")
             t0 = time.perf_counter()
             try:
                 out, status = fn(), "ok"
@@ -57,6 +85,8 @@ def probe(qid, title):
                 "elapsed_ms": round((time.perf_counter() - t0) * 1000),
                 "result": out,
             }
+            save_results()
+            _write("probe-progress.txt", f"finished {qid}\n")
             print(f"[{qid}] {title}: {status}\n    {json.dumps(out, default=str)[:600]}")
         PROBES.append(run)
         return fn
@@ -528,25 +558,12 @@ def q13():
     return out
 
 
-@probe("Q14", "layerStyleToAsl on a plain layer; Node.save with exportRect")
+@probe("Q14", "layerStyleToAsl on a plain layer")
 def q14():
-    os.makedirs(OUT_DIR, exist_ok=True)
-    doc = scratch_doc(name="nodesave")
+    doc = scratch_doc(name="asl")
     n = add_paint(doc)
-    n.setPixelData(solid(0, 0, 255, 200, 100), 13, 17, 10, 10)
-    n.setOpacity(128)
-    settle(doc)
     asl = n.layerStyleToAsl()
-    path = os.path.join(OUT_DIR, "probe-nodesave.png")
-    n.save(path, 72.0, 72.0, InfoObject(), QRect(13, 17, 10, 10))
-    img = QImage(path)
-    c = img.pixelColor(0, 0) if not img.isNull() else None
-    return {
-        "asl_repr": repr(asl)[:200], "asl_empty": not asl,
-        "node_save_size": [img.width(), img.height()],
-        "node_save_pixel_rgba": [c.red(), c.green(), c.blue(), c.alpha()] if c else None,
-        "note": "alpha 200 => raw pixels; ~100 => layer opacity baked in",
-    }
+    return {"asl_repr": repr(asl)[:200], "asl_empty": not asl}
 
 
 @probe("Q15", "Blend mode IDs and invalid values")
@@ -558,6 +575,40 @@ def q15():
         n.setBlendingMode(mode)
         out[mode] = n.blendingMode()
     return out
+
+
+@probe("Q16", "Node.save with exportRect, under app-wide batch mode (runs last)")
+def q16():
+    """Node.save showed a modal export dialog on the first run even though
+    nothing asked for one, and Krita crashed after it was dismissed. Here
+    the app-wide batch mode is set around the call."""
+    if not RUN_NODE_SAVE:
+        return {"skipped": "set RUN_NODE_SAVE = True"}
+    os.makedirs(OUT_DIR, exist_ok=True)
+    doc = scratch_doc(name="nodesave")
+    n = add_paint(doc)
+    n.setPixelData(solid(0, 0, 255, 200, 100), 13, 17, 10, 10)
+    n.setOpacity(128)
+    settle(doc)
+    path = os.path.join(OUT_DIR, "probe-nodesave.png")
+    if os.path.exists(path):
+        os.remove(path)
+    prev = app.batchmode()
+    app.setBatchmode(True)
+    try:
+        n.save(path, 72.0, 72.0, InfoObject(), QRect(13, 17, 10, 10))
+    finally:
+        app.setBatchmode(prev)
+    img = QImage(path)
+    c = img.pixelColor(0, 0) if not img.isNull() else None
+    return {
+        "app_batchmode_before": prev,
+        "file_written": os.path.exists(path),
+        "node_save_size": [img.width(), img.height()],
+        "node_save_pixel_rgba": [c.red(), c.green(), c.blue(), c.alpha()] if c else None,
+        "note": "no dialog appeared => app batch mode suppresses it; "
+                "alpha 200 => raw pixels; ~100 => layer opacity baked in",
+    }
 
 
 # ------------------------------------------------------------------ main
@@ -573,11 +624,9 @@ def main():
                 d.close()
             except Exception:
                 pass
-        os.makedirs(OUT_DIR, exist_ok=True)
-        path = os.path.join(OUT_DIR, "probe-results.json")
-        with open(path, "w") as f:
-            json.dump(results, f, indent=2, default=str)
-        print(f"\nWrote {path}")
+        save_results()
+        _write("probe-progress.txt", "complete\n")
+        print(f"\nWrote {os.path.join(OUT_DIR, 'probe-results.json')}")
 
 
 main()

@@ -92,7 +92,10 @@ installable and the existing tools working.
 ### Phase 0: API spike
 
 - [x] Write the probe script and the question list ([spike.md](spike.md)).
-- [ ] **User:** run the probe in Krita (and Q12 by hand), commit
+- [x] First run (2026-11-24): crashed at the Q14 `Node.save` call (see
+      [spike.md § Run log](spike.md#run-log)). The probe was fixed to save
+      results after every probe, and `Node.save` moved to Q16.
+- [ ] **User:** rerun the probe in Krita (and Q12 by hand), commit
       `spike/probe-results.json`.
 - [ ] Record results in `spike.md` and `krita-api-notes.md`. Close D6,
       D10 and D16 in `decisions.md`, and adjust `api-design.md` where results
@@ -283,7 +286,7 @@ committed to this repo. Tests read them from the user's machine.
 | PNG round trip not bit-exact (Q5), e.g. zero-alpha colors | Acceptance test 2 fails | Compare renders, which are composites, not layer bytes. If needed, normalize zero-alpha pixels on export and document it |
 | Large docs are slow on the main thread (Q11) | Timeouts, frozen UI | Per-command timeouts up to 900 s, batch cap, `busy` in health. Note in the docs that Krita is unresponsive during big batches |
 | Rendering by toggling visibility leaves state behind after a crash mid-render | Visibility changed in the user's doc | `finally` restore. Fall back to clone rendering (D10 B) |
-| A dialog blocks the main thread during save/close (Q13) | The command hangs until timeout | Batch mode everywhere, `setModified(False)` only when the caller passes `discard`. Probe results decide the rest |
+| A dialog blocks the main thread during save/export/close. **Seen:** `Node.save` opened the PNG export dialog, and dismissing it crashed Krita | The command hangs; Krita may crash | Never call `Node.save`. Run every export through one batch-mode helper (D5). `setModified(False)` only when the caller passes `discard`. Probe results Q13 and Q16 decide the rest |
 | The plugin and server get out of step after an update | Confusing errors | Protocol version check (P1.3) |
 | Pure-Python pixel loops creep in | Minutes per call on 48 MP layers | Rule: no per-pixel Python loops over whole layers. Use `bytes` slicing/`translate` or `QPainter`, and review for it |
 

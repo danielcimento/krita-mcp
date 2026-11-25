@@ -9,7 +9,11 @@ before code depends on them.
 1. In Krita: **Tools → Scripts → Scripter**, then open
    [`spike/krita_api_probe.py`](spike/krita_api_probe.py) and **Run**.
 2. Results print in Scripter and go to
-   `~/krita-mcp-output/spike/probe-results.json`.
+   `~/krita-mcp-output/spike/probe-results.json`, rewritten after every
+   probe. `probe-progress.txt` in the same folder names the probe that was
+   running. If Krita hangs or crashes, that file says which probe caused it,
+   and the JSON keeps everything before it. Add a probe's ID to `SKIP` to
+   leave it out of a rerun.
 3. Optionally set `RUN_LARGE = True` and run again for Q11. That needs
    about 2 GB of RAM and a minute or two.
 4. Do Q12 by hand (below).
@@ -42,8 +46,9 @@ fix the probe and rerun rather than reading anything into that result.
 | Q11 | At 5800×8400: time for full-layer `setPixelData` / `pixelData`, PNG save, `projection`, `exportImage`, `saveAs .kra`, `clone`; opening and rendering the Mao `.ora` | Default timeouts (D9), D10, whether 184-layer `create_layers` fits in 300 s | |
 | Q12 | Can `kritarunner` import the plugin package and run commands headless? | D16 (headless live tests) | |
 | Q13 | In batch mode: return values of `exportImage` / `saveAs`; does `fileName()` follow `saveAs` but not `exportImage`; does `close()` prompt after `setModified(False)`? | `save`, `close_document` | |
-| Q14 | Is `layerStyleToAsl()` empty for a plain layer? Does `Node.save(..., exportRect)` write raw pixels or apply opacity? | Lint `layer-style`, D5 (`export_layers` path) | |
+| Q14 | Is `layerStyleToAsl()` empty for a plain layer? | Lint `layer-style` | |
 | Q15 | Blend mode ID strings (`add` vs `linear_dodge`); what an invalid ID does | `blend_mode` validation, lint `blend-mode` | |
+| Q16 | Does app-wide batch mode stop `Node.save` from opening its export dialog? If it runs, does it write raw pixels or apply opacity? Runs last because it crashed Krita on the first run | D5 (confirms `Node.save` stays unused or can be used); the batch-mode helper | |
 
 ### Q12 by hand: kritarunner
 
@@ -68,6 +73,22 @@ Record: does it start without a window, does `Krita.instance()` work, can
 it create and save a document, and does our extension's `createActions`
 run? The last one matters, because the HTTP server is started from
 `createActions`.
+
+## Run log
+
+**2026-11-24, run 1 (Krita 5.3.4, macOS 26.3, arm64).** Krita hung on a
+modal "PNG image" export-options dialog. Accepting or cancelling it
+crashed Krita (`EXC_BAD_ACCESS` / `SIGSEGV`, address 0x10, main thread).
+The files left in `~/krita-mcp-output/spike/` show Q3 and Q13 had finished
+and `probe-nodesave.png` had been written. So the call was Q14's
+`Node.save(path, …, InfoObject(), rect)` on a document with no batch mode
+set. Other exports in the probe set document batch mode or use
+`QImage.save`, and showed no dialog. Results were lost, because the
+script only wrote them at the end.
+
+Changes for run 2: results are saved after every probe, a progress file
+is written, the `Node.save` check moved to Q16 (run last, under app-wide
+batch mode), and `RUN_NODE_SAVE` / `SKIP` let it be left out.
 
 ## Not covered by the probe
 

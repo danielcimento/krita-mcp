@@ -49,6 +49,13 @@ Items are tagged:
   `fileName()`.
 - `createDocument(w, h, name, "RGBA", "U8", profile, dpi)` [stub]. Whether
   it creates a default layer is [to verify].
+- **Dialogs are fatal for the bridge.** A modal dialog opened during a
+  command blocks the main thread, so the command never returns. In the
+  `Node.save` case below, dismissing the dialog then crashed Krita.
+  Every export path must run with batch mode set. If an API ignores the
+  document flag, set `Krita.instance().setBatchmode(True)` around the call
+  in `try`/`finally` and restore the previous value. Never leave it on:
+  it would also suppress dialogs for the user's own exports.
 - `saveAs(path)` saves natively and re-points `fileName()`. `exportImage(path, InfoObject())`
   writes a copy and leaves `fileName()` alone. Both need
   `setBatchmode(True)` to avoid export dialogs. Whether either can still
@@ -97,7 +104,12 @@ Items are tagged:
   `shearNode` and `cropNode` exist [stub]. Pivot and coordinate semantics
   are [to verify].
 - `Node.save(filename, xRes, yRes, InfoObject, exportRect)` writes one
-  node to an image file [stub].
+  node to an image file [stub]. **Hazard [verified 2026-11-24, Krita
+  5.3.4]:** it ignores the *document's* batch mode and opens the "PNG
+  image" export-options dialog. Accepting or cancelling that dialog then
+  crashed Krita with a SIGSEGV on the main thread. It probably follows
+  the *app-wide* flag (`Krita.instance().setBatchmode`); spike Q16 checks
+  this [to verify]. The plugin does not call it (D5).
 - `paintLine` / `paintRectangle` / `paintPolygon` / `paintPath` paint with
   the current brush preset [stub]. They could replace the plugin's
   hand-rolled rasterizer later.

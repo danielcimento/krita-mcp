@@ -120,9 +120,16 @@ bundle). All pixel I/O goes through one module, `pixels.py`:
   the same functions. Its results have to be identical.
 
 `Node.save(..., exportRect)` is the alternative the spec mentions for
-`export_layers`. We don't use it as the main path: it may apply layer
-properties and can't be checked byte for byte without Krita. The spike
-compares the two.
+`export_layers`. **We don't use it.** On the first probe run it ignored
+document batch mode, opened the PNG export dialog, and crashed Krita when
+the dialog was dismissed (see [spike.md § Run log](spike.md#run-log)).
+Even if Q16 shows that app-wide batch mode makes it safe, the
+`pixelData` → QImage path stays the main one, because it is under our
+control and testable outside Krita.
+
+All export calls, `exportImage` and `saveAs` included, go through one
+helper that sets the document's batch mode, and the app-wide one when
+needed, in `try`/`finally`.
 
 ## D6. Undo granularity
 
