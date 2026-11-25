@@ -209,6 +209,11 @@ Agents therefore get an undo they control, built on the batch executor
   - delete → keep the detached `Node` alive (libkis wrappers hold a
     reference) and re-insert it at its old parent/position.
   - move → move back.
+  - *(P2.5, 2026-11-25)* Removing a node in Krita detaches its whole
+    subtree: a group comes back empty unless its descendants are re-added
+    too (Q18 only covered a single paint layer). Delete and move inverses
+    therefore save the subtree's wrappers before removing and re-add them
+    afterwards (krita-api-notes § Nodes).
   - property update → restore the old values.
   - pixel write → restore the old pixels of the affected rectangle.
     These are kept in memory up to a cap, and in PNGs under the plugin's

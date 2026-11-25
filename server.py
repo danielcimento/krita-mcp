@@ -25,7 +25,7 @@ from fastmcp import FastMCP  # noqa: E402
 from fastmcp.exceptions import ToolError  # noqa: E402
 
 from krita_mcp_server import client  # noqa: E402
-from krita_mcp_server.models import LayerSpec  # noqa: E402
+from krita_mcp_server.models import LayerChange, LayerSpec, Move  # noqa: E402
 
 # Configuration (KRITA_URL, KRITA_MCP_TOKEN_FILE, KRITA_MCP_TOKEN) is read in
 # krita_mcp_server/client.py.
@@ -487,6 +487,155 @@ def krita_create_layers(specs: Optional[list[LayerSpec]] = None, manifest: Optio
                          + "; ".join(" ".join(t.split()) for t in texts))  # one line
         if notes:
             summary += " (" + ", ".join(notes) + ")"
+    if result.get("dry_run"):
+        summary += " (dry run, nothing changed)"
+    return _done(result, summary)
+
+
+def _count(n, one, many=None) -> str:
+    return f"{n} {one if n == 1 else (many or one + 's')}"
+
+
+def _warnings_note(warnings) -> str:
+    """" (2 warnings: …)" on one line, or ""."""
+    if not warnings:
+        return ""
+    texts = [str(w.get("message", w)) if isinstance(w, dict) else str(w) for w in warnings]
+    return (f" ({_count(len(warnings), 'warning')}: "
+            + "; ".join(" ".join(t.split()) for t in texts) + ")")
+
+
+def _as_params(items, model) -> list:
+    return [(i if isinstance(i, model) else model.model_validate(i)).to_params() for i in items]
+
+
+@mcp.tool()
+def krita_update_layers(changes: list[LayerChange], doc: Optional[str] = None,
+                        dry_run: bool = False, timeout_s: Optional[float] = None) -> dict:
+    """
+    Change layer properties in one all-or-nothing call. Each change is {id,
+    name?, visible?, opacity?, blend_mode?, locked?, alpha_locked?,
+    inherit_alpha?, pass_through?}: id is a layer ref (UUID, name path such
+    as "Head/Eyes", or unique name) and only the fields given change; at
+    least one is needed. opacity is 0.0-1.0 (Krita stores
+    round(opacity*255)); blend_mode is a Krita id such as "normal",
+    "multiply", "screen", "add" or "linear_dodge" (these two render the
+    same); inherit_alpha is clipping; pass_through is for groups only.
+    Unknown keys fail, and so does naming the same layer in two changes.
+
+    Every change is validated before anything changes; the first bad one
+    fails the call with details.index. A rename to a name another layer
+    has is allowed but listed in warnings ({code: "duplicate_name", id,
+    name, others}): a bare-name ref to it becomes ambiguous.
+
+    Returns {doc, updated: [{id, path, changed: [fields set]}], warnings};
+    with dry_run, {doc, would_update: [{id, path, set: {field: value}}],
+    warnings} and nothing changes. One successful call is one agent undo
+    step.
+
+    Args:
+        changes: The changes, 1 to 2000, applied in order
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        dry_run: Only validate and report what would change
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
+    """
+    params = {"changes": _as_params(changes, LayerChange)}
+    result = client.call("update_layers", _with(params, doc=doc, dry_run=dry_run or None),
+                         timeout_s=timeout_s)
+    items = result.get("updated") or result.get("would_update") or []
+    verb = "Would update " if result.get("dry_run") else "Updated "
+    summary = (verb + _count(len(items), "layer") + (_in(result) or f" in {doc or 'the active document'}")
+               + _warnings_note(result.get("warnings")))
+    if result.get("dry_run"):
+        summary += " (dry run, nothing changed)"
+    return _done(result, summary)
+
+
+@mcp.tool()
+def krita_move_layers(moves: list[Move], doc: Optional[str] = None, dry_run: bool = False,
+                      timeout_s: Optional[float] = None) -> dict:
+    """
+    Reorder and reparent layers in one all-or-nothing call. Each move is
+    {id, parent?, above? | below? | index?} with at most one position field:
+    - parent: the target group (a layer ref) or "/" for the root; default
+      the layer's current parent.
+    - above / below: a sibling under the target parent (a ref) to go
+      directly above / below.
+    - index: the position from the BOTTOM (0) among the target parent's
+      other children (the moving layer not counted), up to their count
+      (= on top). Same counting as list_layers' index.
+    - none of them: on top of the target parent's children.
+    The target parent must be the root or a group; moving a group into
+    itself or its own subtree fails with bad_request. Moves are applied in
+    list order and each is validated against the tree as the earlier moves
+    leave it (refs are resolved against the document as it was before the
+    call). A moved layer keeps its id, pixels, bounds and properties, and a
+    group its whole subtree; moves never shift pixels.
+
+    Returns {doc, moved: [{id, path, parent, index}]}: each layer's place
+    after the call (parent "/" or a group id, index from the bottom); with
+    dry_run, {doc, would_move: [...]} with the same fields, and nothing
+    changes. One successful call is one agent undo step.
+
+    Args:
+        moves: The moves, 1 to 2000, applied in order (see above)
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        dry_run: Only validate and report where the layers would go
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
+    """
+    params = {"moves": _as_params(moves, Move)}
+    result = client.call("move_layers", _with(params, doc=doc, dry_run=dry_run or None),
+                         timeout_s=timeout_s)
+    items = result.get("moved") or result.get("would_move") or []
+    verb = "Would move " if result.get("dry_run") else "Moved "
+    summary = (verb + _count(len(items), "layer") + (_in(result) or f" in {doc or 'the active document'}")
+               + _warnings_note(result.get("warnings")))
+    if result.get("dry_run"):
+        summary += " (dry run, nothing changed)"
+    return _done(result, summary)
+
+
+@mcp.tool()
+def krita_delete_layers(ids: list[str], doc: Optional[str] = None, dry_run: bool = False,
+                        timeout_s: Optional[float] = None) -> dict:
+    """
+    Delete layers in one all-or-nothing call. Deleting a group deletes its
+    whole subtree. ids are layer refs (UUID, name path such as "Head/Eyes",
+    or unique name); duplicates, and layers inside a listed group, are
+    folded in. The root "/" can't be deleted; an unknown ref fails with
+    not_found and nothing is deleted.
+
+    Returns {doc, deleted: [ids, subtree members included, top to bottom],
+    count, warnings}; with dry_run, {doc, would_delete, count} and nothing
+    changes. One successful call is one agent undo step, which puts the
+    layers back with the same ids, pixels and properties (the deleted
+    layers are kept in memory for that; a delete too big for the undo
+    journal's byte cap warns "not_undoable").
+
+    Args:
+        ids: The layers to delete, 1 to 2000 refs
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        dry_run: Only validate and report what would be deleted
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
+    """
+    result = client.call("delete_layers", _with({"ids": list(ids)}, doc=doc,
+                                                dry_run=dry_run or None),
+                         timeout_s=timeout_s)
+    items = result.get("deleted") or result.get("would_delete") or []
+    count = result.get("count", len(items))
+    verb = "Would delete " if result.get("dry_run") else "Deleted "
+    what = _count(count, "layer")
+    listed = len(set(ids))
+    if count > listed:
+        what += " (subtrees included)"
+    summary = (verb + what + (_in(result) or f" in {doc or 'the active document'}")
+               + _warnings_note(result.get("warnings")))
     if result.get("dry_run"):
         summary += " (dry run, nothing changed)"
     return _done(result, summary)

@@ -8,7 +8,7 @@ its own defaults (api-design.md) and only what the caller set is sent.
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
 
 class LayerSpec(BaseModel):
@@ -47,4 +47,54 @@ class LayerSpec(BaseModel):
     def to_params(self) -> dict:
         """The fields the caller set to a value, for the plugin. ``False``
         and ``0`` are values and are sent; ``None`` means unset."""
+        return self.model_dump(exclude_none=True)
+
+
+class LayerChange(BaseModel):
+    """One change for ``krita_update_layers`` (api-design § krita_update_layers).
+    Only the fields set are changed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(description="The layer to change: UUID, name path or unique name")
+    name: Optional[str] = Field(None, description="New name")
+    visible: Optional[StrictBool] = None
+    opacity: Optional[float] = Field(None, ge=0, le=1, description="0.0-1.0")
+    blend_mode: Optional[str] = Field(
+        None, description='Krita blend-mode id (e.g. "normal", "multiply", "add", "screen")')
+    locked: Optional[StrictBool] = None
+    alpha_locked: Optional[StrictBool] = None
+    inherit_alpha: Optional[StrictBool] = Field(None, description="Clipping")
+    pass_through: Optional[StrictBool] = Field(None, description="Groups only")
+
+    def to_params(self) -> dict:
+        """The fields the caller set (``False`` and ``0`` are sent)."""
+        return self.model_dump(exclude_none=True)
+
+
+class Move(BaseModel):
+    """One move for ``krita_move_layers`` (api-design § krita_move_layers).
+    At most one of ``above``, ``below`` and ``index``; none puts the layer
+    on top of its (new) parent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(description="The layer to move: UUID, name path or unique name")
+    parent: Optional[str] = Field(
+        None, description='Target group (ref) or "/" for the root; default the current parent')
+    above: Optional[str] = Field(None, description="Go directly above this sibling (ref)")
+    below: Optional[str] = Field(None, description="Go directly below this sibling (ref)")
+    index: Optional[StrictInt] = Field(
+        None, ge=0, description="Position from the bottom (0) among the target parent's other "
+                                "children")
+
+    @model_validator(mode="after")
+    def _one_position(self):
+        given = [k for k in ("above", "below", "index") if getattr(self, k) is not None]
+        if len(given) > 1:
+            raise ValueError(f"give at most one of above, below and index, not {' and '.join(given)}")
+        return self
+
+    def to_params(self) -> dict:
+        """The fields the caller set (``index=0`` is sent)."""
         return self.model_dump(exclude_none=True)

@@ -220,7 +220,8 @@ are fast enough that per-pixel Python loops are never justified.
 - `addChildNode(child, above)` inserts `child` directly above `above`.
   With `above = None` it appends on top [verified: `add_paint` with
   `None` put the layer above `Background`]. To reorder, `removeChildNode`
-  then `addChildNode(child, new_above)` [verified].
+  then `addChildNode(child, new_above)` [verified]; for a group or a layer
+  with masks, re-add its subtree too (below).
 - `bounds()` is **exact**: a 10×10 write at (13, 17) gives
   `(13, 17, 10, 10)`. It shrinks to `(0, 0, 0, 0)` when the pixels are
   cleared to transparent. An empty layer gives `(0, 0, 0, 0)` with
@@ -253,6 +254,36 @@ are fast enough that per-pixel Python loops are never justified.
   re-inserts the same wrapper with the same UUID, pixels, bounds, opacity
   and parent, and `nodeByUniqueID` returns `None` while it is out
   [verified, run 3, Q18].
+- **Removing a node detaches its whole subtree** [verified 2026-11-25,
+  P2.5]. After `remove()` or `parent.removeChildNode(node)` on a group,
+  every descendant is off its parent too: the detached group's
+  `childNodes()` is `[]`, and so is a nested group's. Re-adding the group
+  gives an **empty group**. The same goes for a paint layer's masks (a
+  transparency mask). The child wrappers, if held, can be re-added one by
+  one (`addChildNode(child, None)`, bottom to top), and keep their UUIDs,
+  pixels and properties. So a move or a delete's re-insert must capture
+  the subtree (wrappers, bottom to top) before removing and re-add it
+  after (`commands/layers.py` `_capture` / `_restore`). Re-adding 100
+  children took about 9 ms headless.
+- **`addChildNode` reports success when it did nothing** [verified
+  2026-11-25, P2.5]: with an `above` that is not a child of the parent it
+  returns `True` and the child is not inserted anywhere (it stays
+  detached); with a `child` that is still attached elsewhere it returns
+  `True` and nothing moves. Look `above` up among the parent's
+  `childNodes()` first, and remove before re-adding.
+- **No bottom insert** [verified 2026-11-25, P2.5]: `addChildNode(child,
+  None)` always appends on top, and `above` puts the child directly above
+  a sibling, so index 0 can't be reached directly. To put a node at the
+  bottom: `addChildNode(node, bottom)`, then remove `bottom` and
+  `addChildNode(bottom, node)` (restoring `bottom`'s subtree). "Directly
+  below `S`" is "directly above the sibling under `S`", or the bottom.
+- `setChildNodes(list)` replaces a node's children with `list` in that
+  order (bottom to top) and, unlike remove + add, **keeps each child's
+  subtree** [verified 2026-11-25, P2.5]: 100 children reordered in about
+  1 ms. It isn't used: since subtrees survive, it evidently doesn't take the
+  same remove path as `remove`/`removeChildNode`, and whether it goes
+  through Krita's undo commands and image locking (or edits the graph
+  directly, which could race rendering in the GUI) is [to verify].
 - `GroupLayer.passThroughMode()` / `setPassThroughMode()` round-trip;
   `createGroupLayer(name)` returns a `GroupLayer` [verified 2026-11-25,
   P2.3].

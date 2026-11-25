@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phase 1 done (live acceptance 3, 5 and 6 passed 2026-11-25; 5 minus the export row, 6 in its Phase-1 form). Phase 2 in progress: P2.1–P2.4, P2.6 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phase 1 done (live acceptance 3, 5 and 6 passed 2026-11-25; 5 minus the export row, 6 in its Phase-1 form). Phase 2 in progress: P2.1–P2.6 done; P2.7 and the live acceptance-1 run left. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -184,8 +184,13 @@ row of test 5, which lands with P3.2). Test 6 ran in its Phase-1 form
   `warnings` (document size) in the result. Acceptance 1 passes headless
   (`tests/krita/test_mao_headless.py`); the live `test_mao_rebuild` and the
   full `test_handles` are written, not yet run with `make test-live`.
-- [ ] **P2.5 `update_layers`, `move_layers`, `delete_layers`.** Including
+- [x] **P2.5 `update_layers`, `move_layers`, `delete_layers`.** Including
   the cycle check for moves and subtree reporting for deletes.
+  *2026-11-25:* removing a node detaches its whole subtree in Krita, so
+  moves and deletes capture the subtree and re-add it (krita-api-notes
+  § Nodes); moves are validated against a simulated tree. Headless suite
+  `tests/krita/test_update_move_delete.py`; the live
+  `tests/live/test_layer_tree.py` is written, not yet run.
 - [x] **P2.6 `tools/ora_to_manifest.py`.** Converts the first-session
   `mao_pro_layered.ora` to manifest v1 plus PNGs. It runs outside Krita,
   using `zipfile` and `xml.etree`. Mapping: stack.xml is top to bottom, so

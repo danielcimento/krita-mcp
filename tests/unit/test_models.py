@@ -45,3 +45,58 @@ def test_schema_forbids_extra():
     schema = LayerSpec.model_json_schema()
     assert schema["additionalProperties"] is False
     assert schema["required"] == ["name"]
+
+
+# P2.5: LayerChange and Move.
+
+def test_layer_change_sends_only_set_fields():
+    from krita_mcp_server.models import LayerChange
+    assert LayerChange(id="A", visible=False, opacity=0).to_params() == {
+        "id": "A", "visible": False, "opacity": 0.0}
+    data = {"id": "{1}", "name": "B", "visible": True, "opacity": 0.5, "blend_mode": "add",
+            "locked": False, "alpha_locked": True, "inherit_alpha": False, "pass_through": True}
+    assert LayerChange.model_validate(data).to_params() == data
+
+
+@pytest.mark.parametrize("data", [
+    {"id": "A", "opactiy": 0.5},
+    {"name": "B"},                           # id required
+    {"id": "A", "visible": 1},
+    {"id": "A", "opacity": 1.5},
+    {"id": "A", "parent": "/"},
+])
+def test_layer_change_rejects(data):
+    from krita_mcp_server.models import LayerChange
+    with pytest.raises(ValidationError):
+        LayerChange.model_validate(data)
+
+
+def test_move_sends_only_set_fields():
+    from krita_mcp_server.models import Move
+    assert Move(id="A").to_params() == {"id": "A"}
+    assert Move(id="A", parent="/", index=0).to_params() == {"id": "A", "parent": "/", "index": 0}
+    assert Move(id="A", below="B").to_params() == {"id": "A", "below": "B"}
+
+
+@pytest.mark.parametrize("data", [
+    {"id": "A", "abve": "B"},
+    {"parent": "/"},
+    {"id": "A", "above": "B", "below": "C"},
+    {"id": "A", "above": "B", "index": 0},
+    {"id": "A", "index": -1},
+    {"id": "A", "index": 1.5},
+    {"id": "A", "index": "2"},
+    {"id": "A", "index": True},
+])
+def test_move_rejects(data):
+    from krita_mcp_server.models import Move
+    with pytest.raises(ValidationError):
+        Move.model_validate(data)
+
+
+def test_change_and_move_schemas_forbid_extra():
+    from krita_mcp_server.models import LayerChange, Move
+    for model in (LayerChange, Move):
+        schema = model.model_json_schema()
+        assert schema["additionalProperties"] is False
+        assert schema["required"] == ["id"]

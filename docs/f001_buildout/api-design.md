@@ -348,6 +348,28 @@ alpha_locked?, inherit_alpha?, pass_through?}`. Only the given fields
 change. A rename that would create a document-wide duplicate is allowed,
 but the result lists it in `warnings` (lint catches it later).
 
+Settled in P2.5 (2026-11-25), `kritamcp/commands/layers.py`:
+
+- **Strict changes**, as `create_layers` specs: an object, unknown keys
+  `bad_request` (`details.unknown`, `details.valid`), an explicit `null`
+  is not given. `id` is a layer ref (not `/`, not `$key`). At least one
+  property is needed. The same values rules (`kritamcp/layerprops.py`):
+  `pass_through` only on groups (`details.param`). The same layer named by
+  two changes is `bad_request` (`details.first`: the earlier change), since
+  the intended result is ambiguous.
+- **Apply.** Per change: read the old values of exactly the given fields,
+  then set them; an unlock goes first and a lock last. The inverse sets the
+  old values back (opacity as Krita's exact 0–255 value). Refresh, one
+  journal entry, default timeout 300 s.
+- **Warnings.** `{code: "duplicate_name", message, id, name, others}` for
+  each rename whose new name another layer has after the whole call
+  (`others`: their ids, stacking order). Renames that swap names, or
+  rename a layer to its own name, don't warn.
+- **Result.** `{doc, dry_run: false, updated: [{id, path, changed:
+  [fields set]}], warnings}`, paths after the call. With `dry_run`:
+  `{doc, dry_run: true, would_update: [{id, path, set: {field: value}}],
+  warnings}`.
+
 ### `krita_move_layers(doc?, moves, dry_run?)` · P0
 
 Each move is `{id, parent?, above? | below? | index?}`, with at most one
@@ -356,10 +378,69 @@ field, the layer goes on top of the new parent. Moving a group into its own
 subtree fails with `bad_request`. Implemented as `removeChildNode` +
 `addChildNode`. Bounds are unchanged, since moves never shift pixels.
 
+Settled in P2.5 (2026-11-25), `kritamcp/commands/layers.py`:
+
+- **Fields.** Strict objects as above (`MOVE_KEYS`). Two position fields
+  are `bad_request` (`details.conflicting`). `parent` is `/` or a group
+  (a paint layer or mask is `bad_request`). `above` / `below` must be a
+  child of the target parent other than the moving layer; pass `parent`
+  to move into another group. `index` counts from the bottom (0) among the
+  target parent's children **without the moving layer**, `0 ≤ index ≤`
+  their count (the count = on top); not a whole number or out of range is
+  `bad_request` (`details.max`). Same counting as the layer object's
+  `index` (the root's global selection mask is never counted).
+- **Planned state.** Refs are resolved against the document as it was
+  before the call, but each move is validated against a simulated tree
+  (parent and children ids) that the earlier moves of the call have
+  already changed: a move into the layer's own subtree, or next to a
+  sibling that an earlier move took away, fails with `details.index` of
+  that move, even if it would be valid in the starting tree. The same
+  layer may move several times in one call.
+- **Apply.** Per move: `removeChildNode`, then `addChildNode` at the
+  planned place. Removing a node detaches its whole subtree in Krita
+  (krita-api-notes § Nodes), so the subtree is captured first and
+  re-added after; groups and layers with masks move complete, with their
+  ids, pixels, bounds and properties. The bottom place is reached by
+  inserting above the bottom child and then moving that child above the
+  layer. A move to where the layer already is does nothing and records no
+  inverse. If an insert fails, that move puts the layer back first, then
+  the batch rolls back.
+- **Inverse.** Move the layer back under its old parent, directly above
+  the sibling that was directly below it (by id, at call time), or to the
+  bottom; if that sibling is gone, at the old index (clamped). Rollback
+  runs newest first, so chained moves (also of the same layer) restore
+  exactly.
+- **Result.** `{doc, dry_run: false, moved: [{id, path, parent,
+  index}]}`, one per move in order, each the layer's place after the
+  whole call (`parent` is `"/"` or a group id, `index` from the bottom).
+  `dry_run` returns `would_move` with the same fields, from the simulated
+  tree (identical to what the real call reports). Default timeout 300 s.
+
 ### `krita_delete_layers(doc?, ids, dry_run?)` · P0
 
 Deleting a group deletes its subtree. Returns the deleted IDs, with
 subtree members included.
+
+Settled in P2.5 (2026-11-25), `kritamcp/commands/layers.py`:
+
+- **Refs.** `ids` is a list of 1–2000 layer refs; `/` is `bad_request`,
+  an unknown ref `not_found` (`details.index`). Duplicates and refs inside
+  another listed layer's subtree are folded in.
+- **Apply.** The remaining layers are deleted top first with
+  `Node.remove()`. The inverse keeps the detached node and its captured
+  subtree (D6, Q18) and re-inserts them under the old parent, directly
+  above the sibling that was below it (by id at call time; the bottom if
+  there was none; the old index if that sibling is gone). It exposes
+  `node_ids` (the subtree, top to bottom) and `nbytes` (about `w*h*4` per
+  paint layer, from bounds) for the journal's caps (P5.1). A mid-apply
+  error's `details.index` is the layer's position in `ids`.
+- **Result.** `{doc, dry_run: false, deleted: [ids, subtree members
+  included, top to bottom], count, warnings}`; `dry_run` returns
+  `would_delete` and `count`. A delete whose `nbytes` is over the
+  journal's byte cap still happens, but can't be undone: `warnings` has
+  `{code: "not_undoable", nbytes}` and the journal is cleared (D11).
+  Deleting the active layer is fine (headless `activeNode()` is always
+  `None`). Default timeout 300 s.
 
 ### `krita_duplicate_layer(doc?, id, name?, parent?, above?)` · P1
 

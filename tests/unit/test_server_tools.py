@@ -30,6 +30,9 @@ EXPECTED_TOOLS = {
     "krita_close_document",
     "krita_list_layers",
     "krita_create_layers",
+    "krita_update_layers",
+    "krita_move_layers",
+    "krita_delete_layers",
 }
 
 # tool -> (kwargs, plugin action, canned plugin payload)
@@ -75,6 +78,15 @@ CASES = {
                              "created": [{"key": None, "id": "{1}", "name": "a",
                                           "type": "paintlayer", "path": "a"}],
                              "counts": {"paintlayer": 1, "total": 1}}),
+    "krita_update_layers": ({"changes": [{"id": "a", "visible": False}]}, "update_layers",
+                            {"doc": "doc-1", "dry_run": False, "warnings": [],
+                             "updated": [{"id": "{1}", "path": "a", "changed": ["visible"]}]}),
+    "krita_move_layers": ({"moves": [{"id": "a", "index": 0}]}, "move_layers",
+                          {"doc": "doc-1", "dry_run": False,
+                           "moved": [{"id": "{1}", "path": "a", "parent": "/", "index": 0}]}),
+    "krita_delete_layers": ({"ids": ["a"]}, "delete_layers",
+                            {"doc": "doc-1", "dry_run": False, "deleted": ["{1}"], "count": 1,
+                             "warnings": []}),
     "krita_list_layers": ({}, "list_layers",
                           {"root": "/", "layers": [{"id": "{1}", "name": "a", "children": []}],
                            "counts": {"paintlayer": 1, "total": 1}}),
@@ -276,7 +288,8 @@ def test_health_idle_has_busy_null(monkeypatch):
 DOC_TOOLS = {"krita_save", "krita_get_canvas", "krita_stroke", "krita_fill",
              "krita_draw_shape", "krita_clear", "krita_get_color_at",
              "krita_get_document_info", "krita_close_document", "krita_list_layers",
-             "krita_create_layers"}
+             "krita_create_layers", "krita_update_layers", "krita_move_layers",
+             "krita_delete_layers"}
 # close_document has no active-document default.
 REQUIRED_DOC_TOOLS = {"krita_close_document"}
 OPTIONAL_DOC_TOOLS = DOC_TOOLS - REQUIRED_DOC_TOOLS
@@ -568,3 +581,97 @@ def test_create_layers_manifest_summary_counts_skipped_and_warnings(fake_call):
     assert server.krita_create_layers(manifest="manifest.json", dry_run=True)["summary"] == (
         "Would create 1 layer in doc-2 from /out/manifest.json (2 entries skipped, "
         "1 warning: The manifest was made for a 8x8 document) (dry run, nothing changed)")
+
+
+# P2.5: update_layers, move_layers, delete_layers.
+
+def _tools():
+    return {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+
+
+def _call_tool(name, args):
+    async def go():
+        async with Client(server.mcp) as c:
+            return await c.call_tool(name, args, raise_on_error=False)
+    return asyncio.run(go())
+
+
+def test_update_layers_sends_only_set_fields(fake_call):
+    from krita_mcp_server.models import LayerChange
+    server.krita_update_layers([{"id": "A", "visible": False, "opacity": 0},
+                                LayerChange(id="G", pass_through=False, locked=False)])
+    action, params, timeout_s = fake_call.calls[0]
+    assert (action, timeout_s) == ("update_layers", None)
+    assert params == {"changes": [{"id": "A", "visible": False, "opacity": 0.0},
+                                  {"id": "G", "locked": False, "pass_through": False}]}
+    server.krita_update_layers([{"id": "A", "name": "B"}], doc="doc-2", dry_run=True, timeout_s=9)
+    assert fake_call.calls[1][1:] == ({"changes": [{"id": "A", "name": "B"}], "doc": "doc-2",
+                                       "dry_run": True}, 9)
+
+
+def test_move_layers_sends_only_set_fields(fake_call):
+    server.krita_move_layers([{"id": "A", "index": 0}, {"id": "B", "parent": "/"},
+                              {"id": "C", "below": "B"}])
+    assert fake_call.calls[0][1] == {"moves": [{"id": "A", "index": 0},
+                                               {"id": "B", "parent": "/"},
+                                               {"id": "C", "below": "B"}]}
+    server.krita_move_layers([{"id": "A"}], dry_run=True)
+    assert fake_call.calls[1][1] == {"moves": [{"id": "A"}], "dry_run": True}
+
+
+def test_delete_layers_params(fake_call):
+    server.krita_delete_layers(["A", "G/H"])
+    assert fake_call.calls[0] == ("delete_layers", {"ids": ["A", "G/H"]}, None)
+    server.krita_delete_layers(["A"], doc="doc-3", dry_run=True)
+    assert fake_call.calls[1][1] == {"ids": ["A"], "doc": "doc-3", "dry_run": True}
+
+
+def test_update_move_delete_schemas_and_typos():
+    tools = _tools()
+    for name, items in (("krita_update_layers", "changes"), ("krita_move_layers", "moves"),
+                        ("krita_delete_layers", "ids")):
+        params = tools[name].parameters
+        assert set(params["properties"]) == {items, "doc", "dry_run", "timeout_s"}, name
+        assert params["required"] == [items], name
+    move_doc = " ".join(tools["krita_move_layers"].description.split())
+    assert "from the BOTTOM" in move_doc and "on top" in move_doc and "own subtree" in move_doc
+    assert "whole subtree" in tools["krita_delete_layers"].description
+    assert "0.0-1.0" in tools["krita_update_layers"].description
+    for name, args in (("krita_update_layers", {"changes": [{"id": "A", "opactiy": 0.5}]}),
+                       ("krita_move_layers", {"moves": [{"id": "A", "abve": "B"}]}),
+                       ("krita_move_layers", {"moves": [{"id": "A", "above": "B", "index": 0}]}),
+                       ("krita_delete_layers", {"ids": "A"})):
+        assert _call_tool(name, args).is_error, (name, args)
+
+
+def test_update_layers_summary(fake_call):
+    fake_call.payload = {"doc": "doc-2", "dry_run": False, "updated": [{}, {}],
+                         "warnings": [{"code": "duplicate_name", "message": "Layer {1} is\nnow"}]}
+    assert server.krita_update_layers([{"id": "a", "name": "b"}])["summary"] == (
+        "Updated 2 layers in doc-2 (1 warning: Layer {1} is now)")
+    fake_call.payload = {"doc": "doc-2", "dry_run": True, "would_update": [{}], "warnings": []}
+    assert server.krita_update_layers([{"id": "a", "visible": True}], dry_run=True)["summary"] == (
+        "Would update 1 layer in doc-2 (dry run, nothing changed)")
+
+
+def test_move_layers_summary(fake_call):
+    fake_call.payload = {"doc": "doc-2", "dry_run": False, "moved": [{}, {}, {}]}
+    assert server.krita_move_layers([{"id": "a"}])["summary"] == "Moved 3 layers in doc-2"
+    fake_call.payload = {"doc": "doc-2", "dry_run": True, "would_move": [{}]}
+    assert server.krita_move_layers([{"id": "a"}], dry_run=True)["summary"] == (
+        "Would move 1 layer in doc-2 (dry run, nothing changed)")
+
+
+def test_delete_layers_summary(fake_call):
+    fake_call.payload = {"doc": "doc-2", "dry_run": False, "deleted": ["{1}", "{2}", "{3}"],
+                         "count": 3, "warnings": []}
+    assert server.krita_delete_layers(["G"])["summary"] == (
+        "Deleted 3 layers (subtrees included) in doc-2")
+    assert server.krita_delete_layers(["A", "B", "C"])["summary"] == "Deleted 3 layers in doc-2"
+    fake_call.payload = {"doc": "doc-2", "dry_run": True, "would_delete": ["{1}"], "count": 1}
+    assert server.krita_delete_layers(["A"], dry_run=True)["summary"] == (
+        "Would delete 1 layer in doc-2 (dry run, nothing changed)")
+    fake_call.payload = {"doc": "doc-2", "dry_run": False, "deleted": ["{1}"], "count": 1,
+                         "warnings": [{"code": "not_undoable", "message": "too big"}]}
+    assert server.krita_delete_layers(["A"])["summary"] == (
+        "Deleted 1 layer in doc-2 (1 warning: too big)")

@@ -1,7 +1,10 @@
-"""Layer-tree commands (api-design § Layer tree): list_layers, create_layers.
+"""Layer-tree commands (api-design § Layer tree): list_layers,
+create_layers, update_layers, move_layers, delete_layers.
 
-Node wrappers come from one ``nodes.tree`` walk per command and are never
-kept after it (they are only valid while the document is open).
+Node wrappers come from one ``nodes.tree`` walk (or live lookups) per
+command and are never kept after it (they are only valid while the
+document is open). The exception is a delete's inverse, which keeps the
+detached nodes it re-inserts (D6, batch.py).
 """
 
 import dataclasses
@@ -92,8 +95,30 @@ class _Plan:
     y: int = 0
 
 
+def _dry_run(params):
+    dry_run = params.get("dry_run", False)
+    if type(dry_run) is not bool:
+        raise CommandError("bad_request", f"'dry_run' must be true or false, got {dry_run!r}",
+                           {"param": "dry_run"})
+    return dry_run
+
+
 def _bad(message, **details):
     return CommandError("bad_request", message, details or None)
+
+
+def _strict_item(item, valid):
+    """``item`` (it must be a dict) without its null values: an explicit
+    null means "not given". An unknown key is ``bad_request`` with
+    ``details.unknown`` / ``details.valid``, so typos fail."""
+    if not isinstance(item, dict):
+        raise _bad(f"must be an object, got {type(item).__name__}")
+    item = {k: v for k, v in item.items() if v is not None}
+    unknown = sorted(str(k) for k in item if k not in valid)
+    if unknown:
+        raise _bad(f"unknown key(s) {', '.join(map(repr, unknown))}; valid: {', '.join(valid)}",
+                   unknown=unknown, valid=list(valid))
+    return item
 
 
 def _check_key(value):
@@ -133,14 +158,7 @@ class _Planner:
         return value
 
     def __call__(self, i, spec):
-        if not isinstance(spec, dict):
-            raise _bad(f"must be an object, got {type(spec).__name__}")
-        # An explicit null means "not given" (the default applies).
-        spec = {k: v for k, v in spec.items() if v is not None}
-        unknown = sorted(k for k in spec if k not in SPEC_KEYS)
-        if unknown:
-            raise _bad(f"unknown key(s) {', '.join(map(repr, unknown))}; valid: {', '.join(SPEC_KEYS)}",
-                       unknown=unknown, valid=list(SPEC_KEYS))
+        spec = _strict_item(spec, SPEC_KEYS)
         if "name" not in spec:
             raise _bad("'name' is required", param="name")
         name = layerprops.check_name(spec["name"])
@@ -355,9 +373,7 @@ def cmd_create_layers(params):
     in list order, all or nothing (D11). With ``dry_run`` only validate and
     describe."""
     handle, doc = registry.resolve_doc(params)
-    dry_run = params.get("dry_run", False)
-    if type(dry_run) is not bool:
-        raise CommandError("bad_request", f"'dry_run' must be true or false, got {dry_run!r}")
+    dry_run = _dry_run(params)
     specs, given = params.get("specs"), params.get("manifest")
     if (specs is None) == (given is None):
         raise CommandError("bad_request", "pass exactly one of 'specs' and 'manifest'")
@@ -392,3 +408,588 @@ def cmd_create_layers(params):
     created = [{**r, "path": fresh.path_of(r["id"]) if r["id"] in fresh else None}
                for r in outcome.results]
     return {"doc": handle, "dry_run": False, "created": created, "counts": counts, **extra}
+
+
+def _live(doc, nid):
+    node = nodes.node_by_id(doc, nid)
+    if node is None:
+        raise CommandError("conflict", f"Layer {nid} is not in the document (any more)",
+                           {"id": nid})
+    return node
+
+
+def _parent_node(doc, pid):
+    return doc.rootNode() if pid == refs.ROOT else _live(doc, pid)
+
+
+# --- update_layers ---------------------------------------------------------
+
+CHANGE_KEYS = ("id",) + layerprops.PROPS
+
+# The current value of each property, in update_layers' units (opacity 0-1,
+# so layerprops' round(v * 255) gives the same 0-255 value back).
+_READERS = {
+    "name": lambda node: node.name(),
+    "visible": lambda node: bool(node.visible()),
+    "opacity": lambda node: node.opacity() / 255,
+    "blend_mode": lambda node: node.blendingMode(),
+    "locked": lambda node: bool(node.locked()),
+    "alpha_locked": lambda node: bool(node.alphaLocked()),
+    "inherit_alpha": lambda node: bool(node.inheritAlpha()),
+    "pass_through": lambda node: bool(node.passThroughMode()),  # groups only (validated)
+}
+
+
+def _read_props(node, keys):
+    return {k: _READERS[k](node) for k in keys}
+
+
+def _set_props(node, props):
+    """Set ``props`` (layerprops.check output). An unlock goes first and a
+    lock last, so a locked layer never refuses the other changes."""
+    if props.get("locked") is False:
+        layerprops.apply_locked(node, props)
+    layerprops.apply(node, props, locked=False)
+    if props.get("locked") is True:
+        layerprops.apply_locked(node, props)
+
+
+@dataclasses.dataclass
+class _Change:
+    nid: str
+    props: dict
+
+
+class _UpdatePlanner:
+    def __init__(self, index):
+        self.index = index
+        self.seen = {}  # id -> position of the change that names it
+
+    def __call__(self, i, change):
+        change = _strict_item(change, CHANGE_KEYS)
+        if "id" not in change:
+            raise _bad("'id' is required (the layer to change)", param="id")
+        nid = refs.resolve(self.index, change["id"], field="id")
+        if nid in self.seen:
+            raise _bad(f"layer {change['id']!r} is already changed by changes[{self.seen[nid]}]; "
+                       "put all of a layer's changes in one item", param="id",
+                       id=nid, first=self.seen[nid])
+        props = layerprops.check(change, self.index.get(nid)["type"])
+        if not props:
+            raise _bad(f"nothing to change: give at least one of {', '.join(layerprops.PROPS)}",
+                       valid=list(layerprops.PROPS))
+        self.seen[nid] = i
+        return _Change(nid, props)
+
+
+def _rename_warnings(index, plans):
+    """A ``duplicate_name`` warning per rename whose new name another layer
+    has after the call (D4: bare-name refs to it become ambiguous)."""
+    final = {nid: index.get(nid)["name"] for nid in index}
+    for p in plans:
+        if "name" in p.props:
+            final[p.nid] = p.props["name"]
+    by_name = {}
+    for nid, name in final.items():  # stacking order
+        by_name.setdefault(name, []).append(nid)
+    warnings = []
+    for p in plans:
+        name = p.props.get("name")
+        if name is None or name == index.get(p.nid)["name"]:
+            continue
+        others = [o for o in by_name[name] if o != p.nid]
+        if others:
+            warnings.append({
+                "code": "duplicate_name",
+                "message": f"Layer {p.nid} is now named {name!r}, like {len(others)} other "
+                           f"layer{'s' if len(others) != 1 else ''}; a bare-name ref to it is "
+                           "ambiguous (use its id or a path)",
+                "id": p.nid, "name": name, "others": others})
+    return warnings
+
+
+class RestoreProps:
+    """The inverse of a property update: set the old values of exactly the
+    fields the update set, on the node looked up in the document passed at
+    call time."""
+
+    __slots__ = ("node_id", "props")
+
+    def __init__(self, nid, props):
+        self.node_id, self.props = nid, props
+
+    @property
+    def node_ids(self):
+        return (self.node_id,)
+
+    def __call__(self, doc):
+        _set_props(_live(doc, self.node_id), self.props)
+
+    def __repr__(self):
+        return f"RestoreProps({self.node_id}, {self.props!r})"
+
+
+def _update_one(doc, plan):
+    node = _live(doc, plan.nid)
+    old = _read_props(node, plan.props)
+    try:
+        _set_props(node, plan.props)
+    except Exception:
+        try:  # the failing item cleans up after itself (batch.py)
+            _set_props(node, old)
+        except Exception:
+            print(f"[KritaMCP] update_layers: could not restore layer {plan.nid}:")
+            traceback.print_exc()
+        raise
+    return {"id": plan.nid, "changed": list(plan.props)}, RestoreProps(plan.nid, old)
+
+
+@command("update_layers", timeout=LONG_TIMEOUT, mutating=True)
+def cmd_update_layers(params):
+    """Set layer properties: per change only the fields given, all or
+    nothing (D11)."""
+    handle, doc = registry.resolve_doc(params)
+    dry_run = _dry_run(params)
+    index = nodes.build_index(doc)
+    plans = batch.validate_all(params.get("changes"), _UpdatePlanner(index), field="changes")
+    warnings = _rename_warnings(index, plans)
+    if dry_run:
+        return {"doc": handle, "dry_run": True,
+                "would_update": [{"id": p.nid, "path": index.path_of(p.nid), "set": p.props}
+                                 for p in plans],
+                "warnings": warnings}
+
+    outcome = batch.run(plans, _update_one, doc, label="update_layers", field="changes")
+    doc.refreshProjection()
+    doc.waitForDone()
+    batch.JOURNALS.get(handle).push("update_layers", outcome.inverses)  # no snapshots
+    fresh = nodes.build_index(doc)
+    updated = [{"id": r["id"], "path": fresh.path_of(r["id"]) if r["id"] in fresh else None,
+                "changed": r["changed"]} for r in outcome.results]
+    return {"doc": handle, "dry_run": False, "updated": updated, "warnings": warnings}
+
+
+# --- tree surgery for move_layers and delete_layers -------------------------
+#
+# Verified headless (krita-api-notes § Nodes, 2026-11-25):
+# - Removing a node (remove() or removeChildNode) detaches its whole subtree:
+#   every descendant is taken off its parent too, so re-adding a group gives
+#   an empty group. The child wrappers, if held, can be re-added with their
+#   UUIDs, pixels and properties. So every removal here captures the
+#   subtree first (_capture) and every insert puts it back (_restore).
+# - addChildNode(child, above) returns True but does nothing when ``above``
+#   is not a child of the parent, so the sibling is always looked up among
+#   the parent's children first.
+# - There is no bottom insert: addChildNode(child, None) goes on top. To put
+#   a node at the bottom, insert it above the bottom child, then move that
+#   child above it (_insert).
+# Nothing calls a method on a detached node except re-inserting it.
+
+BOTTOM = "<bottom>"  # a position: below every child (None: on top)
+
+
+def _capture(node):
+    """``node``'s subtree as ``[(child, capture(child)), ...]``, bottom to top."""
+    return [(c, _capture(c)) for c in node.childNodes()]
+
+
+def _children(parent):
+    """``parent``'s children, bottom to top, without the root's global
+    selection mask (D4)."""
+    kids = parent.childNodes()
+    if parent.parentNode() is None:
+        kids = [k for k in kids if k.type() != "selectionmask"]
+    return kids
+
+
+def _add(parent, child, above):
+    if not parent.addChildNode(child, above):
+        raise CommandError("krita_error", "Krita refused to insert a layer")
+
+
+def _restore(node, layout):
+    """Put the captured subtree back under the (attached) ``node``, unless
+    Krita kept it."""
+    if not layout or node.childNodes():
+        return
+    for child, sub in layout:
+        _add(node, child, None)  # bottom to top: each goes on top
+        _restore(child, sub)
+
+
+def _detach(node):
+    """Remove the attached ``node`` from its parent; return its subtree."""
+    layout = _capture(node)
+    parent = node.parentNode()
+    if parent is None or not parent.removeChildNode(node):
+        raise CommandError("krita_error", "Krita refused to remove a layer from its parent")
+    return layout
+
+
+def _insert(parent, node, layout, above=None, bottom=False):
+    """Insert the detached ``node`` (with subtree ``layout``) into
+    ``parent``: directly above the child ``above``, at the bottom with
+    ``bottom``, else on top."""
+    if bottom:
+        kids = _children(parent)
+        if kids:
+            low = kids[0]
+            _add(parent, node, low)
+            _restore(node, layout)
+            low_layout = _detach(low)
+            try:
+                _add(parent, low, node)
+            except CommandError:
+                _add(parent, low, None)  # keep it in the document, if out of place
+                _restore(low, low_layout)
+                raise
+            _restore(low, low_layout)
+            return
+    _add(parent, node, above)
+    _restore(node, layout)
+
+
+def _position(parent, anchor, index=None):
+    """``(above, bottom)`` for ``_insert``. ``anchor``: None (on top),
+    ``BOTTOM``, or the id of the child to go directly above. When that child
+    is not under ``parent`` (any more), ``index`` (from the bottom, clamped)
+    is used instead; without one it is a ``conflict``."""
+    if anchor is None:
+        return None, False
+    if anchor == BOTTOM:
+        return None, True
+    kids = _children(parent)
+    for k in kids:
+        if nodes.node_id(k) == anchor:
+            return k, False
+    if index is None:
+        raise CommandError("conflict", f"Layer {anchor} is not where it was (the position "
+                           "to restore is relative to it)", {"id": anchor})
+    if index <= 0:
+        return None, True
+    if index >= len(kids):
+        return None, False
+    return kids[index - 1], False
+
+
+def _below(parent, nid):
+    """``(anchor, index)`` of child ``nid`` of ``parent``: the id of the
+    child directly below it (``BOTTOM`` if none) and its index from the
+    bottom."""
+    ids = [nodes.node_id(k) for k in _children(parent)]
+    pos = ids.index(nid)
+    return (BOTTOM if pos == 0 else ids[pos - 1]), pos
+
+
+def _relocate(doc, nid, parent_id, anchor, index=None):
+    """Move node ``nid`` under ``parent_id`` at ``anchor`` / ``index``
+    (``_position``). If the insert fails, the node goes back where it was
+    (as far as possible) and the error is raised."""
+    node = _live(doc, nid)
+    parent = _parent_node(doc, parent_id)
+    old_parent = node.parentNode()
+    old_anchor, _ = _below(old_parent, nid)
+    old_above = None if old_anchor == BOTTOM else _position(old_parent, old_anchor)[0]
+    layout = _detach(node)
+    try:
+        above, bottom = _position(parent, anchor, index)
+        _insert(parent, node, layout, above, bottom)
+    except Exception:
+        try:
+            if nodes.node_by_id(doc, nid) is None:  # still detached: put it back
+                _insert(old_parent, node, layout, old_above, old_anchor == BOTTOM)
+        except Exception:
+            print(f"[KritaMCP] could not put layer {nid} back after a failed move:")
+            traceback.print_exc()
+        raise
+
+
+# --- move_layers -----------------------------------------------------------
+
+MOVE_KEYS = ("id", "parent", "above", "below", "index")
+POSITION_KEYS = ("above", "below", "index")
+
+
+class MoveBack:
+    """The inverse of a move: put node ``node_id`` back under ``parent_id``
+    directly above the sibling ``anchor`` (an id, or ``BOTTOM``), or at
+    ``index`` from the bottom if that sibling is gone. Everything is looked
+    up by id in the document passed at call time. ``batch.rollback`` runs
+    inverses newest first, so each finds the state its move left."""
+
+    __slots__ = ("node_id", "parent_id", "anchor", "index")
+
+    def __init__(self, nid, parent_id, anchor, index):
+        self.node_id, self.parent_id, self.anchor, self.index = nid, parent_id, anchor, index
+
+    @property
+    def node_ids(self):
+        return (self.node_id,)
+
+    def __call__(self, doc):
+        _relocate(doc, self.node_id, self.parent_id, self.anchor, self.index)
+
+    def __repr__(self):
+        return f"MoveBack({self.node_id}, {self.parent_id}, {self.anchor}, {self.index})"
+
+
+@dataclasses.dataclass
+class _Move:
+    nid: str
+    parent: str      # target parent id or refs.ROOT
+    anchor: object   # None (top), BOTTOM, or the sibling id to go directly above
+    old_parent: str
+    old_anchor: object
+    old_index: int
+    noop: bool
+
+
+class _SimTree:
+    """The tree as parent / children ids, updated move by move during
+    validation, so later moves are checked against the planned state."""
+
+    def __init__(self, index):
+        self.index = index
+        self.parent = {nid: index.parent(nid) for nid in index}
+        self.kids = {refs.ROOT: list(reversed(index.children(refs.ROOT)))}  # bottom to top
+        for nid in index:
+            self.kids[nid] = list(reversed(index.children(nid)))
+
+    def inside(self, a, b):
+        """True if ``a`` is ``b`` or in its subtree."""
+        while a != refs.ROOT:
+            if a == b:
+                return True
+            a = self.parent[a]
+        return False
+
+    def path_of(self, nid):
+        names = []
+        while nid != refs.ROOT:
+            names.append(self.index.get(nid)["name"])
+            nid = self.parent[nid]
+        return refs.join_path(list(reversed(names)))
+
+    def where(self, nid):
+        """``{id, path, parent, index}`` of ``nid`` now."""
+        parent = self.parent[nid]
+        return {"id": nid, "path": self.path_of(nid), "parent": parent,
+                "index": self.kids[parent].index(nid)}
+
+
+class _MovePlanner:
+    def __init__(self, index):
+        self.index = index
+        self.sim = _SimTree(index)
+
+    def _sibling(self, move, key, nid, parent):
+        sid = refs.resolve(self.index, move[key], field=key)
+        if sid == nid:
+            raise _bad(f"'{key}' names the layer being moved", param=key)
+        if self.sim.parent[sid] != parent:
+            where = "the root '/'" if parent == refs.ROOT else f"group {self.sim.path_of(parent)!r}"
+            raise _bad(f"'{key}' {move[key]!r} is not a child of the target parent, {where} "
+                       "(pass 'parent' to move into another group)", param=key)
+        return sid
+
+    def __call__(self, i, move):
+        move = _strict_item(move, MOVE_KEYS)
+        if "id" not in move:
+            raise _bad("'id' is required (the layer to move)", param="id")
+        given = [k for k in POSITION_KEYS if k in move]
+        if len(given) > 1:
+            raise _bad(f"give at most one of 'above', 'below' and 'index', not {' and '.join(given)}",
+                       param=given[1], conflicting=given)
+        sim = self.sim
+        nid = refs.resolve(self.index, move["id"], field="id")
+        old_parent = sim.parent[nid]
+        parent = old_parent
+        if "parent" in move:
+            parent = refs.resolve(self.index, move["parent"], allow_root=True, field="parent")
+            if parent != refs.ROOT:
+                ptype = self.index.get(parent)["type"]
+                if ptype != GROUP:
+                    raise _bad(f"parent {move['parent']!r} is a {ptype}; only a group or the "
+                               "root '/' can hold layers", param="parent")
+                if sim.inside(parent, nid):
+                    raise _bad(f"can't move {move['id']!r} into itself or its own subtree "
+                               f"(parent {move['parent']!r})", param="parent")
+        siblings = [c for c in sim.kids[parent] if c != nid]  # bottom to top
+
+        if "above" in move:
+            anchor = self._sibling(move, "above", nid, parent)
+        elif "below" in move:
+            pos = siblings.index(self._sibling(move, "below", nid, parent))
+            anchor = BOTTOM if pos == 0 else siblings[pos - 1]
+        elif "index" in move:
+            k = move["index"]
+            if isinstance(k, bool) or not isinstance(k, int) or not 0 <= k <= len(siblings):
+                raise _bad(f"'index' must be a whole number from 0 (bottom) to {len(siblings)} "
+                           f"(top), counted without the moving layer; got {k!r}",
+                           param="index", max=len(siblings))
+            anchor = None if k == len(siblings) else BOTTOM if k == 0 else siblings[k - 1]
+        else:
+            anchor = None
+        if anchor == BOTTOM and not siblings:
+            anchor = None
+
+        old_kids = sim.kids[old_parent]
+        old_index = old_kids.index(nid)
+        old_anchor = BOTTOM if old_index == 0 else old_kids[old_index - 1]
+        new_kids = list(siblings)
+        if anchor is None:
+            new_kids.append(nid)
+        elif anchor == BOTTOM:
+            new_kids.insert(0, nid)
+        else:
+            new_kids.insert(new_kids.index(anchor) + 1, nid)
+        noop = parent == old_parent and new_kids == old_kids
+
+        sim.kids[old_parent] = [c for c in old_kids if c != nid]
+        sim.kids[parent] = new_kids
+        sim.parent[nid] = parent
+        return _Move(nid=nid, parent=parent, anchor=anchor, old_parent=old_parent,
+                     old_anchor=old_anchor, old_index=old_index, noop=noop)
+
+
+def _move_one(doc, plan):
+    if plan.noop:
+        return plan.nid, None
+    _relocate(doc, plan.nid, plan.parent, plan.anchor)
+    return plan.nid, MoveBack(plan.nid, plan.old_parent, plan.old_anchor, plan.old_index)
+
+
+def _where(index, nid):
+    """``{id, path, parent, index}`` from a fresh index (index from the bottom)."""
+    parent = index.parent(nid)
+    kids = index.children(parent)
+    return {"id": nid, "path": index.path_of(nid), "parent": parent,
+            "index": len(kids) - 1 - kids.index(nid)}
+
+
+@command("move_layers", timeout=LONG_TIMEOUT, mutating=True)
+def cmd_move_layers(params):
+    """Reorder and reparent layers, in list order, all or nothing (D11)."""
+    handle, doc = registry.resolve_doc(params)
+    dry_run = _dry_run(params)
+    index = nodes.build_index(doc)
+    planner = _MovePlanner(index)
+    plans = batch.validate_all(params.get("moves"), planner, field="moves")
+    if dry_run:
+        return {"doc": handle, "dry_run": True,
+                "would_move": [planner.sim.where(p.nid) for p in plans]}
+
+    outcome = batch.run(plans, _move_one, doc, label="move_layers", field="moves")
+    doc.refreshProjection()
+    doc.waitForDone()
+    batch.JOURNALS.get(handle).push("move_layers", outcome.inverses)  # no snapshots
+    fresh = nodes.build_index(doc)
+    moved = [_where(fresh, nid) for nid in outcome.results if nid in fresh]
+    return {"doc": handle, "dry_run": False, "moved": moved}
+
+
+# --- delete_layers ---------------------------------------------------------
+
+class ReinsertNode:
+    """The inverse of a delete: re-insert the detached ``node`` (kept alive
+    here, D6 / Q18) and its captured subtree under ``parent_id``, directly
+    above the sibling ``anchor`` (an id, or ``BOTTOM``), or at ``index``
+    from the bottom if that sibling is gone. The parent is looked up in the
+    document passed at call time. ``node_ids``: the subtree's ids, top to
+    bottom; ``nbytes``: about the pixel memory it keeps alive."""
+
+    __slots__ = ("node", "layout", "parent_id", "anchor", "index", "node_ids", "nbytes")
+
+    def __init__(self, node, layout, parent_id, anchor, index, node_ids, nbytes):
+        self.node, self.layout = node, layout
+        self.parent_id, self.anchor, self.index = parent_id, anchor, index
+        self.node_ids, self.nbytes = tuple(node_ids), nbytes
+
+    def __call__(self, doc):
+        if nodes.node_by_id(doc, self.node_ids[0]) is not None:
+            raise CommandError("conflict", f"Layer {self.node_ids[0]} is already in the document",
+                               {"id": self.node_ids[0]})
+        parent = _parent_node(doc, self.parent_id)
+        above, bottom = _position(parent, self.anchor, self.index)
+        _insert(parent, self.node, self.layout, above, bottom)
+
+    def __repr__(self):
+        return f"ReinsertNode({self.node_ids[0]}, {len(self.node_ids)} nodes, {self.parent_id})"
+
+
+def _paint_bytes(node, layout):
+    """About ``w * h * 4`` per paint layer in the subtree (from bounds)."""
+    total = 0
+    stack = [(node, layout)]
+    while stack:
+        n, sub = stack.pop()
+        if n.type() == PAINT:
+            r = n.bounds()
+            total += max(r.width(), 0) * max(r.height(), 0) * 4
+        stack.extend(sub)
+    return total
+
+
+@dataclasses.dataclass
+class _Delete:
+    nid: str
+    parent: str
+    ids: list  # the subtree, top to bottom
+
+
+def _check_delete_ref(index):
+    def check(i, ref):
+        if ref == refs.ROOT:
+            raise _bad("the root '/' can't be deleted", param="ids")
+        return refs.resolve(index, ref, field="id")
+    return check
+
+
+def _fold(index, nids):
+    """The listed ids minus duplicates and ids inside another listed id's
+    subtree, in stacking order (top first)."""
+    listed = set(nids)
+    tops = {nid for nid in listed if not any(a in listed for a in index.ancestors(nid))}
+    return sorted(tops, key=index.order)
+
+
+def _delete_one(doc, plan):
+    node = _live(doc, plan.nid)
+    parent = node.parentNode()
+    anchor, old_index = _below(parent, plan.nid)
+    layout = _capture(node)
+    nbytes = _paint_bytes(node, layout)
+    if not node.remove():
+        raise CommandError("krita_error", f"Krita refused to remove layer {plan.nid}")
+    return plan.ids, ReinsertNode(node, layout, plan.parent, anchor, old_index, plan.ids, nbytes)
+
+
+@command("delete_layers", timeout=LONG_TIMEOUT, mutating=True)
+def cmd_delete_layers(params):
+    """Delete layers; a group goes with its subtree. All or nothing (D11)."""
+    handle, doc = registry.resolve_doc(params)
+    dry_run = _dry_run(params)
+    index = nodes.build_index(doc)
+    nids = batch.validate_all(params.get("ids"), _check_delete_ref(index), field="ids")
+    plans = [_Delete(nid, index.parent(nid), subtree(index, nid)) for nid in _fold(index, nids)]
+    ids = [i for p in plans for i in p.ids]
+    if dry_run:
+        return {"doc": handle, "dry_run": True, "would_delete": ids, "count": len(ids)}
+
+    # Applied top first; a mid-apply error names the layer's place in ``ids``.
+    positions = [nids.index(p.nid) for p in plans]
+    outcome = batch.run(plans, _delete_one, doc, label="delete_layers", field="ids",
+                        positions=positions)
+    doc.refreshProjection()
+    doc.waitForDone()
+    warnings = []
+    if not batch.JOURNALS.get(handle).push("delete_layers", outcome.inverses, outcome.nbytes):
+        warnings.append({
+            "code": "not_undoable",
+            "message": f"The deleted layers take about {outcome.nbytes} bytes, over the undo "
+                       "journal's byte cap: this delete can't be undone, and the agent undo "
+                       "journal was cleared",
+            "nbytes": outcome.nbytes})
+    deleted = [i for r in outcome.results for i in r]
+    return {"doc": handle, "dry_run": False, "deleted": deleted, "count": len(deleted),
+            "warnings": warnings}

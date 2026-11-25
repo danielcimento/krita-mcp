@@ -16,6 +16,7 @@ EXPECTED_REGISTRY = {
     "clear": (300, True),
     "close_document": (30, True),
     "create_layers": (300, True),
+    "delete_layers": (300, True),
     "draw_shape": (30, True),
     "fill": (30, True),
     "get_canvas": (300, False),
@@ -24,6 +25,7 @@ EXPECTED_REGISTRY = {
     "list_documents": (30, False),
     "list_brushes": (30, False),
     "list_layers": (30, False),
+    "move_layers": (300, True),
     "new_canvas": (300, True),
     "open_file": (300, True),
     "redo": (30, True),
@@ -32,6 +34,7 @@ EXPECTED_REGISTRY = {
     "set_color": (30, False),
     "stroke": (30, True),
     "undo": (30, True),
+    "update_layers": (300, True),
 }
 
 
