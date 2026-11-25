@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phase 1 done (live acceptance 3, 5 and 6 passed 2026-11-25; 5 minus the export row, 6 in its Phase-1 form). Phase 2 next. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phase 1 done (live acceptance 3, 5 and 6 passed 2026-11-25; 5 minus the export row, 6 in its Phase-1 form). Phase 2 in progress: P2.2 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -169,20 +169,20 @@ row of test 5, which lands with P3.2). Test 6 ran in its Phase-1 form
 
 ### Phase 2: Layer tree (P0)
 
-- **P2.1 `list_layers`.** Layer object serialization, `root`, `depth`,
+- [ ] **P2.1 `list_layers`.** Layer object serialization, `root`, `depth`,
   `fields`, counts. Bounds per Q2.
-- **P2.2 Batch executor.** `batch.py`: validate-all, apply with recorded
+- [x] **P2.2 Batch executor.** `batch.py`: validate-all, apply with recorded
   inverses, rollback on failure, `dry_run`. It also hands the inverse
   list to a per-document journal, which stays unused until P5.1. Unit
   tests with a fake applier: rollback order, partial failure report.
-- **P2.3 `create_layers` (specs).** Groups and paint layers, `key` / `$key`
+- [ ] **P2.3 `create_layers` (specs).** Groups and paint layers, `key` / `$key`
   refs, `above`, properties, and `png` + `x`/`y`, which go through
   `pixels.load_png_bgra` (the only pixel helper this phase needs).
-- **P2.4 `manifest.py` + `create_layers(manifest=…)`.** Manifest v1 schema
+- [ ] **P2.4 `manifest.py` + `create_layers(manifest=…)`.** Manifest v1 schema
   validation (unit-tested) and path resolution relative to the manifest.
-- **P2.5 `update_layers`, `move_layers`, `delete_layers`.** Including
+- [ ] **P2.5 `update_layers`, `move_layers`, `delete_layers`.** Including
   the cycle check for moves and subtree reporting for deletes.
-- **P2.6 `tools/ora_to_manifest.py`.** Converts the first-session
+- [ ] **P2.6 `tools/ora_to_manifest.py`.** Converts the first-session
   `mao_pro_layered.ora` to manifest v1 plus PNGs. It runs outside Krita,
   using `zipfile` and `xml.etree`. Mapping: stack.xml is top to bottom, so
   reverse it; `svg:src-over`→`normal`, `svg:multiply`→`multiply`,
