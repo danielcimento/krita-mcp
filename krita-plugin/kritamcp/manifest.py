@@ -23,7 +23,7 @@ Rules (api-design.md § Manifest schema, P2.4 note):
   ``export_layers(include_groups=True)``) are skipped, and may not be a
   ``parent`` or ``above`` target.
 - ``png`` is relative to the manifest's directory, or ``null`` for an
-  empty layer.
+  empty layer (its ``x`` / ``y``, if any, are then dropped).
 """
 
 import json
@@ -60,7 +60,10 @@ class Specs(NamedTuple):
 
 
 def _bad(i, msg, **details):
-    return CommandError("bad_request", f"layers[{i}]: {msg}", {"index": i, **details})
+    # The same details shape as a create_layers validation error (batch.py):
+    # ``index`` and ``field`` locate the entry, ``param`` names its key.
+    return CommandError("bad_request", f"layers[{i}]: {msg}",
+                        {"index": i, "field": "layers", **details})
 
 
 def _no_dup_pairs(pairs):
@@ -119,13 +122,13 @@ def _key_ref(i, entry, field, earlier, all_keys):
         raise _bad(i, f"{field} {ref!r} must be '$<key>' of an earlier entry"
                       + (" or '/'" if field == "parent" else "")
                       + "; a manifest links layers by key only, not by name or id",
-                   field=field)
+                   param=field)
     key = ref[1:]
     if key not in earlier:
         raise _bad(i, f"{field} {ref!r}: no earlier entry has key {key!r}"
                       + (" (it is defined later; parents and siblings must come first)"
                          if key in all_keys else ""),
-                   field=field)
+                   param=field)
     return key
 
 
@@ -174,13 +177,13 @@ def to_specs(manifest, manifest_dir):
         key = entry.get("key")
         if not isinstance(key, str) or key == "":
             raise _bad(i, "key is required in a manifest and must be a non-empty string",
-                       field="key")
+                       param="key")
         if key in earlier:
-            raise _bad(i, f"duplicate key {key!r}", field="key", key=key)
+            raise _bad(i, f"duplicate key {key!r}", param="key", key=key)
 
         typ = entry.get("type", "paint")
         if typ not in TYPES:
-            raise _bad(i, f"type {typ!r} must be one of {list(TYPES)}", field="type")
+            raise _bad(i, f"type {typ!r} must be one of {list(TYPES)}", param="type")
 
         parent = _ROOT
         if "parent" in entry and entry["parent"] != _ROOT:
@@ -188,9 +191,9 @@ def to_specs(manifest, manifest_dir):
             p = earlier[pkey]
             if p["projection"]:
                 raise _bad(i, f"parent '${pkey}' is a projection entry, which is skipped",
-                           field="parent")
+                           param="parent")
             if p["type"] != "group":
-                raise _bad(i, f"parent '${pkey}' is not a group", field="parent")
+                raise _bad(i, f"parent '${pkey}' is not a group", param="parent")
             parent = "$" + pkey
 
         if "above" in entry:
@@ -198,22 +201,22 @@ def to_specs(manifest, manifest_dir):
             a = earlier[akey]
             if a["projection"]:
                 raise _bad(i, f"above '${akey}' is a projection entry, which is skipped",
-                           field="above")
+                           param="above")
             if a["parent"] != parent:
                 raise _bad(i, f"above '${akey}' is not a sibling (its parent is "
-                              f"{a['parent']!r}, this entry's is {parent!r})", field="above")
+                              f"{a['parent']!r}, this entry's is {parent!r})", param="above")
 
         projection = entry.get("projection", False)
         if not isinstance(projection, bool):
-            raise _bad(i, "projection must be true or false", field="projection")
+            raise _bad(i, "projection must be true or false", param="projection")
 
         png = entry.get("png")
         if png is not None:
             if not isinstance(png, str) or png == "" or "\x00" in png:
-                raise _bad(i, "png must be a non-empty path string or null", field="png")
+                raise _bad(i, "png must be a non-empty path string or null", param="png")
             if os.path.isabs(png):
                 raise _bad(i, f"png {png!r}: png paths in a manifest are relative to the manifest",
-                           field="png")
+                           param="png")
 
         earlier[key] = {"type": typ, "parent": parent, "projection": projection}
         if projection:
@@ -223,6 +226,9 @@ def to_specs(manifest, manifest_dir):
         spec = {k: v for k, v in entry.items() if k in SPEC_FIELDS and k != "png"}
         if png is not None:
             spec["png"] = os.path.normpath(os.path.join(base, png))
+        else:  # x/y place a png; without one they are informative (ora_to_manifest writes them)
+            spec.pop("x", None)
+            spec.pop("y", None)
         specs.append(spec)
     return Specs(specs, skipped, document)
 

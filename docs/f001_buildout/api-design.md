@@ -249,8 +249,9 @@ Order: specs are applied in list order, and each goes on top of its
 parent's children unless `above` is given. So **listing siblings bottom
 to top** reproduces a stack, and that is the order the manifest uses.
 
-Returns `{"created": [{"key", "id", "name", "path"}], "summary": …}`.
-On failure, nothing stays created (D11).
+Returns `{"created": [{"key", "id", "name", "path"}], "summary": …}`,
+plus `manifest`, `skipped` and `warnings` for a manifest (P2.4 notes
+below). On failure, nothing stays created (D11).
 
 Settled in P2.3 (2026-11-25), `kritamcp/commands/layers.py` (`specs`
 only; `manifest` comes with P2.4):
@@ -300,6 +301,40 @@ only; `manifest` comes with P2.4):
   would_create: [{key, name, type, parent, above, png?, x?, y?, w?, h?}],
   counts}`. Here `parent`/`above` are `"/"`, an id or `"$key"`, and
   nothing changes.
+
+Settled in P2.4 (2026-11-25), `manifest=…` (`commands/layers.py`
+`_load_manifest`, `kritamcp/manifest.py`):
+
+- **Exactly one input.** Both `specs` and `manifest`, or neither, is
+  `bad_request` (the server's wrapper checks this too, before calling
+  Krita).
+- **Loading.** `manifest` goes through `resolve_allowed_path(...,
+  allow_json=True, must_exist=True)`: outside the roots or a disallowed
+  extension is `forbidden_path`, a missing file `not_found`; an image
+  extension is `bad_request` (it must be `.json`). Then `manifest.read`
+  and `manifest.to_specs(m, dirname(resolved path))`, then the same
+  validate / apply path as `specs`. Each `png`, joined onto the manifest's
+  directory, still goes through `resolve_allowed_path`, so a `..` path
+  that leaves the roots is `forbidden_path`. A manifest whose entries are
+  all skipped is `bad_request`. `x` / `y` on an entry with `png: null` are
+  dropped (informative; `ora_to_manifest` writes them).
+- **Errors name the manifest entry.** Projection entries are skipped, so
+  spec positions shift; every error is mapped back to the manifest's
+  `layers[i]`: the message starts `layers[i]: ` (mid-apply:
+  `create_layers: layers[i] failed: …`), `details.index` is `i` and
+  `details.field` is `"layers"` (`batch.validate_all` / `batch.run`
+  `positions=`). Structure errors from `to_specs` have the same shape;
+  `details.param` names the entry's key at fault (`parent`, `png`, …),
+  as in spec validation errors.
+- **Result.** As for `specs`, plus `manifest` (the resolved path),
+  `skipped` (`[{index, key, reason}]`) and `warnings`. One warning so far:
+  `{code: "document_size", message, manifest_size: {w, h}, doc_size: {w,
+  h}}` when the manifest's `document.width/height` (whole numbers) differ
+  from the target document's. It is not an error: layers keep their
+  manifest offsets. `dry_run` works the same way and returns these too.
+- **Mao (acceptance 1, headless,** `tests/krita/test_mao_headless.py`**).**
+  One call creates the 184 paint layers and 38 groups in about 8 s on a
+  5800 × 8400 canvas (2026-11-25).
 
 Performance: spike Q11 puts `setPixelData` at under 40 ms even for a
 full 48 MP layer. So the 184-layer Mao build is bounded by PNG decoding
@@ -406,7 +441,8 @@ document.
   field can appear in it.
 - *(P2.4, 2026-11-25; `kritamcp/manifest.py`)* Structure rules
   `create_layers(manifest=…)` enforces, all `bad_request` with
-  `details.index`: `version` must be 1; top-level keys other than
+  `details.index` (and `details.field: "layers"`, `details.param` the
+  entry key at fault): `version` must be 1; top-level keys other than
   `version`/`generator`/`document`/`layers` and entry keys other than the
   spec fields plus `id`, `path`, `stack_index`, `w`, `h`, `projection` are
   rejected (the informative ones are dropped). Every entry needs a unique
@@ -414,7 +450,8 @@ document.
   `above` is `"$key"` of an earlier sibling: names and UUIDs are not
   accepted in a manifest. `projection: true` entries are skipped (reported
   in `skipped`) and may not be a `parent` or `above` target. `png` is a
-  relative path or `null`; absolute paths are rejected. At most 2000
+  relative path or `null`; absolute paths are rejected. With `png: null`,
+  `x` / `y` are dropped. At most 2000
   layers (`too_large`), and the file is capped at 16 MB.
 
 ### `krita_import_png(doc?, id, png, x=0, y=0, mode="replace")` · P0

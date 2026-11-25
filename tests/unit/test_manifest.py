@@ -44,7 +44,7 @@ def test_happy_path():
         group("H", "$G", path="G/H", stack_index=1),
         paint("A", "$H", png="sub/../0003_a.png", x=3, y=4, w=10, h=20, opacity=0.5,
               blend_mode="multiply", stack_index=2, id="{b}"),
-        paint("B", "$H", png=None, above="$A", stack_index=3),
+        paint("B", "$H", png=None, above="$A", stack_index=3, x=7, y=8),
         {"key": "P", "name": "G", "type": "group", "parent": "/", "projection": True,
          "png": "0005_g.png", "x": 0, "y": 0},
         paint("C", visible=False, locked=True, alpha_locked=True, inherit_alpha=True),
@@ -58,6 +58,7 @@ def test_happy_path():
                         "png": "/work/export/0003_a.png", "x": 3, "y": 4, "opacity": 0.5,
                         "blend_mode": "multiply"}
     assert "png" not in specs[3] and specs[3]["above"] == "$A"
+    assert "x" not in specs[3] and "y" not in specs[3]  # x/y without a png are dropped
     assert specs[4]["visible"] is False and specs[4]["inherit_alpha"] is True
     for s in specs:
         assert set(s) <= manifest.SPEC_FIELDS
@@ -158,7 +159,7 @@ def test_entry_errors(bad, needle):
 
 def test_unknown_keys_listed():
     e = err(doc(paint("a"), paint("b", colour="red", Opacity=1)))
-    assert e.details == {"index": 1, "keys": ["Opacity", "colour"]}
+    assert e.details == {"index": 1, "field": "layers", "keys": ["Opacity", "colour"]}
     assert "unknown keys" in e.message
 
 

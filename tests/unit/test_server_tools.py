@@ -509,9 +509,11 @@ def test_create_layers_sends_only_set_fields(fake_call):
 def test_create_layers_schema_and_typos():
     tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
     tool = tools["krita_create_layers"]
-    assert set(tool.parameters["properties"]) == {"specs", "doc", "dry_run", "timeout_s"}
-    assert tool.parameters["required"] == ["specs"]
+    assert set(tool.parameters["properties"]) == {"specs", "manifest", "doc", "dry_run",
+                                                  "timeout_s"}
+    assert not tool.parameters.get("required")
     assert "bottom to top" in tool.description and "$<key>" in tool.description
+    assert "relative to the manifest's directory" in " ".join(tool.description.split())
 
     async def go():
         async with Client(server.mcp) as c:
@@ -532,3 +534,37 @@ def test_create_layers_summary(fake_call):
     assert server.krita_create_layers([{"name": "a"}], dry_run=True)["summary"] == (
         "Would create 1 layer in doc-2 (dry run, nothing changed)")
 
+
+
+# P2.4: create_layers(manifest=…).
+
+def test_create_layers_manifest_forwarded(fake_call):
+    fake_call.payload = {"doc": "doc-2", "dry_run": False, "created": [{}, {}],
+                         "counts": {"grouplayer": 1, "paintlayer": 1, "total": 2},
+                         "manifest": "/out/m/manifest.json", "skipped": [], "warnings": []}
+    result = server.krita_create_layers(manifest="m/manifest.json", doc="doc-2", timeout_s=600)
+    assert fake_call.calls == [("create_layers", {"manifest": "m/manifest.json",
+                                                  "doc": "doc-2"}, 600)]
+    assert result["summary"] == "Created 2 layers (1 group) in doc-2 from /out/m/manifest.json"
+    server.krita_create_layers(manifest="m.json", dry_run=True)
+    assert fake_call.calls[1][1] == {"manifest": "m.json", "dry_run": True}
+
+
+def test_create_layers_needs_exactly_one_input(fake_call):
+    for kwargs in ({}, {"specs": [{"name": "a"}], "manifest": "m.json"}):
+        with pytest.raises(ToolError) as e:
+            server.krita_create_layers(**kwargs)
+        assert str(e.value).startswith("bad_request: ") and "exactly one" in str(e.value)
+    assert fake_call.calls == []
+
+
+def test_create_layers_manifest_summary_counts_skipped_and_warnings(fake_call):
+    fake_call.payload = {"doc": "doc-2", "dry_run": True, "would_create": [{}],
+                         "counts": {"paintlayer": 1, "total": 1},
+                         "manifest": "/out/manifest.json",
+                         "skipped": [{"index": 0, "key": "P", "reason": "group projection"}] * 2,
+                         "warnings": [{"code": "document_size",
+                                       "message": "The manifest was made for\na 8x8 document"}]}
+    assert server.krita_create_layers(manifest="manifest.json", dry_run=True)["summary"] == (
+        "Would create 1 layer in doc-2 from /out/manifest.json (2 entries skipped, "
+        "1 warning: The manifest was made for a 8x8 document) (dry run, nothing changed)")

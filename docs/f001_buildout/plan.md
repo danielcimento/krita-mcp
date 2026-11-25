@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phase 1 done (live acceptance 3, 5 and 6 passed 2026-11-25; 5 minus the export row, 6 in its Phase-1 form). Phase 2 in progress: P2.1–P2.3, P2.6 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phase 1 done (live acceptance 3, 5 and 6 passed 2026-11-25; 5 minus the export row, 6 in its Phase-1 form). Phase 2 in progress: P2.1–P2.4, P2.6 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -178,8 +178,12 @@ row of test 5, which lands with P3.2). Test 6 ran in its Phase-1 form
 - [x] **P2.3 `create_layers` (specs).** Groups and paint layers, `key` / `$key`
   refs, `above`, properties, and `png` + `x`/`y`, which go through
   `pixels.load_png_bgra` (the only pixel helper this phase needs).
-- [ ] **P2.4 `manifest.py` + `create_layers(manifest=…)`.** Manifest v1 schema
+- [x] **P2.4 `manifest.py` + `create_layers(manifest=…)`.** Manifest v1 schema
   validation (unit-tested) and path resolution relative to the manifest.
+  *2026-11-25:* errors map to the manifest's `layers[i]`; `skipped` and
+  `warnings` (document size) in the result. Acceptance 1 passes headless
+  (`tests/krita/test_mao_headless.py`); the live `test_mao_rebuild` and the
+  full `test_handles` are written, not yet run with `make test-live`.
 - [ ] **P2.5 `update_layers`, `move_layers`, `delete_layers`.** Including
   the cycle check for moves and subtree reporting for deletes.
 - [x] **P2.6 `tools/ora_to_manifest.py`.** Converts the first-session

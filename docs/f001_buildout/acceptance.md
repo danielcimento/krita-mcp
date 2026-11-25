@@ -91,6 +91,16 @@ equals its PNG's offset and size, compared with `opaque_bounds` when the
 PNG has transparent margins. The saved `.kra` reopens with the same
 counts.
 
+*P2.4 (2026-11-25):* the live test computes each PNG's opaque bounds with
+Pillow (`getchannel("A").getbbox()`, offset by `x`, `y`) and excludes
+`Background` by the id `new_canvas` returned. Its Mao-derived files go in
+`<scratch>/mao`, removed after the test even with `KRITA_MCP_KEEP_SCRATCH=1`.
+The same procedure runs headless in `tests/krita/test_mao_headless.py`
+(`KRITA_MCP_MAO_ORA=… make test-krita KRITA_TESTS=mao`; kritarunner
+inherits the shell's environment), in a temp dir deleted in `finally`.
+First headless run: passed, `create_layers` 8.0 s, whole test 15.6 s
+(convert 0.1 s, bounds check 2.4 s, save 3.7 s / 103 MB, reopen 1.2 s).
+
 ### 2. Round trip · `test_round_trip`, `test_round_trip_mao`
 
 1. Open the `.kra` from test 1, or, in the small variant, a synthetic
@@ -166,6 +176,7 @@ into the run's scratch dir.
 7. `krita_close_document(a, discard=true)` (P1). If P1 isn't there yet,
    close through Krita. Then a call with `doc=a` fails with `not_found`.
 
-*Phase 1 (P1.7):* steps 2, 3 and 5 paint into each canvas's `Background`
-layer instead, since `create_layers` / `list_layers` come in P2; the full
-version replaces it after P2.3.
+*Phase 1 (P1.7):* steps 2, 3 and 5 painted into each canvas's
+`Background` layer instead. *P2.4 (2026-11-25):* `test_handles` now has the
+full form above; step 3 also checks that `get_color_at(doc=b, layer="Only
+In A")` is `not_found`.

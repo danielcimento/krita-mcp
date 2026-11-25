@@ -399,16 +399,19 @@ def krita_list_layers(doc: Optional[str] = None, root: Optional[str] = None,
 
 
 @mcp.tool()
-def krita_create_layers(specs: list[LayerSpec], doc: Optional[str] = None,
-                        dry_run: bool = False, timeout_s: Optional[float] = None) -> dict:
+def krita_create_layers(specs: Optional[list[LayerSpec]] = None, manifest: Optional[str] = None,
+                        doc: Optional[str] = None, dry_run: bool = False,
+                        timeout_s: Optional[float] = None) -> dict:
     """
-    Create groups and paint layers in one all-or-nothing call. Every spec is
-    validated before anything changes (refs, parents, PNG headers, names,
-    blend modes, unknown keys); the first bad spec fails the call with
-    details.index and nothing is created. If Krita fails halfway, the layers
-    made so far are removed again (details.applied / rolled_back).
+    Create groups and paint layers in one all-or-nothing call, from either
+    a list of specs or a layer manifest file (pass exactly one). Every
+    layer is validated before anything changes (refs, parents, PNG
+    headers, names, blend modes, unknown keys); the first bad one fails the
+    call with details.index and nothing is created. If Krita fails halfway,
+    the layers made so far are removed again (details.applied /
+    rolled_back).
 
-    Order: specs are applied in list order and each new layer goes on top
+    Order: layers are created in list order and each new layer goes on top
     of its parent's children, unless "above" names a sibling to insert it
     directly above. So listing siblings bottom to top reproduces a stack.
     A spec's "key" lets later specs in the same call use "$<key>" as their
@@ -427,23 +430,40 @@ def krita_create_layers(specs: list[LayerSpec], doc: Optional[str] = None,
     (default 0, 0; only with png). Pixels outside the canvas are kept, not
     clipped. Unknown keys fail.
 
+    A manifest is the manifest.json that krita_export_layers writes (or
+    tools/ora_to_manifest.py): {"version": 1, "document": {...}, "layers":
+    [...]}, its layers in create order, each with a unique "key". Parents
+    and "above" are "$key" refs only. Each "png" is relative to the
+    manifest's directory and must still resolve inside an allowed
+    directory. Entries marked "projection": true are skipped. Errors name
+    the manifest entry: "layers[i]: ..." with details.index = i.
+
     Returns {doc, created: [{key, id, name, type, path}], counts} (counts
     per Krita type plus "total"); with dry_run, {doc, would_create: [{key,
     name, type, parent, above, png?, x?, y?, w?, h?}], counts} and nothing
-    changes. One successful call is one agent undo step.
+    changes. With a manifest it also has manifest (resolved path), skipped
+    ([{index, key, reason}]) and warnings ([{code, message, ...}], e.g.
+    "document_size" when the manifest's document size differs from this
+    document's; not an error). One successful call is one agent undo step.
 
     Args:
         specs: The layers to create, 1 to 2000, in order (see above)
+        manifest: Path of a manifest.json (absolute, ~, or relative to the
+                  output dir), inside an allowed directory; instead of specs
         doc: Document handle such as "doc-3" (new_canvas and open_file return
              one), or the absolute path of an open document; default the
              active document
         dry_run: Only validate and report what would be created
         timeout_s: Seconds to wait for Krita, up to 900; default 300
     """
-    sent = [(s if isinstance(s, LayerSpec) else LayerSpec.model_validate(s)).to_params()
-            for s in specs]
-    result = client.call("create_layers",
-                         _with({"specs": sent}, doc=doc, dry_run=dry_run or None),
+    if (specs is None) == (manifest is None):
+        raise ToolError("bad_request: pass exactly one of specs and manifest")
+    if manifest is not None:
+        params = {"manifest": manifest}
+    else:
+        params = {"specs": [(s if isinstance(s, LayerSpec) else LayerSpec.model_validate(s))
+                            .to_params() for s in specs]}
+    result = client.call("create_layers", _with(params, doc=doc, dry_run=dry_run or None),
                          timeout_s=timeout_s)
     counts = result.get("counts") or {}
     total = counts.get("total", len(result.get("created") or result.get("would_create") or []))
@@ -453,7 +473,22 @@ def krita_create_layers(specs: list[LayerSpec], doc: Optional[str] = None,
         what += f" ({groups} group{'s' if groups != 1 else ''})"
     where = _in(result) or f" in {doc or 'the active document'}"
     verb = "Would create " if result.get("dry_run") else "Created "
-    summary = verb + what + where + (" (dry run, nothing changed)" if result.get("dry_run") else "")
+    summary = verb + what + where
+    if manifest is not None:
+        summary += f" from {result.get('manifest') or manifest}"
+        notes = []
+        skipped, warnings = result.get("skipped") or [], result.get("warnings") or []
+        if skipped:
+            notes.append(f"{len(skipped)} entr{'ies' if len(skipped) != 1 else 'y'} skipped")
+        if warnings:
+            texts = [str(w.get("message", w)) if isinstance(w, dict) else str(w)
+                     for w in warnings]
+            notes.append(f"{len(warnings)} warning{'s' if len(warnings) != 1 else ''}: "
+                         + "; ".join(" ".join(t.split()) for t in texts))  # one line
+        if notes:
+            summary += " (" + ", ".join(notes) + ")"
+    if result.get("dry_run"):
+        summary += " (dry run, nothing changed)"
     return _done(result, summary)
 
 

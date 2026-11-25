@@ -5,9 +5,10 @@ kept after it (they are only valid while the document is open).
 """
 
 import dataclasses
+import os
 import traceback
 
-from .. import batch, config, layerprops, nodes, paths, pixels, refs, registry
+from .. import batch, config, layerprops, manifest, nodes, paths, pixels, refs, registry
 from ..dispatch import LONG_TIMEOUT, command
 from ..errors import CommandError
 
@@ -318,24 +319,71 @@ def _counts(kinds):
     return counts
 
 
+def _load_manifest(given):
+    """``(path, Specs, positions)`` for ``create_layers(manifest=given)``.
+
+    ``positions[k]`` is the index in the manifest's ``layers`` of spec
+    ``k`` (projection entries are skipped, so later entries shift).
+    """
+    path = paths.resolve_allowed_path(given, must_exist=True, allow_json=True)
+    if os.path.splitext(path)[1].lower() != paths.MANIFEST_EXT:
+        raise CommandError("bad_request", f"'manifest' must be a {paths.MANIFEST_EXT} file: {given}",
+                           {"param": "manifest"})
+    loaded = manifest.to_specs(manifest.read(path), os.path.dirname(path))
+    skipped = {s["index"] for s in loaded.skipped}
+    positions = [i for i in range(len(loaded.specs) + len(skipped)) if i not in skipped]
+    return path, loaded, positions
+
+
+def _manifest_warnings(document, doc):
+    """Warnings (not errors) about a manifest's informative ``document``."""
+    warnings = []
+    w, h = document.get("width"), document.get("height")
+    if all(type(v) is int for v in (w, h)) and (w, h) != (doc.width(), doc.height()):
+        warnings.append({
+            "code": "document_size",
+            "message": f"The manifest was made for a {w}x{h} document; this one is "
+                       f"{doc.width()}x{doc.height()}. Layers keep their manifest offsets.",
+            "manifest_size": {"w": w, "h": h},
+            "doc_size": {"w": doc.width(), "h": doc.height()}})
+    return warnings
+
+
 @command("create_layers", timeout=LONG_TIMEOUT, mutating=True)
 def cmd_create_layers(params):
-    """Create groups and paint layers from ``specs``, in list order, all or
-    nothing (D11). With ``dry_run`` only validate and describe."""
+    """Create groups and paint layers from ``specs`` or a ``manifest`` file,
+    in list order, all or nothing (D11). With ``dry_run`` only validate and
+    describe."""
     handle, doc = registry.resolve_doc(params)
     dry_run = params.get("dry_run", False)
     if type(dry_run) is not bool:
         raise CommandError("bad_request", f"'dry_run' must be true or false, got {dry_run!r}")
+    specs, given = params.get("specs"), params.get("manifest")
+    if (specs is None) == (given is None):
+        raise CommandError("bad_request", "pass exactly one of 'specs' and 'manifest'")
+
+    extra = {}
+    field, positions = "specs", None
+    if given is not None:
+        path, loaded, positions = _load_manifest(given)
+        specs, field = loaded.specs, "layers"
+        extra = {"manifest": path, "skipped": loaded.skipped,
+                 "warnings": _manifest_warnings(loaded.document, doc)}
+        if not specs:
+            raise CommandError("bad_request", f"Manifest {path} has no layers to create "
+                               f"(all {len(loaded.skipped)} entries are skipped)",
+                               {"skipped": loaded.skipped})
 
     index, by_id = nodes.tree(doc)
     planner = _Planner(doc, index)
-    plans = batch.validate_all(params.get("specs"), planner, field="specs")
+    plans = batch.validate_all(specs, planner, field=field, positions=positions)
     counts = _counts([p.kind for p in plans])
     if dry_run:
         return {"doc": handle, "dry_run": True,
-                "would_create": [planner.describe(p) for p in plans], "counts": counts}
+                "would_create": [planner.describe(p) for p in plans], "counts": counts, **extra}
 
-    outcome = batch.run(plans, _applier(doc, by_id), doc, label="create_layers", field="specs")
+    outcome = batch.run(plans, _applier(doc, by_id), doc, label="create_layers", field=field,
+                        positions=positions)
     doc.refreshProjection()
     doc.waitForDone()
     batch.JOURNALS.get(handle).push("create_layers", outcome.inverses, outcome.nbytes)
@@ -343,4 +391,4 @@ def cmd_create_layers(params):
     fresh = nodes.build_index(doc)
     created = [{**r, "path": fresh.path_of(r["id"]) if r["id"] in fresh else None}
                for r in outcome.results]
-    return {"doc": handle, "dry_run": False, "created": created, "counts": counts}
+    return {"doc": handle, "dry_run": False, "created": created, "counts": counts, **extra}

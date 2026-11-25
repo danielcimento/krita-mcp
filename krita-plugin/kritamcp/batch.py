@@ -53,13 +53,18 @@ def check_items(items, field="specs"):
                            details={"count": len(items), "limit": MAX_ITEMS})
 
 
-def validate_all(items, validate_fn, field="specs"):
+def validate_all(items, validate_fn, field="specs", positions=None):
     """Return ``[validate_fn(i, item) for each item]``, the plans.
 
     Runs ``check_items`` first. A ``CommandError`` from item ``i`` is
     re-raised with its code, the message prefixed ``"{field}[{i}]: "`` and
     ``index`` / ``field`` merged into its details. Any other exception is a
     bug and propagates unchanged.
+
+    ``positions`` (a list as long as ``items``) reports item ``i`` as
+    ``positions[i]`` in errors instead, for items that came from another
+    list (``create_layers(manifest=…)``: the manifest's ``layers``, minus
+    skipped entries). ``validate_fn`` still gets ``i``.
     """
     check_items(items, field)
     plans = []
@@ -67,8 +72,12 @@ def validate_all(items, validate_fn, field="specs"):
         try:
             plans.append(validate_fn(i, item))
         except CommandError as e:
-            raise _at_index(e, field, i) from e
+            raise _at_index(e, field, _position(positions, i)) from e
     return plans
+
+
+def _position(positions, i):
+    return i if positions is None else positions[i]
 
 
 def _at_index(e, field, i):
@@ -95,7 +104,8 @@ class Outcome:
     dry_run: bool = False
 
 
-def run(plans, apply_fn, ctx, *, dry_run=False, describe_fn=None, label="batch", field="specs"):
+def run(plans, apply_fn, ctx, *, dry_run=False, describe_fn=None, label="batch", field="specs",
+        positions=None):
     """Apply ``plans`` in order; roll back and raise if one fails.
 
     ``apply_fn(ctx, plan) -> (result, inverse)``, where ``inverse`` is a
@@ -108,6 +118,8 @@ def run(plans, apply_fn, ctx, *, dry_run=False, describe_fn=None, label="batch",
     mid-apply stays a conflict), else ``krita_error``. Its details hold
     ``index``, ``field``, ``applied`` (items done before ``i``),
     ``rolled_back`` (inverses that ran cleanly) and ``rollback_errors``.
+    ``positions`` maps ``index`` as in ``validate_all``; ``applied`` stays
+    a count of plans.
     """
     if dry_run:
         results = [describe_fn(p) for p in plans] if describe_fn else list(plans)
@@ -120,23 +132,24 @@ def run(plans, apply_fn, ctx, *, dry_run=False, describe_fn=None, label="batch",
             if inverse is not None and not callable(inverse):
                 raise TypeError(f"inverse for item {i} is not callable: {inverse!r}")
         except Exception as e:
-            raise _rollback_error(e, i, inverses, ctx, label, field) from e
+            raise _rollback_error(e, i, inverses, ctx, label, field,
+                                  _position(positions, i)) from e
         results.append(result)
         if inverse is not None:
             inverses.append(inverse)
     return Outcome(results=results, inverses=inverses, nbytes=sum(nbytes_of(f) for f in inverses))
 
 
-def _rollback_error(e, i, inverses, ctx, label, field):
+def _rollback_error(e, i, inverses, ctx, label, field, where):
     rolled_back, errors = rollback(inverses, ctx)
     if isinstance(e, CommandError):
         code, why = e.code, e.message
     else:
         code, why = "krita_error", f"{type(e).__name__}: {e}"
-    msg = f"{label}: {field}[{i}] failed: {why}; rolled back {rolled_back} of {len(inverses)} changes"
+    msg = f"{label}: {field}[{where}] failed: {why}; rolled back {rolled_back} of {len(inverses)} changes"
     if errors:
         msg += f"; {len(errors)} rollback step(s) failed, document may be partly changed"
-    details = {"index": i, "field": field, "applied": i, "rolled_back": rolled_back,
+    details = {"index": where, "field": field, "applied": i, "rolled_back": rolled_back,
                "rollback_errors": errors}
     if isinstance(e, CommandError) and e.details is not None:
         details["cause"] = e.details

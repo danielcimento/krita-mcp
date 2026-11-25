@@ -90,6 +90,30 @@ def test_validate_all_stops_at_first_bad_item_with_index():
     assert e.value.details == {"got": "bad", "index": 1, "field": "changes"}
 
 
+def test_positions_map_reported_index():
+    # create_layers(manifest=…): item i came from layers[positions[i]].
+    seen = []
+
+    def v(i, item):
+        seen.append(i)
+        return validate_pair(i, item)
+
+    with pytest.raises(CommandError) as e:
+        batch.validate_all([["a", 1], "bad"], v, field="layers", positions=[0, 3])
+    assert seen == [0, 1]  # validate_fn still gets the item's own position
+    assert e.value.message == "layers[3]: need [key, value]"
+    assert e.value.details == {"got": "bad", "index": 3, "field": "layers"}
+
+    ctx = Ctx({})
+    with pytest.raises(CommandError) as e:
+        batch.run([("a", 1), ("b", "clash")], apply_set, ctx, label="create_layers",
+                  field="layers", positions=[2, 5])
+    assert e.value.message.startswith("create_layers: layers[5] failed: name taken")
+    assert (e.value.details["index"], e.value.details["applied"],
+            e.value.details["rolled_back"]) == (5, 1, 1)
+    assert ctx.doc == {}
+
+
 def test_validate_all_keeps_code_and_wraps_non_dict_details():
     def v(i, item):
         raise CommandError("ambiguous", "two layers", details=["{a}", "{b}"])
