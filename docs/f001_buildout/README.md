@@ -10,3 +10,4 @@ Start with [plan.md](plan.md).
 | [decisions.md](decisions.md) | Decision log (D1–D16) with status |
 | [spike.md](spike.md) | Phase 0 API questions; [spike/krita_api_probe.py](spike/krita_api_probe.py) answers them in Krita |
 | [acceptance.md](acceptance.md) | Fixtures and pass criteria for the six acceptance tests |
+| [handoff-prompt.md](handoff-prompt.md) | Prompt for a fresh orchestrator session that carries out the plan |
