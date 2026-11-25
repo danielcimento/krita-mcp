@@ -231,6 +231,18 @@ are fast enough that per-pixel Python loops are never justified.
   accepted. A layer with an invalid ID renders like Normal: 50% gray over
   white stayed 128 [verified, run 3]. That test can't tell Normal from
   Multiply, but either way an invalid ID fails silently.
+- **`add` vs `linear_dodge`** [verified 2026-11-25, headless,
+  `f001_buildout/spike/probe-results-blend.json`]:
+  - Rendering is **byte-identical** at U8, U16 and F32, for opaque
+    layers, partial source alpha and 50% layer opacity. At U8 both equal
+    `min(255, src + dst)` per channel.
+  - **`.psd` export loses `add`:** it is written as `norm` and reopens as
+    `normal`. `linear_dodge` is written as `lddg` (Photoshop's "Linear
+    Dodge (Add)") and reopens as `linear_dodge`.
+  - `.ora` export: `add` → `svg:plus`, `linear_dodge` →
+    `krita:linear_dodge` (a Krita-only op other ORA readers won't know).
+    Both reopen unchanged in Krita.
+  - `.kra` keeps both.
 - `inheritAlpha()` is Krita's clipping ("alpha inheritance").
 - A node removed with `remove()` can be put back: `addChildNode(node, …)`
   re-inserts the same wrapper with the same UUID, pixels, bounds, opacity

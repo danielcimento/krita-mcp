@@ -1,0 +1,96 @@
+{
+  "krita": "5.3.4.1 (git bd6e8d0)",
+  "pixels": {
+    "U8/opaque": {
+      "identical": true,
+      "differs_from_normal": true,
+      "bytes": 262144,
+      "add_equals_clamped_sum": true,
+      "linear_dodge_equals_clamped_sum": true
+    },
+    "U8/src_alpha_128": {
+      "identical": true,
+      "differs_from_normal": true,
+      "bytes": 262144
+    },
+    "U8/opacity_128": {
+      "identical": true,
+      "differs_from_normal": true,
+      "bytes": 262144
+    },
+    "U16/opaque": {
+      "identical": true,
+      "differs_from_normal": true,
+      "bytes": 524288
+    },
+    "U16/src_alpha_128": {
+      "identical": true,
+      "differs_from_normal": true,
+      "bytes": 524288
+    },
+    "U16/opacity_128": {
+      "identical": true,
+      "differs_from_normal": true,
+      "bytes": 524288
+    },
+    "F32/opaque": {
+      "identical": true,
+      "differs_from_normal": true,
+      "bytes": 1048576
+    },
+    "F32/src_alpha_128": {
+      "identical": true,
+      "differs_from_normal": true,
+      "bytes": 1048576
+    },
+    "F32/opacity_128": {
+      "identical": true,
+      "differs_from_normal": true,
+      "bytes": 1048576
+    }
+  },
+  "exports": {
+    "psd": {
+      "export_ok": true,
+      "written": true,
+      "raw_blend_keys_in_file_order": [
+        "norm",
+        "mul ",
+        "norm",
+        "lddg"
+      ],
+      "reopen": {
+        "Base Normal": "normal",
+        "Shade Multiply": "multiply",
+        "Glow Add": "normal",
+        "Glow LinearDodge": "linear_dodge"
+      }
+    },
+    "ora": {
+      "export_ok": true,
+      "written": true,
+      "stack_xml_layers": [
+        "<layer name=\"Glow LinearDodge\" x=\"8\" y=\"8\" composite-op=\"krita:linear_dodge\" src=\"data/layer3.png\" visibility=\"visible\" opacity=\"1\"/>",
+        "<layer name=\"Glow Add\" x=\"8\" y=\"8\" composite-op=\"svg:plus\" src=\"data/layer2.png\" visibility=\"visible\" opacity=\"1\"/>",
+        "<layer name=\"Shade Multiply\" x=\"8\" y=\"8\" composite-op=\"svg:multiply\" src=\"data/layer1.png\" visibility=\"visible\" opacity=\"1\"/>",
+        "<layer name=\"Base Normal\" x=\"8\" y=\"8\" composite-op=\"svg:src-over\" src=\"data/layer0.png\" visibility=\"visible\" opacity=\"1\"/>"
+      ],
+      "reopen": {
+        "Base Normal": "normal",
+        "Shade Multiply": "multiply",
+        "Glow Add": "add",
+        "Glow LinearDodge": "linear_dodge"
+      }
+    },
+    "kra": {
+      "export_ok": true,
+      "written": true,
+      "reopen": {
+        "Base Normal": "normal",
+        "Shade Multiply": "multiply",
+        "Glow Add": "add",
+        "Glow LinearDodge": "linear_dodge"
+      }
+    }
+  }
+}
