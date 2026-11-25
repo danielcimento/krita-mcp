@@ -100,6 +100,22 @@ A layer reference (`id`, `parent`, `above`, … in every tool) is one of:
 Name forms that match more than one node fail with `ambiguous` and list
 the matching IDs. The document root is `"/"` (valid only as a `parent`).
 
+Settled in P1.6 (2026-11-24), `kritamcp/refs.py`:
+
+- A ref is tried in order: `"/"`, then `"$key"` (D11; only where the
+  tool accepts batch keys), then UUID, then path (any unescaped `/`),
+  then bare name. A layer literally named like a UUID, or whose name
+  starts with `$`, is reached with a path: `/{…}`, `/$name`.
+- Escapes: `\/` and `\\`. Any other backslash, or an empty component
+  (`a//b`, `a/`), is `bad_request`. One leading `/` is optional, so
+  `/Face` picks the top-level `Face` when a nested one shares the name.
+- Matching is exact (case-sensitive, no trimming). A path collects every
+  node that matches it in full, so a name repeated at an intermediate
+  level fans out and still resolves if only one endpoint matches.
+  `details.matches` lists IDs in stacking order, top to bottom.
+- A result's `path` has no leading `/`, so a top-level layer's path is
+  its bare name; prefix `/` to anchor it.
+
 UUIDs are only stable as far as the file format keeps them. Verified in
 spike run 2: `.kra` save and reopen and `Document.clone()` keep node
 UUIDs, and `.ora` does not. `.psd` is assumed not to. Agents should treat

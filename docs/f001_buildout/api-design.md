@@ -17,7 +17,11 @@ The contract for every tool after the buildout. The rationale is in
 | `dry_run` | bool, optional | On mutating batch tools: validate only (D11) |
 
 **Layer refs.** A UUID, a `/`-separated name path from the root, or a
-bare unique name. The root is `"/"` (D4).
+bare unique name. The root is `"/"` (D4). Details (P1.6, 2026-11-24): in
+names `\/` is a literal slash and `\\` a literal backslash; a leading
+`/` on a path is optional (`/Face` means the top-level `Face` only); a
+UUID-shaped ref is always read as an id; `"$key"` names a layer created
+earlier in the same `create_layers` call.
 
 **Paths.** Absolute, `~`-prefixed, or relative to the output dir. They
 must resolve inside an allowed root (D7). Results always return the
