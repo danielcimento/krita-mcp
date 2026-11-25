@@ -384,6 +384,25 @@ full Mao size), so agents should pass `scale` < 1 for previews.
 - **`dry_run: true`** runs validation only and returns what would happen.
 - **One journal entry per call.** See D6.
 
+Settled in P2.2 (2026-11-25), `kritamcp/batch.py`:
+
+- A validation error keeps its code; the message gets a `specs[3]: `
+  prefix and `details` gain `index` and `field`. A `CommandError` raised
+  mid-apply also keeps its code (a conflict found while applying stays a
+  `conflict`); any other exception becomes `krita_error`. Either way the
+  rollback runs. The item that raised must clean up after itself: only the
+  items before it are rolled back.
+- Rollback keeps going when an inverse fails. `details.rollback_errors`
+  lists the failures and the message says the document may be partly
+  changed. `details.rolled_back` counts the inverses that ran cleanly.
+- Inverses are `inverse(ctx)` and get the live document at call time; they
+  never hold a `Document` wrapper (D3 crash hazard).
+- Journal (D6): a call with no inverses adds no entry. An entry bigger
+  than the byte cap on its own is not stored and the journal is cleared,
+  since undoing older entries past an unrecorded change would not restore
+  their state; `push` returns `False` so the tool can warn. Limits are read
+  from config when a document's journal is created.
+
 ## D12. Plugin split into modules
 
 **Decided.** At 889 lines with an `if/elif` dispatcher, the plugin would
