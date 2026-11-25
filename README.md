@@ -149,6 +149,10 @@ The plugin paints using **direct pixel manipulation** (not Krita's native brush 
 
 The `set_brush` tool does set Krita's brush preset (for potential future use), but `stroke` currently uses its own pixel-level rendering.
 
+## Further Documentation
+
+Architecture, Krita API notes and feature buildout plans are in [`docs/`](docs/README.md).
+
 ## License
 
 MIT
