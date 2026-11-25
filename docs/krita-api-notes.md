@@ -74,6 +74,11 @@ so the HTTP bridge dies with it.
     appex, Fontconfig errors, many `kf.i18n` warnings, a swap-location
     fallback, "some tiles have leaked".
   - It doesn't conflict with a running GUI Krita.
+  - **Two `kritarunner` processes at once on the same profile do
+    conflict**: the second hung at startup after
+    `UNIQUE constraint failed: storages.location` / `Could not add new
+    storage "memory" to the database` in the shared resource database
+    [verified 2026-11-25]. Run headless suites one at a time.
   - **Its exit code is always 0**: on test failures, when the module
     can't be imported, and when the function returns nonzero. Python's
     stdout reaches kritarunner's stdout, mixed into the log noise. So

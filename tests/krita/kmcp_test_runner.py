@@ -48,7 +48,8 @@ import unittest
 import xml.etree.ElementTree as ET
 
 MARKER = "KMCP_TEST_RESULT"
-OUT_DIR = os.path.expanduser("~/krita-mcp-output/test-krita")
+# make test-krita passes its TEST_KRITA_DIR here, so parallel checkouts can run apart.
+OUT_DIR = os.path.expanduser(os.environ.get("KMCP_TEST_KRITA_DIR") or "~/krita-mcp-output/test-krita")
 REPORT_PATH = os.path.join(OUT_DIR, "report.xml")
 OUTPUT_PATH = os.path.join(OUT_DIR, "output.txt")
 

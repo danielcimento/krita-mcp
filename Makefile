@@ -26,7 +26,7 @@ install-test-runner:
 test-krita:
 	@mkdir -p "$(TEST_KRITA_DIR)"
 	@echo "$(KRITARUNNER) -s kmcp_test_runner -f run $(CURDIR) $(KRITA_TESTS)"
-	@"$(KRITARUNNER)" -s kmcp_test_runner -f run "$(CURDIR)" $(KRITA_TESTS) \
+	@KMCP_TEST_KRITA_DIR="$(TEST_KRITA_DIR)" "$(KRITARUNNER)" -s kmcp_test_runner -f run "$(CURDIR)" $(KRITA_TESTS) \
 	    >"$(TEST_KRITA_DIR)/run.log" 2>&1; rc=$$?; \
 	marker="$$(grep -E 'KMCP_TEST_RESULT: (PASS|FAIL)' "$(TEST_KRITA_DIR)/run.log" | tail -n 1)"; \
 	if [ -n "$$marker" ] && [ -f "$(TEST_KRITA_DIR)/output.txt" ]; then \
