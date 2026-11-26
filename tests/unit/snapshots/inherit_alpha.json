@@ -1,0 +1,11 @@
+{
+  "description": "inherit-alpha: inherit_alpha on any layer (a paint layer and a group).",
+  "document": {"width": 64, "height": 64, "color_model": "RGBA", "color_depth": "U8", "color_profile": "sRGB-elle-V2-srgbtrc.icc"},
+  "settings": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4},
+  "nodes": [
+    {"id": "{00000004-0000-4000-8000-000000000001}", "name": "Shade", "path": "Shade", "type": "paintlayer", "parent": null, "depth": 1, "order": 0, "visible": true, "opacity": 1.0, "blend_mode": "normal", "inherit_alpha": true, "alpha_locked": false, "locked": false, "pass_through": null, "has_layer_style": false, "bounds": {"x": 8, "y": 8, "w": 16, "h": 16}, "alpha": {"pixel_count": 256, "opaque_bounds": {"x": 8, "y": 8, "w": 16, "h": 16}, "stray_count": 0}},
+    {"id": "{00000004-0000-4000-8000-000000000002}", "name": "Clipped", "path": "Clipped", "type": "grouplayer", "parent": null, "depth": 1, "order": 1, "visible": true, "opacity": 1.0, "blend_mode": "normal", "inherit_alpha": true, "alpha_locked": false, "locked": false, "pass_through": false, "has_layer_style": false, "bounds": {"x": 8, "y": 8, "w": 16, "h": 16}, "alpha": null},
+    {"id": "{00000004-0000-4000-8000-000000000003}", "name": "Inner", "path": "Clipped/Inner", "type": "paintlayer", "parent": "{00000004-0000-4000-8000-000000000002}", "depth": 2, "order": 2, "visible": true, "opacity": 1.0, "blend_mode": "normal", "inherit_alpha": false, "alpha_locked": false, "locked": false, "pass_through": null, "has_layer_style": false, "bounds": {"x": 8, "y": 8, "w": 16, "h": 16}, "alpha": {"pixel_count": 256, "opaque_bounds": {"x": 8, "y": 8, "w": 16, "h": 16}, "stray_count": 0}},
+    {"id": "{00000004-0000-4000-8000-000000000004}", "name": "Body", "path": "Body", "type": "paintlayer", "parent": null, "depth": 1, "order": 3, "visible": true, "opacity": 1.0, "blend_mode": "normal", "inherit_alpha": false, "alpha_locked": false, "locked": false, "pass_through": null, "has_layer_style": false, "bounds": {"x": 8, "y": 8, "w": 16, "h": 16}, "alpha": {"pixel_count": 256, "opaque_bounds": {"x": 8, "y": 8, "w": 16, "h": 16}, "stray_count": 0}}
+  ]
+}

@@ -910,12 +910,71 @@ Returns the new layer and the cut rectangle.
 Findings are sorted by layer stacking order. Document-level findings have
 `layer_id: null`. Findings that involve several layers add `related_ids`.
 
+Details (P4.2, 2026-11-25), `kritamcp/lint.py`: a finding is
+`{rule, severity, layer_id, path, message, related_ids?}`; document-level
+findings have `path: null` too and sort first; ties at one layer sort by
+rule id. `rules` must be a non-empty list; an unknown name is
+`bad_request` whose message lists the valid sets and rules (also in
+`details.sets` / `details.rules`, with `details.unknown`). Naming a rule
+twice or through a set runs it once; `rules_run` lists the rules run, in
+registry order (the order of the tables below). `severity_min` (`info`,
+`warning`, `error`; anything else is `bad_request`) drops less severe
+findings, and `counts` counts the findings returned.
+
+#### Snapshot (P4.1/P4.2)
+
+The snapshot P4.1 collects and `lint.run(snapshot, rules, severity_min)`
+reads:
+
+```json
+{
+  "document": {"width": 64, "height": 64, "color_model": "RGBA", "color_depth": "U8",
+               "color_profile": "sRGB-elle-V2-srgbtrc.icc"},
+  "settings": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4},
+  "nodes": [
+    {"id": "{…}", "name": "Blur", "path": "Blur", "type": "filterlayer",
+     "parent": null, "depth": 1, "order": 0,
+     "visible": true, "opacity": 1.0, "blend_mode": "normal",
+     "inherit_alpha": false, "alpha_locked": false, "locked": false,
+     "pass_through": null, "has_layer_style": false,
+     "bounds": {"x": 0, "y": 0, "w": 64, "h": 64},
+     "alpha": null}
+  ]
+}
+```
+
+- `settings` is `config.current().lint` (D7, D17). Missing keys fall back
+  to the defaults; an unknown `additive_mode` is `bad_request`.
+- `nodes` holds every node except the root-level selection mask (D4), in
+  global stacking order top to bottom (Layers-docker order, depth-first),
+  so a parent always comes before its children. `order` is the position
+  in that list (0 = top), `depth` 1 is top level, `parent` an id or
+  `null`. Masks are nodes (`transparencymask`, `filtermask`,
+  `transformmask`, `colorizemask`, `selectionmask`) with their layer as
+  `parent`. `bounds` is Krita's and may be `null`.
+- `alpha` is set for paint layers only, `null` otherwise:
+  `{"pixel_count": n, "opaque_bounds": rect|null, "stray_count": n}`.
+  `pixel_count` counts pixels with `alpha > 0`, `opaque_bounds` is their
+  bounding box, and a stray pixel has `0 < alpha < stray_alpha_below` and
+  lies farther than `stray_alpha_distance` px from any pixel with
+  `alpha ≥ stray_alpha_below`.
+
+Hand-written snapshots for every rule are in `tests/unit/snapshots/`;
+`lint_four_findings.json` is acceptance test 4's document.
+
 #### Lint rules
 
 These restate the art repo's CONVENTIONS.md as checkable rules.
 **Pixel rules apply only to paint layers.** The contents of reference
 groups (name wrapped in brackets, `[ Guide ]`) are skipped by every rule
 except `reference-hidden`.
+
+*(P4.2, 2026-11-25)* A reference group is a **group** whose name,
+trimmed, starts with `[` and ends with `]` (`[ Guide ]`, `[Refs]`); a
+bracket-named paint layer is linted like any other. Everything inside one,
+at any depth, is skipped. The bracket group itself is an ordinary group to
+the default rules: its own name counts for `duplicate-name`, its layer
+style is a finding, and so on.
 
 `default` set: the spec's list, and what acceptance test 4 checks.
 
@@ -924,9 +983,9 @@ except `reference-hidden`.
 | `node-type` | error | A node's type is not `paintlayer`/`grouplayer`: filter, fill, clone, vector or file layers, and all masks. Masks name their parent layer. The document's global selection (a root-level `selectionmask`) is exempt |
 | `layer-style` | error | `layerStyleToAsl()` is not empty |
 | `inherit-alpha` | error | `inherit_alpha` is true (Krita's clipping): bake it into the target with `merge_layers` |
-| `blend-mode` | error | A paint layer's blend mode is not `normal`/`multiply`/`add`/`linear_dodge`. Groups are exempt, since group blending doesn't matter to the rig. `add` and `linear_dodge` render identically and both count as the rig's Add (D17). If the config sets `lint.additive_mode` to one spelling, the other is a finding with a fix hint |
+| `blend-mode` | error | A paint layer's blend mode is not `normal`/`multiply`/`add`/`linear_dodge`. Groups and other node types are exempt, since group blending doesn't matter to the rig (other types are `node-type` findings). `add` and `linear_dodge` render identically and both count as the rig's Add (D17). With `lint.additive_mode` `"either"` (default) both pass; with `"add"` or `"linear_dodge"` the other spelling is a finding whose message names the required one and `krita_update_layers` |
 | `duplicate-name` | error | Two or more nodes, anywhere in the document, share a name. **One finding per name.** `layer_id` is the second occurrence in stacking order, and `related_ids` lists all of them |
-| `side-token` | warning | Within one parent, stripping side tokens makes names collide (`Eyebrow` next to `Eyebrow L`): flag the ones without a token. Also flags non-standard tokens such as `_L`, `Left`, `(L)` or a lowercase ` l` |
+| `side-token` | warning | Within one parent, stripping side tokens makes names collide (`Eyebrow` next to `Eyebrow L`): flag the ones without a token (`related_ids`: the sided siblings). Also flags non-standard tokens such as `_L`, `Left`, `(L)` or a lowercase ` l`, with the standard spelling in the message |
 | `empty-layer` | warning | A paint layer with no pixel where `alpha > 0` |
 | `out-of-canvas` | warning | A paint layer's `opaque_bounds` reaches outside `(0, 0, width, height)` |
 | `stray-alpha` | warning | A paint layer has pixels with `0 < alpha < 8` further than 4 px from any pixel with `alpha ≥ 8`. Both thresholds are configurable. Anti-aliased edges don't count |
@@ -942,6 +1001,30 @@ except `reference-hidden`.
 | `pose-visibility` | warning | Among sibling groups named `<X> A`, `<X> B`, …, `A` is hidden or another one is visible |
 | `reference-hidden` | warning | A bracketed reference group is visible |
 | `mask-suffix` | info | A layer referenced as a clipping base has no ` Mask` suffix. It only fires together with `inherit-alpha` |
+
+Side tokens, settled in P4.2 from CONVENTIONS § Naming (`<Thing> <Side>
+<Variant/Index>`, ` L` / ` R` as separate words, the character's side):
+
+- Standard: the word `L` or `R`, not the first word: `Eyebrow L`,
+  `Arm L A`, `Highlight R 2`.
+- Non-standard, still read as a side: a lowercase word `l` / `r`;
+  `Left` / `Right` as a word in any case; `(L)` / `[R]` in any case; a
+  side letter or word joined by `_`, `.` or `-` (`Eye_L`, `L_Eye`,
+  `Hand.r.B`, `Hair L-2`); `L` / `R` as the first word (`L Eye`). A name
+  that is a single plain word (`L`, `Left`) has no side.
+- The suggested name strips the token and puts ` L` / ` R` before the
+  trailing variant/index words (single capitals, numbers):
+  `Left Hand B` → `Hand L B`, `Eye_l_2` → `Eye L 2`.
+- Collisions compare the stripped names of siblings, so a non-standard
+  token counts as a side there too (`Body` next to `Body_L` flags both:
+  `Body` for having no token, `Body_L` for its spelling).
+
+Other settled details: `duplicate-name` is case-sensitive and counts every
+node, masks and groups included. `color-space` needs `"sRGB"` in the
+profile name, case-sensitively, so `Rec2020-elle-V4-srgbtrc.icc` (sRGB
+curve, wide gamut) is a finding. `out-of-canvas` gives the overhang per
+side (`3 px left, 6 px below`); `stray-alpha` gives the count and both
+thresholds from `settings`.
 
 Rules are pure functions in `lint.py` over a snapshot (D14):
 `snapshot -> [finding]`. Adding a rule means adding a function and a test,
