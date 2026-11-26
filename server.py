@@ -1638,6 +1638,92 @@ def krita_layer_stats(ids: list[str], buckets: Optional[list[int]] = None,
 
 
 @mcp.tool()
+def krita_occlusion_map(id: str, path: str, modes: Optional[list[str]] = None,
+                        threshold: Annotated[float, Field(gt=0, le=1)] = 0.5,
+                        png_level: Annotated[Optional[int], Field(ge=0, le=9)] = None,
+                        doc: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
+    """
+    How much of a paint layer is hidden by the layers drawn after it. Use it
+    in part separation to find the areas of a part that are covered anyway
+    and don't need painting (or cleaning up). Reads only: the coverage is
+    rendered in a private copy of the document, closed afterwards.
+
+    What counts as above: everything drawn after the layer in the global
+    draw order (above it in its group, and above each of its ancestor
+    groups at every level), visible with all its ancestors visible, and in
+    one of modes (default only "normal": Multiply, Add, ... layers tint
+    what is below rather than hide it; "add" and "linear_dodge" are the
+    same mode). A paint layer counts by its own blend mode; an isolated
+    group counts as one, by the group's mode, with everything visible in
+    it; a pass-through group's children count one by one (its own mode is
+    ignored, its opacity applies). Vector, fill, file, clone and filter
+    layers don't count. Clipped (inherit alpha) layers that clip to a stack
+    holding the target count with their own alpha. The coverage is the
+    alpha of those layers composited (their opacity and masks included);
+    the layer's own opacity, clipping and masks are ignored (its own
+    pixels' alpha is used). Past the canvas edge nothing is rendered, so
+    coverage there is 0 (off_canvas_px counts those pixels).
+
+    Writes a grayscale PNG the size of the layer's bounds: value = layer
+    alpha x coverage / 255 (0-255, exact), i.e. how much of each pixel is
+    hidden. covered_pct is the share (0-1) of the layer's pixels with
+    alpha > 0 whose coverage is at least threshold (0.5 is 128 of 255);
+    fully_hidden is true when every such pixel is covered completely
+    (coverage 255). An empty layer writes no file and returns path,
+    bounds and covered_pct null. 8-bit RGBA documents only.
+
+    Returns {doc, layer (id), name, path (resolved, or null), bounds,
+    pixels (alpha > 0), covered_px, off_canvas_px, covered_pct,
+    fully_hidden, above {count, ids (top first, when at most 50)}, modes,
+    threshold, bytes, png_level when given}.
+
+    Args:
+        id: The paint layer: UUID, name path such as "Head/Eyes", or unique
+            name (anything else fails with "conflict")
+        path: PNG file to write (must end in .png): absolute, "~"-prefixed
+              or relative to the output dir, inside an allowed directory;
+              missing parent directories are created, an existing file is
+              replaced
+        modes: Blend-mode ids whose layers hide what is below, such as
+               ["normal", "multiply"]; default ["normal"]
+        threshold: Coverage a pixel needs to count as covered, greater
+                   than 0 and at most 1 (default 0.5)
+        png_level: zlib level 0 (fastest, biggest) to 9 (smallest), or
+                   null for the default (6)
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
+    """
+    if (isinstance(threshold, bool) or not isinstance(threshold, (int, float))
+            or not 0 < threshold <= 1):
+        raise ToolError(f"bad_request: threshold must be greater than 0 and at most 1, "
+                        f"got {threshold!r}")
+    if modes is not None and (isinstance(modes, str) or not modes):
+        raise ToolError("bad_request: modes must be a non-empty list of blend-mode ids")
+    params = _with({"id": id, "path": path}, modes=None if modes is None else list(modes),
+                   threshold=None if threshold == 0.5 else threshold, png_level=png_level,
+                   doc=doc)
+    result = client.call("occlusion_map", params, timeout_s=timeout_s)
+    name = result.get("name") or id
+    above = (result.get("above") or {}).get("count", 0)
+    by = f"by {_count(above, 'layer')} above"
+    if result.get("covered_pct") is None:
+        summary = f"'{name}'{_in(result)} is empty: nothing to map ({_count(above, 'layer')} above)"
+    elif result.get("fully_hidden"):
+        summary = f"'{name}'{_in(result)} is fully hidden {by}"
+    else:
+        summary = (f"'{name}'{_in(result)} is {result['covered_pct'] * 100:.1f}% covered "
+                   f"(coverage >= {result.get('threshold', threshold):g}) {by}")
+    if result.get("path"):
+        b = result.get("bounds") or {}
+        summary += f"; map {b.get('w')}x{b.get('h')} written to {result['path']}"
+    if result.get("off_canvas_px"):
+        summary += f" ({result['off_canvas_px']} px past the canvas, uncovered)"
+    return _done(result, summary)
+
+
+@mcp.tool()
 def krita_set_color(color: str, timeout_s: Optional[float] = None) -> dict:
     """
     Set the foreground (paint) color used by stroke, fill and draw_shape.

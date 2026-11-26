@@ -1492,7 +1492,7 @@ Rules are pure functions in `lint.py` over a snapshot (D14):
 `snapshot -> [finding]`. Adding a rule means adding a function and a test,
 with no Krita code involved.
 
-### `krita_occlusion_map(doc?, id, path, modes=["normal"], threshold=0.5)` · P1
+### `krita_occlusion_map(doc?, id, path, modes=["normal"], threshold=0.5, png_level?)` · P1
 
 - "Above" means visible paint layers later than `id` in global draw order,
   inside visible ancestors. By default only `normal` layers count:
@@ -1503,6 +1503,79 @@ with no Krita code involved.
   target alpha × coverage. Returns `bounds`, `covered_pct` (the share of
   the target's `alpha > 0` pixels with coverage ≥ `threshold`), and
   `fully_hidden` (bool).
+
+As built (P5.8, 2026-11-25; `commands/occlusion.py`, the pure part in
+`occlusionplan.py`); the signature gained `png_level`, as `render`:
+
+- **Order of checks**, all before anything is read or written: `path`
+  (`resolve_allowed_path`, `.png` only, as `render`), `doc`, `modes`,
+  `threshold`, `png_level`, 8-bit RGBA (`conflict`), then `id`
+  (`not_found` / `ambiguous`; anything but a paint layer is `conflict`
+  with `details: {id, type}`).
+- **`modes`**: a non-empty list of blend-mode ids (`blendmodes`; an
+  unknown one is `bad_request` with `details: {index, suggestions}`),
+  repeats dropped, echoed in the order given. `add` and `linear_dodge`
+  stand for each other (D17). **`threshold`**: a number in (0, 1]; a
+  pixel is covered when its 8-bit coverage is at least
+  `round(threshold * 255)` (halves up, at least 1): 0.5 is 128.
+- **What counts ("units").** Walking up from the target, at each level
+  (its parent, then each ancestor's parent, up to the root) the siblings
+  stacked above the target's branch draw after it. Among those, a hidden
+  node is skipped with its subtree, and so is every level inside a hidden
+  ancestor of the target. A **pass-through group** has no composite of its
+  own, so its children are looked at one by one (its own blend mode is
+  ignored, as Krita ignores it; its opacity applies). An **isolated group**
+  is one unit, counted by *the group's* mode, with everything visible in
+  it whatever their own modes: a Multiply layer alone in a Normal group
+  hides what is below (the group's composite is the layer's pixels), a
+  Normal layer in a Multiply group only tints. A **paint layer** counts by
+  its own mode. Vector, fill, file, clone and filter layers don't count.
+  `above.ids` lists the units, top first (omitted past 50).
+- **Clipping.** Inherit alpha is alpha-locked compositing (verified: an
+  opaque clipped layer over alpha 128 gives its colour at alpha 128), so a
+  clipped unit whose stack holds the target (directly above it in a
+  group, or inside a pass-through group above it: there it clips to the
+  parent's stack too, verified) replaces a share of the target equal to
+  its own alpha. It counts, rendered unclipped (with the target hidden it
+  would have nothing to clip to). A clipped layer inside an isolated group
+  stays clipped to that group's lower layers.
+- **Coverage render.** In a `clone()` (D10 B): the visibility of
+  `render(only=units, hide=[target])`; the clipped units (and pass-through
+  groups on the way to them) unclipped; the target's ancestors that also
+  hold units at full opacity, Normal and unclipped, with their masks
+  hidden (those apply to the target and its cover alike). Then
+  `refreshProjection` + `waitForDone`, `projection()` over the target's
+  bounds clipped to the canvas, and the clone closed in `finally`. The
+  coverage is that image's alpha. No units, or bounds entirely off the
+  canvas: no clone, coverage 0.
+- **Past the canvas** nothing is rendered (`projection()` past the edge
+  returns layer data, such as the white Background's fill, not a
+  composite), so coverage there is 0 and those pixels count as uncovered;
+  `off_canvas_px` is the number of target pixels (`alpha > 0`) out there.
+- **The map**: an 8-bit grayscale PNG (`Format_Grayscale8`, colour type 0)
+  the size of the target's `bounds()` (exact, not clipped), value
+  `round(alpha × coverage / 255)`, computed by `pixels.scale_alpha`
+  (`selection_to_layer`'s path: QPainter DestinationIn on a 16-bit
+  premultiplied image): exact for all 65536 pairs (headless test). The
+  target's alpha is its own pixels': its opacity, clipping and masks are
+  not applied. Counts use translate tables and big-int AND +
+  `bit_count`.
+- **Result**: `{doc, layer (id), name, path, bounds, pixels (alpha > 0),
+  covered_px, off_canvas_px, covered_pct (covered_px / pixels, 0–1),
+  fully_hidden (every pixel with alpha > 0 has coverage 255), above:
+  {count, ids?}, modes, threshold, bytes, png_level?}`. An **empty
+  layer** is not an error: `path`, `bounds` and `covered_pct` are null,
+  `fully_hidden` false, counts 0, and no file is written. Non-mutating,
+  300 s default timeout.
+- **Known limits.** A clipped layer whose base isn't counted (a Multiply
+  base, say) is clipped to nothing in the render and adds no coverage:
+  the map errs toward "visible". Layer styles of the target's ancestors
+  are not neutralized.
+- **Server** (`krita_occlusion_map`): `threshold` (0, 1] and `png_level`
+  0–9 checked before the call, `threshold` sent only when it isn't 0.5,
+  `modes` a non-empty list. The summary gives the share covered (or
+  "fully hidden", or "empty"), the number of layers above, the map's size
+  and path, and the off-canvas pixels.
 
 ### `krita_diff_documents(doc_a, doc_b, pixels=true)` · P2
 

@@ -406,6 +406,27 @@ are fast enough that per-pixel Python loops are never justified.
   empty, one hidden later keeps its old pixels [verified 2026-11-25, P3.2,
   headless]. `export_layers` reads those from a `clone()` with the group
   made isolated and visible.
+- **Inherit alpha, pass-through groups and masks** [verified 2026-11-25,
+  P5.8, headless]:
+  - Inherit alpha is alpha-locked compositing: an opaque clipped layer
+    over a pixel of alpha 128 gives its own colour at alpha 128; at alpha
+    128 it mixes half and half, alpha still 128.
+  - A clipped layer inside a **pass-through** group clips to the parent's
+    stack below the group too (a lone clipped child showed over a layer
+    under the group); inside an isolated group it clips to the group's own
+    lower layers only (a lone clipped child doesn't show).
+  - A pass-through group's opacity applies to its children (opacity 128:
+    alpha 128); its blend mode is ignored (Multiply rendered as Normal).
+    An isolated Multiply group multiplies its composite onto what is below.
+  - A **transparency mask on a pass-through group is ignored**: the
+    projection is unchanged, while the same mask on an isolated group or a
+    paint layer cuts. A transparency mask's `setPixelData` takes one byte
+    per pixel.
+  - A Multiply layer alone in an isolated Normal group: the group's
+    composite is the layer's own pixels (colour and alpha).
+  - `Document.projection(x, y, w, h)` past the canvas returns layer data,
+    not transparency: the white Background's fill read alpha 255 at
+    (-2, -2). `occlusion_map` reads only the on-canvas part.
 - `bounds()` ignores colour under zero alpha: a layer holding (10, 20, 30,
   0) at (2, 3) and one opaque pixel at (7, 8) reports (7, 8, 1, 1), yet
   `pixelData` still returns the colour at (2, 3) [verified 2026-11-25,

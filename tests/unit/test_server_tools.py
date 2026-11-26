@@ -48,6 +48,7 @@ EXPECTED_TOOLS = {
     "krita_selection_to_layer",
     "krita_transform_layer",
     "krita_merge_layers",
+    "krita_occlusion_map",
 }
 
 # tool -> (kwargs, plugin action, canned plugin payload)
@@ -187,6 +188,13 @@ CASES = {
                             "layer": {"id": "{9}", "name": "Flat", "path": "Flat",
                                       "children": []},
                             "removed": ["{1}", "{2}", "{3}"], "warnings": []}),
+    "krita_occlusion_map": ({"id": "T", "path": "occ.png"}, "occlusion_map",
+                            {"doc": "doc-1", "layer": "{1}", "name": "T",
+                             "path": "/out/occ.png", "bounds": {"x": 0, "y": 0, "w": 8, "h": 4},
+                             "pixels": 32, "covered_px": 16, "off_canvas_px": 0,
+                             "covered_pct": 0.5, "fully_hidden": False,
+                             "above": {"count": 2, "ids": ["{2}", "{3}"]},
+                             "modes": ["normal"], "threshold": 0.5, "bytes": 90}),
     "krita_list_layers": ({}, "list_layers",
                           {"root": "/", "layers": [{"id": "{1}", "name": "a", "children": []}],
                            "counts": {"paintlayer": 1, "total": 1}}),
@@ -394,7 +402,7 @@ DOC_TOOLS = {"krita_save", "krita_get_canvas", "krita_stroke", "krita_fill",
              "krita_ui_undo", "krita_ui_redo", "krita_duplicate_layer",
              "krita_set_active_layer", "krita_trim_layers", "krita_layer_stats",
              "krita_select", "krita_selection_to_layer", "krita_transform_layer",
-             "krita_merge_layers"}
+             "krita_merge_layers", "krita_occlusion_map"}
 # close_document has no active-document default.
 REQUIRED_DOC_TOOLS = {"krita_close_document"}
 OPTIONAL_DOC_TOOLS = DOC_TOOLS - REQUIRED_DOC_TOOLS
@@ -1363,3 +1371,49 @@ def test_transform_and_merge_schemas_and_typos():
                        ("krita_merge_layers", {"ids": ["A"]}),
                        ("krita_merge_layers", {"ids": ["A"], "name": "M", "mode": 1})):
         assert _call_tool(name, args).is_error, (name, args)
+
+
+# --- P5.8: occlusion_map -----------------------------------------------------
+
+def test_occlusion_map_params_and_summaries(fake_call):
+    fake_call.payload = CASES["krita_occlusion_map"][2]
+    result = server.krita_occlusion_map("T", "occ.png")
+    assert fake_call.calls[0] == ("occlusion_map", {"id": "T", "path": "occ.png"}, None)
+    assert result["summary"] == ("'T' in doc-1 is 50.0% covered (coverage >= 0.5) by 2 layers "
+                                 "above; map 8x4 written to /out/occ.png")
+    server.krita_occlusion_map("T", "o.png", modes=["normal", "multiply"], threshold=1,
+                               png_level=1, doc="doc-2", timeout_s=9)
+    assert fake_call.calls[1] == ("occlusion_map", {
+        "id": "T", "path": "o.png", "modes": ["normal", "multiply"], "threshold": 1,
+        "png_level": 1, "doc": "doc-2"}, 9)
+    fake_call.payload = {**CASES["krita_occlusion_map"][2], "covered_pct": 1.0,
+                         "fully_hidden": True, "above": {"count": 1, "ids": ["{2}"]},
+                         "off_canvas_px": 3}
+    assert server.krita_occlusion_map("T", "occ.png")["summary"] == (
+        "'T' in doc-1 is fully hidden by 1 layer above; map 8x4 written to /out/occ.png "
+        "(3 px past the canvas, uncovered)")
+    fake_call.payload = {"doc": "doc-1", "layer": "{1}", "name": "E", "path": None,
+                         "bounds": None, "covered_pct": None, "fully_hidden": False,
+                         "above": {"count": 0, "ids": []}}
+    assert server.krita_occlusion_map("E", "occ.png")["summary"] == (
+        "'E' in doc-1 is empty: nothing to map (0 layers above)")
+
+
+def test_occlusion_map_schema_and_typos(fake_call):
+    tools = _tools()
+    params = tools["krita_occlusion_map"].parameters
+    assert set(params["properties"]) == {"id", "path", "modes", "threshold", "png_level", "doc",
+                                         "timeout_s"}
+    assert sorted(params["required"]) == ["id", "path"]
+    text = " ".join(tools["krita_occlusion_map"].description.split())
+    assert "global draw order" in text and "linear_dodge" in text and "isolated group" in text
+    for args in ({"id": "T", "path": "o.png", "threshold": 0},
+                 {"id": "T", "path": "o.png", "threshold": 1.5},
+                 {"id": "T", "path": "o.png", "png_level": 10},
+                 {"id": "T", "path": "o.png", "modes": "normal"},
+                 {"id": "T"}):
+        assert _call_tool("krita_occlusion_map", args).is_error, args
+    for kwargs in ({"threshold": 0}, {"threshold": True}, {"modes": []}, {"modes": "normal"}):
+        with pytest.raises(ToolError, match="bad_request"):
+            server.krita_occlusion_map("T", "o.png", **kwargs)
+    assert fake_call.calls == []

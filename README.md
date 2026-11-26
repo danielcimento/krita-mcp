@@ -126,6 +126,7 @@ If using a virtual environment:
 |------|-------------|
 | `krita_lint` | Check a document against the Live2D rig rules (node types, layer styles, clipping, blend modes, duplicate names, side tokens, empty / off-canvas layers, stray-alpha specks, colour space); opt-in `"conventions"` set (nesting depth, name case, blend suffixes, pose visibility, hidden references, mask suffixes); `rules`, `severity_min`; findings sorted by stacking order |
 | `krita_layer_stats` | Per paint layer: bounds, opaque bounds, pixel and opaque counts, an alpha histogram (`buckets`), empty, overhang past the canvas, lint's stray-alpha numbers |
+| `krita_occlusion_map` | How much of a paint layer the layers drawn after it hide (global draw order, visible, `modes` default Normal only): a grayscale PNG of alpha x coverage over its bounds, `covered_pct` at `threshold`, `fully_hidden`, the layers counted; for skipping hidden areas in part separation |
 
 **Painting**
 

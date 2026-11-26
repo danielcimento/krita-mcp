@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phases 1–4 done: **all P0 tools and acceptance tests 1–6 pass** (live, 2026-11-25). Phase 5 next. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phases 1–4 done (all P0; acceptance 1–6 pass live, 2026-11-25). Phase 5 (P1) built: P5.1–P5.10; its live tests are written, not yet run. Phase 6 next. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -329,7 +329,7 @@ tools.
   shows usable pivots, otherwise `QTransform` on the pixels.
 - [x] **P5.7 `merge_layers`.** Group flatten through the projection, and
   multi-layer merge through a temporary group. Opacity handling per Q8.
-- [ ] **P5.8 `occlusion_map`.** Builds on `render(only=…)` and the alpha helpers.
+- [x] **P5.8 `occlusion_map`.** Builds on `render(only=…)` and the alpha helpers.
 - [x] **P5.9 Lint `conventions` set.** The six extra rules.
 - [x] **P5.10 `stray-alpha` flags isolated specks only** (decided with the user
   2026-11-25). As specified it warns on 48 Mao layers, mostly soft glows that

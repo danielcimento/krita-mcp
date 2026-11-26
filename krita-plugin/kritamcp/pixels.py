@@ -429,12 +429,29 @@ def mask_alpha(data, mask, w, h, keep=True):
     choice (``alphastats.zero_pixels``)."""
     _require_little_endian()
     data = _buffer(data, w, h)
-    mask = as_bytes(mask)
-    if len(mask) != w * h:
-        raise ValueError(f"mask is {len(mask)} bytes; {w}x{h} needs {w * h}")
+    new_alpha = scale_alpha(data[3::4], mask, w, h, keep=keep)
+    out = bytearray(data)
+    out[3::4] = new_alpha
+    return bytes(out), new_alpha
+
+
+def scale_alpha(alpha_bytes, mask, w, h, keep=True):
+    """``round(a * s / 255)`` (``keep``) or ``round(a * (255 - s) / 255)``
+    for each pair of bytes of ``alpha_bytes`` and ``mask`` (both ``w * h``,
+    one byte per pixel); returns ``w * h`` bytes. The products never land on
+    a half (255 is odd), so there is no tie to round.
+
+    ``mask_alpha``'s alpha path: ``QPainter`` ``DestinationIn`` /
+    ``DestinationOut`` on a ``Format_RGBA64_Premultiplied`` working image,
+    in strips of rows, exact for all 65536 pairs (Qt 5.15.7). Also the
+    product of two alpha planes (``occlusion_map``: target alpha x
+    coverage)."""
+    alpha_bytes, mask = as_bytes(alpha_bytes), as_bytes(mask)
+    if len(alpha_bytes) != w * h or len(mask) != w * h:
+        raise ValueError(f"alpha is {len(alpha_bytes)} and mask {len(mask)} bytes; "
+                         f"{w}x{h} needs {w * h}")
     mode = (QPainter.CompositionMode_DestinationIn if keep
             else QPainter.CompositionMode_DestinationOut)
-    alpha_bytes = data[3::4]
     rows = max(1, _STRIP_PIXELS // w)
     parts = []
     for y in range(0, h, rows):
@@ -444,9 +461,7 @@ def mask_alpha(data, mask, w, h, keep=True):
     new_alpha = b"".join(parts)
     if len(new_alpha) != w * h:
         raise CommandError("krita_error", f"Masking gave {len(new_alpha)} alpha bytes for {w}x{h}")
-    out = bytearray(data)
-    out[3::4] = new_alpha
-    return bytes(out), new_alpha
+    return new_alpha
 
 
 def require_rgba8(doc):

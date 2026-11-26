@@ -33,7 +33,7 @@ from .pixels import _png_level
 PNG_EXT = ".png"
 
 
-def _png_path(given):
+def _png_path(given, tool="render"):
     """The resolved output path: inside an allowed root, ending in ``.png``."""
     if not isinstance(given, str) or given == "":
         raise CommandError("bad_request", "'path' is required (the PNG file to write)",
@@ -41,7 +41,7 @@ def _png_path(given):
     real = paths.resolve_allowed_path(given)
     if os.path.splitext(real)[1].lower() != PNG_EXT:
         raise CommandError("bad_request",
-                           f"render writes PNG files only; 'path' must end in .png, got {given!r}",
+                           f"{tool} writes PNG files only; 'path' must end in .png, got {given!r}",
                            {"param": "path"})
     return real
 

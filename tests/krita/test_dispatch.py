@@ -33,6 +33,7 @@ EXPECTED_REGISTRY = {
     "list_brushes": (30, False),
     "list_layers": (30, False),
     "move_layers": (300, True),
+    "occlusion_map": (300, False),
     "new_canvas": (300, True),
     "open_file": (300, True),
     "redo": (300, True),
