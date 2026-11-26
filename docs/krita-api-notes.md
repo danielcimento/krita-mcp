@@ -346,16 +346,30 @@ are fast enough that per-pixel Python loops are never justified.
   the selection mask too (no exception) [verified 2026-11-25, P4.1].
   Headless, `setLayerStyleFromAsl(xml)` with ASL-as-XML (`<asl><node
   type="Descriptor" classId="null">` with `Scl ` and `masterFXSwitch`)
-  returns `True` and `layerStyleToAsl()` is then non-empty (~325 chars);
-  a drop-shadow descriptor in the same XML was not kept, so making a
-  style with a visible effect is [to verify] (`tests/krita/test_analysis.py`
-  `ASL`).
+  returns `True` and `layerStyleToAsl()` is then non-empty (~325 chars).
+  *Effects are kept and rendered* [verified 2026-11-25, P4.3]: a colour
+  overlay (`<node type="Descriptor" key="SoFi" classId="SoFi">` with
+  `enab`, `Md  ` (`BlnM`/`Nrml`), `Clr ` (an `RGBC` descriptor of
+  `Double`s `Rd  `, `Grn `, `Bl  `, 0–255) and `Opct`) and a drop shadow
+  (`key="DrSh" classId="DrSh"`: the same plus `lagl` (`#Ang`), `Dstn`,
+  `Ckmt`, `blur` (`#Pxl`)) both come back from `layerStyleToAsl`, and the
+  document projection shows them right after `refreshProjection` +
+  `waitForDone`; they survive a `.kra` save and reopen. Only `enab` is
+  required: without it the effect is dropped; any other key may be left
+  out. (An earlier note here said a drop shadow wasn't kept; re-tested,
+  the same XML is kept.) The layer's own `pixelData` and `bounds()` don't
+  include the effects. Krita ships no `.asl` files in its bundles
+  (`tests/krita/test_lint_fixture.py` `STYLE_ASL`).
 - **Filter layers can be made headless** [verified 2026-11-25, P4.1]:
   `doc.createFilterLayer("Blur", Krita.instance().filter("blur"), sel)`
   with `sel` a `Selection` from `select(0, 0, w, h, 255)` returns a
   `FilterLayer` (`type()` `filterlayer`) that `addChildNode` takes.
   `filter("blur")` and `filter("gaussian blur")` both exist.
-  `createFilterMask(name, filter, sel)` works the same way.
+  `createFilterMask(name, filter, sel)` works the same way. A new filter
+  layer's `blendingMode()` is **`copy`**, not `normal` (the `.kra` writes
+  `compositeop="copy"`, `nodetype="adjustmentlayer"`); with a
+  whole-canvas selection its `bounds()` is the canvas [verified 2026-11-25, P4.3; the lint
+  fixture builder uses this].
 - Group `projectionPixelData()` **includes** inherit-alpha clipping
   inside the group, and **excludes** the group's own opacity [verified, Q8].
   So flattening a group bakes the clipping, but the group's opacity has to

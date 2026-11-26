@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phases 1–2 done (Phase 2 exit: live acceptance 1, the Mao rebuild, passed 2026-11-25). Phase 3 in progress: P3.1–P3.4 done; the Phase 3 exit (live acceptance 2) is written, not yet run. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phases 1–4 built: all P0 tools done (P4 exit, live acceptance 2 and 4 and the full Mao run, pending). Stop for review before Phase 5. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -273,12 +273,28 @@ doesn't need Mao.
   [api-design.md § Lint rules](api-design.md#lint-rules), each a pure
   function with a hand-written-snapshot unit test, including the
   acceptance-test-4 scenario as a snapshot.
-- **P4.3 Lint fixture.** `tests/fixtures/build_lint_fixture.py`, a
+- [x] **P4.3 Lint fixture.** `tests/fixtures/build_lint_fixture.py`, a
   Scripter script, since filter layers can't be made through the API, and
   the committed `tests/fixtures/lint_four_findings.kra` it produces. See
   [acceptance.md § Fixtures](acceptance.md#fixtures).
-- **P4.4 `krita_lint` tool.** Rule selection, `severity_min`, sorting
+  *2026-11-25:* filter layers can be made headless after all (P4.1:
+  `createFilterLayer` with a standalone `Selection`), so the builder is a
+  module with `build(path)` run by kritarunner (`make lint-fixture`, the
+  shim's `build_lint_fixture` entry point), not a Scripter script. The
+  committed `.kra` is 65 KB. Headless `tests/krita/test_lint_fixture.py`
+  lints the committed file and a fresh build (exactly the four findings)
+  and checks the snapshot equals `tests/unit/snapshots/lint_four_findings.json`
+  modulo ids (the filter layer's blend mode is `copy`, Krita's default for
+  filter layers). A layer style that Krita keeps and renders (colour
+  overlay plus drop shadow) is a `layer-style` finding, also after a `.kra`
+  round trip.
+- [x] **P4.4 `krita_lint` tool.** Rule selection, `severity_min`, sorting
   by stacking order.
+  *Done 2026-11-25* (api-design § `krita_lint`, as built): the `lint`
+  command (300 s, read-only) and `krita_lint`; `/health` reports the
+  `lint` settings. Headless Mao lint: 17 `duplicate-name` and 48
+  `stray-alpha` findings, nothing else, in 1.2 s. Live `test_lint_fixture`
+  and `test_lint_mao` are written, not yet run.
 
 *Exit:* acceptance test **4** passes. **All P0 done.** Update the README
 tool table and docs, and run the full acceptance suite once on Mao.

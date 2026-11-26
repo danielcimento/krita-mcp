@@ -52,6 +52,17 @@ from it to this repo. Tests that need it skip when `KRITA_MCP_MAO_ORA` isn't set
 `tests/fixtures/build_lint_fixture.py`, a Scripter script, because filter
 layers can't be created through our API. The file is small and committed.
 
+*2026-11-25 (P4.3):* filter layers can be made headless
+(`doc.createFilterLayer` with a standalone `Selection`, krita-api-notes
+§ Nodes), so the builder is a module with `build(path)` that kritarunner
+runs: `make lint-fixture` rebuilds the committed file (65 KB) through the
+test shim's `build_lint_fixture` entry point. A rebuild differs only in
+layer UUIDs and timestamps; tests read the committed file and never
+rebuild it (the headless suite also builds one into a temp dir and lints
+it). The default `Background` layer is removed; the filter is
+`gaussian blur` over the whole canvas, and its blend mode is `copy`
+(Krita's default for filter layers, which `blend-mode` doesn't check).
+
 64×64, RGBA / U8 / sRGB. Stack, top to bottom:
 
 ```
@@ -71,7 +82,8 @@ no layer styles, Title Case names with no side tokens, and an sRGB profile.
 
 The committed snapshot `tests/unit/snapshots/lint_four_findings.json`
 describes the same document, so the rules can be checked without Krita
-(P4.2).
+(P4.2). The headless `tests/krita/test_lint_fixture.py` checks that it
+equals the fixture's real snapshot, ids aside (P4.3).
 
 ## Tests
 
@@ -160,6 +172,13 @@ alpha-0 pixels above). Not yet run live.
 (duplicate-name, "Back/Hair")     # related_ids has both Hair layers
 (empty-layer,    "Spare")
 ```
+
+Written as `tests/live/test_acceptance.py::test_lint_fixture` (P4.4),
+which opens a copy of the committed fixture from the scratch dir.
+`test_lint_mao` (with `KRITA_MCP_MAO_ORA`) is the Mao secondary check:
+exactly 17 `duplicate-name` findings once `new_canvas`'s `Background` is
+deleted; headless it also gives 48 `stray-alpha` findings and nothing else
+(2026-11-25).
 
 ### 5. Allowlist · `test_allowlist`
 

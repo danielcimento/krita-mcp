@@ -63,7 +63,8 @@ def krita_health() -> dict:
     server (update the plugin and restart Krita). ``allowed_dirs`` lists the
     directories file tools may use (the first is the output dir), and
     ``config_errors`` the problems with the plugin's config file
-    (``~/.krita-mcp-config.json``), such as a skipped directory. ``busy``
+    (``~/.krita-mcp-config.json``), such as a skipped directory; ``limits``
+    and ``lint`` are the canvas limits and krita_lint's settings. ``busy``
     is the command Krita is running now (``{"action", "elapsed_ms"}``) or
     null, and ``queued`` how many wait behind it.
     """
@@ -962,6 +963,88 @@ def krita_render(path: str, region: Optional[Rect] = None,
                    png_level=png_level, doc=doc)
     result = client.call("render", params, timeout_s=timeout_s)
     return _done(result, _render_summary(result, path))
+
+
+# --- Analysis (api-design § Analysis) ----------------------------------------
+
+def _lint_summary(result: dict, doc: Optional[str]) -> str:
+    """"3 errors, 1 warning in doc-2 (10 rules)", or "No findings in …"."""
+    counts = result.get("counts") or {}
+    parts = [_count(counts[s], s, "info" if s == "info" else None)
+             for s in ("error", "warning", "info")
+             if isinstance(counts.get(s), int) and counts[s]]
+    where = _in(result) or f" in {doc or 'the active document'}"
+    rules_run = result.get("rules_run")
+    ran = f" ({_count(len(rules_run), 'rule')})" if isinstance(rules_run, list) else ""
+    summary = (", ".join(parts) if parts else "No findings") + where + ran
+    if result.get("pixel_stats") is False:
+        summary += "; pixel rules skipped (not an 8-bit RGBA document)"
+    return summary
+
+
+@mcp.tool()
+def krita_lint(doc: Optional[str] = None, rules: Optional[list[str]] = None,
+               severity_min: Optional[Literal["info", "warning", "error"]] = None,
+               timeout_s: Optional[float] = None) -> dict:
+    """
+    Check a document against the Live2D rig conventions (part separation
+    for Cubism) before exporting it. Reads only; the document is not
+    changed.
+
+    Default rules (set "default"):
+    - node-type (error): a node other than a paint layer or group: filter,
+      fill, clone, vector or file layers, and every mask (bake or remove)
+    - layer-style (error): a layer with a layer style (bake or remove)
+    - inherit-alpha (error): a clipped layer (inherit alpha); bake the
+      clipping into the pixels
+    - blend-mode (error): a paint layer's blend mode other than normal,
+      multiply or add (add and linear_dodge are the same mode)
+    - duplicate-name (error): a name used by several nodes anywhere in the
+      document; one finding per name, related_ids lists them all
+    - side-token (warning): "Eye" next to "Eye L" in one group, or a
+      non-standard side token such as "Eye_L", "Left Eye", "(L)"
+    - empty-layer (warning): a paint layer with no pixels
+    - out-of-canvas (warning): a paint layer's pixels reach past the canvas
+    - stray-alpha (warning): faint pixels (alpha below 8) more than 4 px
+      from any stronger pixel; anti-aliased edges don't count
+    - color-space (error): the document is not 8-bit RGBA sRGB (one
+      document-level finding)
+    The contents of reference groups (a group named in brackets, such as
+    "[ Guide ]") are skipped. Pixel rules need an 8-bit RGBA document
+    (pixel_stats false otherwise).
+
+    Sets: "default" (the rules above), "conventions" (opt-in naming and
+    structure checks; empty for now), "all" (every rule).
+
+    Settings come from the plugin's config file
+    (~/.krita-mcp-config.json), section "lint": additive_mode ("either"
+    (default), "add" or "linear_dodge": require one spelling of the Add
+    mode), stray_alpha_below (default 8) and stray_alpha_distance
+    (default 4 px). The result's settings shows the ones used.
+
+    Findings are {rule, severity, layer_id, path, message, related_ids?},
+    sorted by stacking order (top to bottom, as in the Layers docker),
+    document-level findings (layer_id and path null) first, then by rule.
+
+    Returns {doc, findings, counts ({error, warning, info}, of the findings
+    returned), rules_run, settings, pixel_stats}.
+
+    Args:
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        rules: Rule ids and/or set names to run (default ["default"]); an
+               unknown name fails with bad_request listing the valid ones
+        severity_min: Drop findings less severe than this ("info",
+                      "warning" or "error"); default all
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
+    """
+    if rules is not None and (isinstance(rules, str) or not rules):
+        raise ToolError("bad_request: rules must be a non-empty list of rule ids and/or set names")
+    params = _with({}, doc=doc, rules=None if rules is None else list(rules),
+                   severity_min=severity_min)
+    result = client.call("lint", params, timeout_s=timeout_s)
+    return _done(result, _lint_summary(result, doc))
 
 
 @mcp.tool()

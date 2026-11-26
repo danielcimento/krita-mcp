@@ -1,5 +1,6 @@
 """Acceptance tests 1 (Mao rebuild, P2.4) and 2 (round trip, Mao variant,
-P3.2; compared through ``render`` since P3.4), headless.
+P3.2; compared through ``render`` since P3.4), and lint on Mao (P4.4, the
+17 duplicate names), headless.
 
 Skipped unless ``KRITA_MCP_MAO_ORA`` names the Mao ``.ora``
 (acceptance.md § Fixtures). kritarunner is started by ``make test-krita``
@@ -301,3 +302,52 @@ class MaoRebuildTest(EnvelopeAssertions, unittest.TestCase):
         rest = [l for l in listed if l["id"] != background]
         self.assertEqual(len(listed) - len(rest), 1)
         return rest
+
+
+@unittest.skipUnless(os.environ.get(MAO_ENV), f"set {MAO_ENV} to the Mao .ora (acceptance § 1)")
+class MaoLintTest(EnvelopeAssertions, unittest.TestCase):
+    """Acceptance § Fixtures, secondary check: lint on the rebuilt Mao
+    (without new_canvas's Background) gives exactly 17 duplicate-name
+    findings. The per-rule counts are printed as a ``KMCP_MAO:`` line."""
+
+    def test_mao_lint(self):
+        ora = os.path.expanduser(os.environ[MAO_ENV])
+        self.assertTrue(os.path.isfile(ora), ora)
+        if TOOLS not in sys.path:
+            sys.path.insert(0, TOOLS)
+        import ora_to_manifest
+
+        tmp = tempfile.mkdtemp(prefix="kmcp-mao-lint-")
+        handle = None
+        try:
+            with temp_config({"allowed_dirs": [tmp]}):
+                out = os.path.join(tmp, "mao")
+                ora_to_manifest.convert(ora, out)
+                canvas = self.assertOk(run("new_canvas", width=WIDTH, height=HEIGHT,
+                                           background="transparent", name="kmcp-mao-lint"))
+                handle = canvas["doc"]
+                self.assertOk(run("create_layers", doc=handle,
+                                  manifest=os.path.join(out, "manifest.json")))
+                self.assertOk(run("delete_layers", doc=handle, ids=[canvas["background_layer"]]))
+                envelope = run("lint", doc=handle)
+                result = self.assertOk(envelope)
+        finally:
+            if handle is not None:
+                try:
+                    registry.lookup(handle)
+                    run("close_document", doc=handle, discard=True)
+                except CommandError:
+                    pass
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.assertFalse(os.path.exists(tmp))
+        per_rule = collections.Counter(f["rule"] for f in result["findings"])
+        _log(f"lint elapsed_ms={envelope['elapsed_ms']} counts={result['counts']} "
+             f"per rule={dict(sorted(per_rule.items()))}")
+        for rule in ("empty-layer", "out-of-canvas", "stray-alpha", "side-token", "node-type",
+                     "blend-mode"):
+            paths = [f["path"] for f in result["findings"] if f["rule"] == rule]
+            if paths:
+                _log(f"lint {rule}: {paths[:8]}{' ...' if len(paths) > 8 else ''}")
+        dups = [f for f in result["findings"] if f["rule"] == "duplicate-name"]
+        self.assertEqual(len(dups), 17, [f["message"] for f in dups])
+        self.assertTrue(all(len(f["related_ids"]) == 2 for f in dups))  # each name used twice

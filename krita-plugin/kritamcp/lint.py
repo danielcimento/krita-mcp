@@ -94,10 +94,7 @@ def run(snapshot, rules=None, severity_min=None):
     Unknown names, a bad ``severity_min`` or bad ``settings`` are
     ``bad_request``.
     """
-    selected = _select(["default"] if rules is None else rules)
-    if severity_min is not None and severity_min not in SEVERITIES:
-        raise CommandError("bad_request", f"severity_min must be one of {', '.join(SEVERITIES)}, "
-                                          f"got {severity_min!r}")
+    selected = check_args(rules, severity_min)
     _check_snapshot(snapshot)
     floor = SEVERITIES.index(severity_min or "info")
     order = {n["id"]: n.get("order", i) for i, n in enumerate(snapshot["nodes"])}
@@ -112,6 +109,17 @@ def run(snapshot, rules=None, severity_min=None):
     for f in findings:
         counts[f["severity"]] += 1
     return {"findings": findings, "counts": counts, "rules_run": selected}
+
+
+def check_args(rules=None, severity_min=None):
+    """Validate ``run``'s ``rules`` and ``severity_min`` without a snapshot
+    (``krita_lint`` checks them before collecting one). Returns the rule
+    ids to run, in registry order; bad values are ``bad_request``."""
+    selected = _select(["default"] if rules is None else rules)
+    if severity_min is not None and severity_min not in SEVERITIES:
+        raise CommandError("bad_request", f"severity_min must be one of {', '.join(SEVERITIES)}, "
+                                          f"got {severity_min!r}")
+    return selected
 
 
 def _select(names):

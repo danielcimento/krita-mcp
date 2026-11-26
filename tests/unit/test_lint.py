@@ -54,7 +54,9 @@ SNAPSHOT_FILES = sorted(f[:-5] for f in os.listdir(SNAPSHOTS) if f.endswith(".js
 def test_snapshot_files_follow_the_format(name):
     s = snap(name)
     assert set(s) <= {"description", "document", "settings", "nodes"}
-    assert set(s["document"]) == {"width", "height", "color_model", "color_depth", "color_profile"}
+    # pixel_stats is what the collector adds; the rules don't read it.
+    assert set(s["document"]) - {"pixel_stats"} == {"width", "height", "color_model",
+                                                    "color_depth", "color_profile"}
     assert set(s["settings"]) == set(lint.DEFAULT_SETTINGS)
     seen = {}
     for i, n in enumerate(s["nodes"]):

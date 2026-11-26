@@ -921,6 +921,29 @@ registry order (the order of the tables below). `severity_min` (`info`,
 `warning`, `error`; anything else is `bad_request`) drops less severe
 findings, and `counts` counts the findings returned.
 
+As built (P4.4, 2026-11-25): the plugin command `lint` (300 s,
+read-only) in `commands/analysis.py` checks `rules` and `severity_min`
+first (`lint.check_args`, so a bad value fails before the document is
+even resolved), resolves `doc`, collects a snapshot with the config's
+`lint` settings and runs `lint.run`. The result:
+
+```json
+{"doc": "doc-2", "findings": [...], "counts": {"error": 3, "warning": 1, "info": 0},
+ "rules_run": ["node-type", "layer-style", ...],
+ "settings": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4},
+ "pixel_stats": true}
+```
+
+`settings` are the ones used; `pixel_stats` is false for a document that
+isn't 8-bit RGBA (no alpha statistics, so `empty-layer`, `out-of-canvas`
+and `stray-alpha` can't fire; `color-space` reports it). `krita_lint(doc,
+rules, severity_min, timeout_s)` validates `severity_min` against
+`info`/`warning`/`error` in its schema, refuses an empty or string
+`rules` itself, and adds the summary: `"3 errors, 1 warning in doc-2 (10
+rules)"`, `"No findings in doc-2 (10 rules)"`, plus "pixel rules skipped"
+when `pixel_stats` is false. `/health` reports the `lint` settings next
+to `limits`. `lint_snapshot` stays a plugin command without a tool.
+
 #### Snapshot (collector)
 
 The rules run over one snapshot, collected in Krita by
@@ -934,7 +957,7 @@ returns `{"doc", "snapshot"}`.
  "settings": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4},
  "nodes": [{"id": "{…}", "name": "Blur", "path": "Blur", "type": "filterlayer",
             "parent": null, "depth": 1, "order": 0, "visible": true, "opacity": 1.0,
-            "blend_mode": "normal", "inherit_alpha": false, "alpha_locked": false,
+            "blend_mode": "copy", "inherit_alpha": false, "alpha_locked": false,
             "locked": false, "pass_through": null, "has_layer_style": false,
             "bounds": {"x": 0, "y": 0, "w": 64, "h": 64}, "alpha": null}]}
 ```
@@ -1068,7 +1091,7 @@ of both bounds). The two documents must be the same size for pixel diffs.
 
 | Tool | Change |
 |---|---|
-| `krita_health` | Adds `protocol`, `version`, `krita_version` (done in P1.3, with `running` and `protocol_ok` added server-side), then `allowed_dirs` (resolved roots, the output dir first), `config_file`, `config_loaded`, `limits` and `config_errors` (done in P1.4; the summary counts the dirs and lists the errors), then `busy` (`{"action", "elapsed_ms"}` or `null`) and `queued` (done in P1.5; the summary adds e.g. "busy: save for 12.3 s, 1 queued") |
+| `krita_health` | Adds `protocol`, `version`, `krita_version` (done in P1.3, with `running` and `protocol_ok` added server-side), then `allowed_dirs` (resolved roots, the output dir first), `config_file`, `config_loaded`, `limits` and `config_errors` (done in P1.4; the summary counts the dirs and lists the errors), then `busy` (`{"action", "elapsed_ms"}` or `null`) and `queued` (done in P1.5; the summary adds e.g. "busy: save for 12.3 s, 1 queued"), then `lint` (the config's lint settings, P4.4) |
 | `krita_new_canvas`, `krita_open_file`, `krita_save` | As above. Done in P1.6: `new_canvas` and `open_file` return `doc` (the new document's handle; the registry keeps the wrapper, so a headless `new_canvas` leaves an open document) and `save` takes `doc`. The rest done in P1.7 |
 | `krita_get_canvas` | Takes `doc` (done in P1.6). A full-canvas `render` into the output dir (done in P3.4; see § `krita_render`): the projection (8-bit sRGB for any document) instead of `exportImage`; the result adds `render`'s fields |
 | `krita_set_color` | Stored plugin-side (D15) and also set on the active view when there is one; works without a view. Returns `color` (normalized `#rrggbb`) and `view_updated`. An invalid color is `bad_request`. Painting uses the stored color, else the view's foreground, else black. **No `doc`**: the color is plugin-global state that applies to every document, which is what lets painting work in a document with no view (D15). Done in P1.6 |

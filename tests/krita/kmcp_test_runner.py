@@ -19,8 +19,8 @@ a temp dir and ``KRITA_MCP_ALLOWED_DIRS`` is unset, so the plugin's config
 is the defaults and the user's ``~/.krita-mcp-config.json`` is never read.
 Tests that need a config file write their own and point the variable at it.
 
-It puts ``<repo>/krita-plugin`` and ``<repo>/tests/krita`` on ``sys.path``,
-discovers ``tests/krita/test_*.py``, runs them with ``unittest``, writes a
+It puts ``<repo>/krita-plugin``, ``<repo>/tests/fixtures`` and
+``<repo>/tests/krita`` on ``sys.path``, discovers ``tests/krita/test_*.py``, runs them with ``unittest``, writes a
 JUnit-style report and the test output into
 ``~/krita-mcp-output/test-krita/``, and prints one marker line::
 
@@ -30,6 +30,16 @@ JUnit-style report and the test output into
 kritarunner's exit code does not reflect the outcome, so callers must read
 the marker. ``run`` never raises: any runner error is printed and reported
 as FAIL.
+
+A second entry point builds the lint fixture (``make lint-fixture``)::
+
+    kritarunner -s kmcp_test_runner -f build_lint_fixture <repo> <out.kra>
+
+It puts ``<repo>/krita-plugin`` and ``<repo>/tests/fixtures`` on
+``sys.path``, calls ``build_lint_fixture.build(out)`` and prints one of::
+
+    KMCP_FIXTURE: OK path=<out.kra> bytes=1234
+    KMCP_FIXTURE: FAIL <error>
 
 Runs on Krita's Python (3.13); stdlib only.
 """
@@ -48,6 +58,7 @@ import unittest
 import xml.etree.ElementTree as ET
 
 MARKER = "KMCP_TEST_RESULT"
+FIXTURE_MARKER = "KMCP_FIXTURE"
 # make test-krita passes its TEST_KRITA_DIR here, so parallel checkouts can run apart.
 OUT_DIR = os.path.expanduser(os.environ.get("KMCP_TEST_KRITA_DIR") or "~/krita-mcp-output/test-krita")
 REPORT_PATH = os.path.join(OUT_DIR, "report.xml")
@@ -224,12 +235,9 @@ def _run_tests(args):
     repo = _resolve_repo(args)
     patterns = [p for p in args[1:] if p]
     tests_dir = os.path.join(repo, "tests", "krita")
-    plugin_dir = os.path.join(repo, "krita-plugin")
     if not os.path.isdir(tests_dir):
         raise RuntimeError("no tests/krita in repo path %r (pass the repo as the first argument)" % repo)
-    for path in (plugin_dir, tests_dir):
-        if path not in sys.path:
-            sys.path.insert(0, path)
+    _add_paths(repo)
 
     loader = unittest.TestLoader()
     if patterns:
@@ -254,6 +262,42 @@ def _run_tests(args):
     if result.testsRun == 0:
         summary += " (no tests ran)"
     return ok, summary
+
+
+def _add_paths(repo):
+    """``krita-plugin``, ``tests/fixtures`` and ``tests/krita`` on
+    ``sys.path`` (tests import the fixture builder)."""
+    for path in (os.path.join(repo, "krita-plugin"), os.path.join(repo, "tests", "fixtures"),
+                 os.path.join(repo, "tests", "krita")):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+
+def build_lint_fixture(args=None):
+    """kritarunner entry point: build the lint fixture at ``args[1]``
+    (``tests/fixtures/build_lint_fixture.py``). Never raises."""
+    try:
+        args = [str(a) for a in (args or [])]
+        if len(args) < 2 or not args[1]:
+            raise RuntimeError("usage: build_lint_fixture <repo> <out.kra>")
+        repo = _resolve_repo(args)
+        _add_paths(repo)
+        import build_lint_fixture as builder
+
+        out = os.path.abspath(os.path.expanduser(args[1]))
+        size = builder.build(out)
+        line = "%s: OK path=%s bytes=%d\n" % (FIXTURE_MARKER, out, size)
+        ok = True
+    except BaseException as e:
+        sys.stdout.write(traceback.format_exc())
+        line = "%s: FAIL %s: %s\n" % (FIXTURE_MARKER, type(e).__name__, e)
+        ok = False
+    try:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+    except Exception:
+        pass
+    return 0 if ok else 1
 
 
 def run(args=None):

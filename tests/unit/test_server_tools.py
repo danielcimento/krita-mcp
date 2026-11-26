@@ -36,6 +36,7 @@ EXPECTED_TOOLS = {
     "krita_import_png",
     "krita_export_layers",
     "krita_render",
+    "krita_lint",
 }
 
 # tool -> (kwargs, plugin action, canned plugin payload)
@@ -105,6 +106,11 @@ CASES = {
     "krita_render": ({"path": "a.png"}, "render",
                      {"doc": "doc-1", "path": "/out/a.png", "width": 4, "height": 3,
                       "region": {"x": 0, "y": 0, "w": 4, "h": 3}, "scale": 1.0, "bytes": 90}),
+    "krita_lint": ({}, "lint",
+                   {"doc": "doc-1", "findings": [], "counts": {"error": 0, "warning": 0, "info": 0},
+                    "rules_run": ["node-type"], "pixel_stats": True,
+                    "settings": {"additive_mode": "either", "stray_alpha_below": 8,
+                                 "stray_alpha_distance": 4}}),
     "krita_list_layers": ({}, "list_layers",
                           {"root": "/", "layers": [{"id": "{1}", "name": "a", "children": []}],
                            "counts": {"paintlayer": 1, "total": 1}}),
@@ -308,7 +314,7 @@ DOC_TOOLS = {"krita_save", "krita_get_canvas", "krita_stroke", "krita_fill",
              "krita_get_document_info", "krita_close_document", "krita_list_layers",
              "krita_create_layers", "krita_update_layers", "krita_move_layers",
              "krita_delete_layers", "krita_import_png", "krita_export_layers",
-             "krita_render"}
+             "krita_render", "krita_lint"}
 # close_document has no active-document default.
 REQUIRED_DOC_TOOLS = {"krita_close_document"}
 OPTIONAL_DOC_TOOLS = DOC_TOOLS - REQUIRED_DOC_TOOLS
@@ -911,3 +917,65 @@ def test_get_canvas_summary_and_docstring(fake_call):
     assert fake_call.calls[0] == ("get_canvas", {"filename": "c"}, None)
     description = " ".join(_tools()["krita_get_canvas"].description.split())
     assert "krita_render" in description and "full canvas" in description
+
+
+# P4.4: lint.
+
+def test_lint_params(fake_call):
+    server.krita_lint()
+    assert fake_call.calls[0] == ("lint", {}, None)
+    server.krita_lint(doc="doc-2", rules=("default", "node-type"), severity_min="warning",
+                      timeout_s=600)
+    assert fake_call.calls[1] == ("lint", {"doc": "doc-2", "rules": ["default", "node-type"],
+                                           "severity_min": "warning"}, 600)
+
+
+def test_lint_rejects_empty_or_string_rules(fake_call):
+    for bad in ([], "default"):
+        with pytest.raises(ToolError, match="^bad_request: rules"):
+            server.krita_lint(rules=bad)
+    assert fake_call.calls == []
+
+
+def test_lint_schema_and_docstring():
+    from kritamcp import lint
+
+    tool = _tools()["krita_lint"]
+    params = tool.parameters
+    assert set(params["properties"]) == {"doc", "rules", "severity_min", "timeout_s"}
+    assert params.get("required", []) == []
+    assert params["properties"]["severity_min"]["anyOf"][0]["enum"] == ["info", "warning", "error"]
+    description = " ".join(tool.description.split())
+    for rule in lint.RULES.values():
+        assert f"- {rule.id} ({rule.severity})" in description, rule.id
+    for phrase in ('"default"', '"conventions"', '"all"', "additive_mode", "stray_alpha_below",
+                   "stray_alpha_distance", "stacking order", "document-level", "related_ids",
+                   "Reads only"):
+        assert phrase in description, phrase
+    for args in ({"severity_min": "fatal"}, {"rules": "default"}, {"rules": [1]}, {"bogus": 1}):
+        assert _call_tool("krita_lint", args).is_error, args
+
+
+def test_lint_summary(fake_call):
+    fake_call.payload = {"doc": "doc-2", "findings": [{}] * 4, "rules_run": ["r"] * 10,
+                         "counts": {"error": 3, "warning": 1, "info": 0}, "pixel_stats": True}
+    assert server.krita_lint()["summary"] == "3 errors, 1 warning in doc-2 (10 rules)"
+    fake_call.payload = {"doc": "doc-2", "findings": [], "rules_run": ["r"],
+                         "counts": {"error": 0, "warning": 0, "info": 0}, "pixel_stats": False}
+    assert server.krita_lint()["summary"] == (
+        "No findings in doc-2 (1 rule); pixel rules skipped (not an 8-bit RGBA document)")
+    fake_call.payload = {"counts": {"error": 1, "warning": 0, "info": 2}}
+    assert server.krita_lint(doc="doc-5")["summary"] == "1 error, 2 info in doc-5"
+
+
+def test_readme_tool_tables_list_every_tool():
+    import os
+    import re
+
+    readme = os.path.join(os.path.dirname(os.path.abspath(server.__file__)), "README.md")
+    with open(readme, encoding="utf-8") as f:
+        rows = [line for line in f if line.startswith("| `krita_")]
+    listed = set()
+    for row in rows:
+        listed.update(re.findall(r"`(krita_[a-z_]+)`", row.split("|")[1]))
+    assert listed == EXPECTED_TOOLS

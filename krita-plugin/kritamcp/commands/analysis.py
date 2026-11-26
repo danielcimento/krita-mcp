@@ -1,4 +1,5 @@
-"""Analysis (api-design § Analysis): the lint snapshot collector (D14).
+"""Analysis (api-design § Analysis): the lint snapshot collector and
+``lint`` (D14).
 
 ``collect_snapshot(doc, settings)`` reads everything the lint rules need
 in one pass, so the rules (``lint.py``) stay pure functions over a dict:
@@ -24,7 +25,7 @@ import time
 
 from krita import Selection
 
-from .. import alphastats, config, nodes, pixels, registry
+from .. import alphastats, config, lint, nodes, pixels, registry
 from ..dispatch import LONG_TIMEOUT, command
 from ..errors import CommandError
 
@@ -170,3 +171,21 @@ def cmd_lint_snapshot(params):
     the rules over the same snapshot). Reads only."""
     handle, doc = registry.resolve_doc(params)
     return {"doc": handle, "snapshot": collect_snapshot(doc)}
+
+
+@command("lint", timeout=LONG_TIMEOUT)
+def cmd_lint(params):
+    """``krita_lint`` (api-design § krita_lint): the lint rules over a fresh
+    snapshot of one document. ``rules`` (rule ids and/or set names, default
+    ``["default"]``) and ``severity_min`` are checked before the snapshot
+    is collected; bad values are ``bad_request``. The settings come from
+    the config's ``lint`` section. Reads only."""
+    rules = params.get("rules")
+    severity_min = params.get("severity_min")
+    lint.check_args(rules, severity_min)
+    handle, doc = registry.resolve_doc(params)
+    snapshot = collect_snapshot(doc)
+    result = lint.run(snapshot, rules, severity_min)
+    return {"doc": handle, "findings": result["findings"], "counts": result["counts"],
+            "rules_run": result["rules_run"], "settings": snapshot["settings"],
+            "pixel_stats": snapshot["document"]["pixel_stats"]}

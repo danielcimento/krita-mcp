@@ -106,6 +106,7 @@ class HandlerAuthTest(BridgeTestBase):
             "config_file": settings.config_file,
             "config_loaded": False,
             "limits": config.DEFAULT_LIMITS,
+            "lint": config.DEFAULT_LINT,
             "config_errors": [],
             "busy": None,
             "queued": 0,
@@ -114,13 +115,16 @@ class HandlerAuthTest(BridgeTestBase):
     def test_health_reports_config(self):
         bridge.AUTH_TOKEN = None
         with temp_config({"allowed_dirs": ["/definitely/not/here", "relative"],
-                          "limits": {"max_canvas_pixels": 4096}, "colour": 1}) as path:
+                          "limits": {"max_canvas_pixels": 4096}, "colour": 1,
+                          "lint": {"additive_mode": "add"}}) as path:
             status, body = self.request("GET", "/health")
         self.assertEqual(status, 200)
         self.assertEqual(body["config_file"], path)
         self.assertIs(body["config_loaded"], True)
         self.assertEqual(body["allowed_dirs"], [config.current().output_dir])
         self.assertEqual(body["limits"], {"max_canvas_dim": 16384, "max_canvas_pixels": 4096})
+        self.assertEqual(body["lint"], {"additive_mode": "add", "stray_alpha_below": 8,
+                                        "stray_alpha_distance": 4})
         errors = body["config_errors"]
         self.assertEqual(len(errors), 3, errors)
         self.assertTrue(any("'colour'" in e for e in errors), errors)
@@ -142,6 +146,7 @@ class HandlerAuthTest(BridgeTestBase):
         self.assertEqual(status, 200)
         self.assertEqual(body["status"], "ok")
         self.assertEqual(body["allowed_dirs"], [])
+        self.assertIsNone(body["lint"])
         self.assertEqual(body["config_errors"], ["could not load the config: RuntimeError: boom"])
 
     def test_no_token_loaded_refuses_info_and_post(self):

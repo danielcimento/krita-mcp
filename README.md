@@ -76,33 +76,61 @@ If using a virtual environment:
 
 ## Available Tools
 
+**Documents**
+
 | Tool | Description |
 |------|-------------|
-| `krita_health` | Check if Krita is running with the plugin active |
-| `krita_list_documents` | List open documents with their `doc` handles, size, path, modified and active flags |
-| `krita_get_document_info` | One document's size, resolution, color space, layer counts, nesting depth and selection |
-| `krita_new_canvas` | Create a new RGBA canvas (width, height, background color or `"transparent"`, color profile, resolution); returns its `doc` handle |
-| `krita_set_color` | Set foreground paint color (hex); kept by the plugin, so it works without a window |
-| `krita_set_brush` | Set brush preset, size, and opacity |
-| `krita_stroke` | Paint a stroke through a list of [x, y] points |
-| `krita_fill` | Fill a circular area at a point |
-| `krita_draw_shape` | Draw rectangle, ellipse, or line |
-| `krita_get_canvas` | Save the whole canvas as a PNG in the output dir (for AI to see progress); a shortcut for a full-canvas `krita_render` |
-| `krita_render` | Render a document to a PNG without changing it: a `region` (`{x, y, w, h}`, clipped to the canvas), `scale` (0–4, smooth; `scale=0.25` for fast previews), `only` (these layers, their ancestors shown, a listed group's contents keeping their own visibility) and/or `hide` (done in a private copy of the document, so nothing in yours changes), a `background` colour underneath, `png_level`. Any colour space (converted to 8-bit sRGB); at scale 1 an 8-bit sRGB document's composited pixels exactly |
-| `krita_save` | Save in place (no path), save as `.kra` (the document moves there), or export to PNG/JPG/…; returns the resolved path and file size. `.psd` saves write Add layers as Linear Dodge (PSD would turn Add into Normal) and `.ora` saves write Linear Dodge as Add (the standard `svg:plus`): same pixels, done on a copy so the open document keeps its modes; `blend_conversions` lists the layers |
+| `krita_health` | Whether Krita and the plugin are running; protocol, allowed dirs, limits, lint settings, config errors, the busy command |
+| `krita_list_documents` | Open documents with their `doc` handles, size, path, modified and active flags |
+| `krita_get_document_info` | One document's size, resolution, colour space, layer counts, nesting depth and selection |
+| `krita_new_canvas` | New RGBA canvas (size, background colour or `"transparent"`, profile, resolution); returns its `doc` handle |
+| `krita_open_file` | Open a `.kra`, `.ora`, `.png`, …; returns its `doc` handle (an already open file keeps its handle) |
+| `krita_save` | Save in place, save as `.kra` (the document moves there), or export to PNG/JPG/PSD/ORA; Add / Linear Dodge layers are converted for `.psd` / `.ora` on a copy (`blend_conversions`) |
 | `krita_close_document` | Close a document by handle; refuses unsaved changes unless `discard=true` |
-| `krita_list_layers` | The layer tree as a flat list, top to bottom (Layers-docker order): id, name, path, type, parent, children, visibility, opacity, blend mode, locks, bounds (exact, may extend past the canvas). Optional `root` (a subtree), `depth`, `fields`; per-type `counts` |
-| `krita_create_layers` | Create groups and paint layers in one all-or-nothing call: list siblings bottom to top; `key` / `"$key"` to nest in layers made earlier in the call; `above`; visibility, opacity (0–1), blend mode, locks, clipping, pass-through; `png` + `x`/`y` for a layer's pixels. Or pass `manifest`: a `manifest.json` (from `export_layers` or `tools/ora_to_manifest.py`) whose PNG paths are relative to it; errors name the manifest entry, and the result lists `skipped` entries and `warnings` (e.g. a different document size). Unknown keys fail; `dry_run` validates only |
-| `krita_update_layers` | Change name, visibility, opacity (0–1), blend mode, locks, clipping, pass-through (groups) of many layers in one all-or-nothing call; only the fields given change. A rename to an existing name is allowed and listed in `warnings`. `dry_run` validates only |
-| `krita_move_layers` | Reorder and reparent layers in one all-or-nothing call: `parent` (default the current one), and `above` / `below` a sibling or `index` (from the bottom); default on top. Groups move with their subtree; ids, pixels and properties are kept; moving a group into itself fails. `dry_run` validates only |
-| `krita_delete_layers` | Delete layers (a group with its subtree) in one all-or-nothing call; returns every deleted id. `dry_run` validates only |
-| `krita_export_layers` | Write each paint layer's own pixels as a PNG (cropped to alpha > 0 by default, or canvas-sized with `crop=false`) plus a `manifest.json` that `krita_create_layers(manifest=…)` rebuilds the tree from: create order, keys, parents, visibility, opacity, blend modes, locks, clipping, pass-through; empty layers get `png: null`. `ids` (default `"all"`) for a subtree, its enclosing groups kept; `include_hidden`, `include_groups` (group projections, skipped on rebuild), `png_level`, `overwrite`. Masks and filter/fill/clone/vector/file layers are skipped with warnings. 8-bit RGBA documents only; the document is not changed |
-| `krita_import_png` | Write a PNG into a paint layer at `x`/`y` (canvas pixels, may be negative or past the edge): `replace` (exact, alpha included) or `over` (source-over); pixels outside the PNG's rectangle are untouched unless `clear_outside` (replace only) clears the rest of the layer. 8-bit RGBA documents only. Returns the `changed` rectangle and the layer's new `bounds`; one agent undo step restores the old pixels. `dry_run` validates only |
-| `krita_undo` / `krita_redo` | Undo/redo actions |
-| `krita_clear` | Clear a layer to a solid color, or `"transparent"` |
-| `krita_get_color_at` | Eyedropper — sample color at a pixel |
-| `krita_list_brushes` | List available brush presets |
-| `krita_open_file` | Open an existing .kra, .ora, .png, .jpg, etc.; returns its `doc` handle (an already open file returns its existing handle, `already_open: true`) |
+
+**Layer tree**
+
+| Tool | Description |
+|------|-------------|
+| `krita_list_layers` | The tree as a flat list, top to bottom: id, name, path, type, parent, visibility, opacity, blend mode, locks, exact bounds; `root`, `depth`, `fields` |
+| `krita_create_layers` | Groups and paint layers in one all-or-nothing call, from specs (`key` / `"$key"` nesting, properties, `png` pixels) or a `manifest.json`; `dry_run` |
+| `krita_update_layers` | Change name, visibility, opacity, blend mode, locks, clipping, pass-through of many layers at once; `dry_run` |
+| `krita_move_layers` | Reorder and reparent layers (`parent`, `above` / `below` / `index`); groups move with their subtree; `dry_run` |
+| `krita_delete_layers` | Delete layers (a group with its subtree) in one call; `dry_run` |
+
+**Pixels**
+
+| Tool | Description |
+|------|-------------|
+| `krita_import_png` | Write a PNG into a paint layer at `x`/`y`: `replace` (exact) or `over`, optional `clear_outside`; one undo step |
+| `krita_export_layers` | Each paint layer's own pixels as a PNG (cropped to alpha > 0) plus a `manifest.json` that `krita_create_layers` rebuilds the tree from |
+| `krita_render` | Render to a PNG without changing the document: `region`, `scale` (0.25 for fast previews), `only` / `hide` layers, `background`, `png_level` |
+| `krita_get_canvas` | The whole canvas as a PNG in the output dir; a shortcut for a full-canvas `krita_render` |
+| `krita_get_color_at` | Eyedropper: the colour at a pixel, of the composite or of one layer |
+
+**Analysis**
+
+| Tool | Description |
+|------|-------------|
+| `krita_lint` | Check a document against the Live2D rig rules (node types, layer styles, clipping, blend modes, duplicate names, side tokens, empty / off-canvas layers, stray alpha, colour space); `rules`, `severity_min`; findings sorted by stacking order |
+
+**Painting**
+
+| Tool | Description |
+|------|-------------|
+| `krita_set_color` | Set the paint colour (kept by the plugin, so it works without a window) |
+| `krita_set_brush` | Set the brush preset, size and opacity |
+| `krita_list_brushes` | List brush presets |
+| `krita_stroke` | Paint a stroke through a list of [x, y] points |
+| `krita_fill` | Fill a circle at a point |
+| `krita_draw_shape` | Draw a rectangle, ellipse or line |
+| `krita_clear` | Clear a layer to a colour, or `"transparent"` |
+
+**History**
+
+| Tool | Description |
+|------|-------------|
+| `krita_undo` / `krita_redo` | Undo / redo the active document's last action |
 
 Tools that act on a document take an optional `doc`: a handle such as
 `doc-3` (returned by `krita_new_canvas` and `krita_open_file`), or the
@@ -113,6 +141,16 @@ a layer's UUID, a name path such as `Head/Eyes` (`\/` for a slash in a
 name), or a unique name. Painting defaults to the active layer and must
 target a paint layer.
 
+### Live2D workflow
+
+Open the artwork (`krita_open_file`) or start a canvas (`krita_new_canvas`),
+build or restructure the part layers in one call with
+`krita_create_layers(manifest=…)` (and the update / move / delete tools),
+check the result with `krita_lint` until it reports no errors, then export
+the parts with `krita_export_layers` (PNGs plus a manifest) or preview them
+with `krita_render`. `tools/ora_to_manifest.py` turns an `.ora` into a
+manifest for the first step.
+
 ## Timeouts
 
 This fork started as a fix for export and save timing out on large
@@ -121,7 +159,8 @@ is now replaced by per-command timeouts
 ([decisions.md D9](docs/f001_buildout/decisions.md)):
 
 - Each plugin command has a default timeout: 30 s for queries, 300 s for
-  file I/O (`get_canvas`, `render`, `save`, `open_file`, `new_canvas`, `clear`).
+  file I/O and long reads (`get_canvas`, `render`, `save`, `open_file`,
+  `new_canvas`, `clear`, `export_layers`, `lint`, …).
 - Every tool except `krita_health` takes an optional `timeout_s` (up to
   900 s) to override it.
 - `server.py` reads the defaults from the plugin's `/info` and waits 15 s
@@ -153,7 +192,8 @@ Every key is optional:
 {
   "allowed_dirs": ["~/umamo-art", "~/projects/mao"],
   "limits": {"max_canvas_dim": 16384, "max_canvas_pixels": 67108864},
-  "journal": {"max_actions": 20, "max_bytes": 1073741824}
+  "journal": {"max_actions": 20, "max_bytes": 1073741824},
+  "lint": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4}
 }
 ```
 
@@ -172,13 +212,18 @@ Every key is optional:
 - **Limits.** `max_canvas_dim` (per side) and `max_canvas_pixels` (total)
   bound `new_canvas`; over either gives a `too_large` error. Each value
   must be a positive integer, or its default is kept.
+- **Lint.** `krita_lint`'s settings: `additive_mode` (`"either"`, or
+  `"add"` / `"linear_dodge"` to require one spelling of the Add blend
+  mode), and the stray-alpha thresholds: pixels with alpha below
+  `stray_alpha_below` (1–255) further than `stray_alpha_distance` px
+  (1–64) from any stronger pixel are reported.
 - **Scripted launches.** `KRITA_MCP_ALLOWED_DIRS` (`:`-separated) in
   **Krita's** environment adds more dirs. macOS apps started from the Dock
   or Finder don't see shell variables, so the file is the usual way.
   `KRITA_MCP_CONFIG_FILE` (also Krita's environment) reads a different
   config file instead of `~/.krita-mcp-config.json`.
 - **Check it.** `krita_health` returns `allowed_dirs` (the output dir
-  first), `limits`, `config_file` and `config_errors` (bad keys or values,
+  first), `limits`, `lint`, `config_file` and `config_errors` (bad keys or values,
   skipped dirs, a refused file); its summary lists the errors.
 
 Only the plugin reads this file. The MCP server can't widen the allowed

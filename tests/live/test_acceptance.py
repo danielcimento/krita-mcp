@@ -1,10 +1,11 @@
 """F001 acceptance tests (docs/f001_buildout/acceptance.md), against the GUI
 Krita through server.py's tools. Run with KRITA_MCP_LIVE=1.
 
-Covered so far: 1 (Mao rebuild; also needs KRITA_MCP_MAO_ORA), 2 (round
-trip: the small synthetic variant, and the Mao variant with
-KRITA_MCP_MAO_ORA), 3 (canvas cap), 5 (allowlist, export_layers row
-included) and 6 (handles), plus a render smoke test.
+Covered: 1 (Mao rebuild; also needs KRITA_MCP_MAO_ORA), 2 (round trip:
+the small synthetic variant, and the Mao variant with KRITA_MCP_MAO_ORA),
+3 (canvas cap), 4 (lint on the committed fixture, plus the Mao
+duplicate-name check with KRITA_MCP_MAO_ORA), 5 (allowlist, export_layers
+row included) and 6 (handles), plus a render smoke test.
 """
 
 import collections
@@ -393,6 +394,48 @@ def test_canvas_cap(call, docs_to_close, config_override):
     assert call.health()["limits"] == before
     again = call("new_canvas", width=40, height=40, name="f001-cap-restored")
     docs_to_close.append(again["doc"])
+
+
+# --- 4. Lint ------------------------------------------------------------------
+
+LINT_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "fixtures",
+                            "lint_four_findings.kra")
+LINT_EXPECTED = collections.Counter([("node-type", "Blur"), ("inherit-alpha", "Shade"),
+                                     ("duplicate-name", "Back/Hair"), ("empty-layer", "Spare")])
+
+
+def test_lint_fixture(call, scratch, docs_to_close):
+    """Acceptance § 4: the committed fixture (a copy in the scratch dir)
+    gives exactly the four findings."""
+    copy = os.path.join(scratch[0], "lint_four_findings.kra")
+    shutil.copyfile(LINT_FIXTURE, copy)
+    opened = call("open_file", path=copy)
+    docs_to_close.append(opened["doc"])
+    result = call("lint", doc=opened["doc"])
+    print(result["summary"])
+    findings = result["findings"]
+    assert collections.Counter((f["rule"], f["path"]) for f in findings) == LINT_EXPECTED
+    assert [f["path"] for f in findings] == ["Blur", "Back/Hair", "Shade", "Spare"]
+    hairs = [l["id"] for l in call("list_layers", doc=opened["doc"])["layers"]
+             if l["name"] == "Hair"]
+    dup = next(f for f in findings if f["rule"] == "duplicate-name")
+    assert sorted(dup["related_ids"]) == sorted(hairs) and len(hairs) == 2
+    assert result["counts"] == {"error": 3, "warning": 1, "info": 0}
+    assert result["summary"] == f"3 errors, 1 warning in {opened['doc']} (10 rules)"
+
+
+def test_lint_mao(call, mao_dir, docs_to_close):
+    """Acceptance § Fixtures, secondary check: the rebuilt Mao (without
+    new_canvas's Background) has exactly 17 duplicate-name findings. The
+    other rules' counts are reported, not asserted."""
+    ora, work = mao_dir
+    doc, background, _, _, _ = _rebuild_mao(call, ora, work, docs_to_close)
+    call("delete_layers", doc=doc, ids=[background])
+    result = call("lint", doc=doc, timeout_s=600)
+    print(f"lint: {result['elapsed_ms']} ms; {result['summary']}")
+    per_rule = collections.Counter(f["rule"] for f in result["findings"])
+    print(f"lint per rule: {dict(sorted(per_rule.items()))}")
+    assert per_rule["duplicate-name"] == 17
 
 
 # --- 5. Allowlist -------------------------------------------------------------

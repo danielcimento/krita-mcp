@@ -33,8 +33,9 @@ NODE_KEYS = ["id", "name", "path", "type", "parent", "depth", "order", "visible"
              "has_layer_style", "bounds", "alpha"]
 DEFAULTS = {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4}
 
-# A layer style as Krita's own ``layerStyleToAsl`` writes it, plus a drop
-# shadow it doesn't keep; setLayerStyleFromAsl accepts it (2026-11-25).
+# A layer style as Krita's own ``layerStyleToAsl`` writes it (PSD-XML), with
+# a drop shadow; setLayerStyleFromAsl accepts and keeps it (2026-11-25; a
+# visibly rendered style is in test_lint_fixture.py, STYLE_ASL).
 ASL = ('<asl><node type="Descriptor" name="" classId="null">'
        '<node type="UnitFloat" unit="#Prc" key="Scl " value="100"/>'
        '<node type="Boolean" key="masterFXSwitch" value="1"/>'
