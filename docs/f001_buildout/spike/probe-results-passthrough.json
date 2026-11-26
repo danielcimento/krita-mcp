@@ -1,0 +1,86 @@
+{
+ "pass_through=True opacity=1.0 child=normal": [
+  128,
+  128,
+  128,
+  255
+ ],
+ "pass_through=True opacity=1.0 child=multiply": [
+  128,
+  0,
+  0,
+  255
+ ],
+ "pass_through=True opacity=1.0 child=add": [
+  255,
+  128,
+  128,
+  255
+ ],
+ "pass_through=True opacity=0.5 child=normal": [
+  191,
+  64,
+  64,
+  255
+ ],
+ "pass_through=True opacity=0.5 child=multiply": [
+  191,
+  0,
+  0,
+  255
+ ],
+ "pass_through=True opacity=0.5 child=add": [
+  255,
+  64,
+  64,
+  255
+ ],
+ "pass_through=False opacity=1.0 child=normal": [
+  128,
+  128,
+  128,
+  255
+ ],
+ "pass_through=False opacity=1.0 child=multiply": [
+  128,
+  128,
+  128,
+  255
+ ],
+ "pass_through=False opacity=1.0 child=add": [
+  128,
+  128,
+  128,
+  255
+ ],
+ "pass_through=False opacity=0.5 child=normal": [
+  191,
+  64,
+  64,
+  255
+ ],
+ "pass_through=False opacity=0.5 child=multiply": [
+  191,
+  64,
+  64,
+  255
+ ],
+ "pass_through=False opacity=0.5 child=add": [
+  191,
+  64,
+  64,
+  255
+ ],
+ "isolated group blend multiply, child normal": [
+  128,
+  0,
+  0,
+  255
+ ],
+ "pass_through group blend multiply, child normal": [
+  128,
+  128,
+  128,
+  255
+ ]
+}

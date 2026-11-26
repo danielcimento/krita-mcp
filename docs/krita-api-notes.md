@@ -316,6 +316,21 @@ are fast enough that per-pixel Python loops are never justified.
     `linear_dodge` group as `lddg` (reopens `linear_dodge`); `.ora` writes
     a group's (`<stack>`) mode like a layer's [verified 2026-11-25, P2.7].
   - `setBlendingMode` does not set `modified()` [verified, P2.7].
+- **Pass-through vs isolated groups** [verified 2026-11-25, headless,
+  `f001_buildout/spike/probe-results-passthrough.json`; red base, a 50%
+  grey child]:
+  - *Isolated* (`passThroughMode() == False`, Krita's default for new
+    groups): the children composite on their own first, so a Multiply/Add
+    child has nothing to act on unless it's inside the group (grey stays
+    grey). The result is then composited with the group's blend mode and
+    opacity.
+  - *Pass-through*: children blend straight into the stack below (a
+    Multiply child darkens the red base to 128,0,0). The group's
+    **opacity still applies**, scaling each child (Multiply at 0.5 gives
+    191,0,0), and the group's **blend mode is ignored**.
+  - So the two render alike only when no descendant interacts with what's
+    below the group (all Normal, nothing clipped) and the group itself is
+    at opacity 1 with a Normal blend.
 - `inheritAlpha()` is Krita's clipping ("alpha inheritance").
 - **`Node.duplicate()` is a detached deep copy** [verified 2026-11-25,
   P5.2, headless]: not in the document until `addChildNode` (by id it
