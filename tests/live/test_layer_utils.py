@@ -72,7 +72,9 @@ def test_duplicate_layer(call, scratch, docs_to_close):
     top = [l["name"] for l in call("list_layers", doc=doc)["layers"] if l["parent"] is None]
     assert top == ["G", "G", "Background"]
 
-    renamed = call("duplicate_layer", doc=doc, id="G/X", name="X2", parent=copy["layer"]["id"])
+    # Two groups are named G now, so the path "G/X" is ambiguous (D4): use the id.
+    call.error("ambiguous", "duplicate_layer", doc=doc, id="G/X")
+    renamed = call("duplicate_layer", doc=doc, id=ids["X"], name="X2", parent=copy["layer"]["id"])
     assert (renamed["layer"]["name"], renamed["layer"]["parent"]) == ("X2", copy["layer"]["id"])
     assert _stats(call, doc, renamed["layer"]["id"])["opaque_bounds"] == {
         "x": 5, "y": 5, "w": 4, "h": 3}

@@ -65,10 +65,10 @@ def test_merge_group_flatten_render_unchanged_and_undo(call, scratch, docs_to_cl
     assert merged["layer"]["opacity"] == 0.8
     after = call("render", doc=doc, path=os.path.join(work, "merge-after.png"))["path"]
     from PIL import Image
-    assert list(Image.open(before).getdata()) == list(Image.open(after).getdata())
+    assert Image.open(before).convert("RGBA").tobytes() == Image.open(after).convert("RGBA").tobytes()
 
     call("undo", doc=doc)
     listed = {l["id"]: l for l in call("list_layers", doc=doc)["layers"]}
     assert set(ids.values()) <= set(listed) and merged["layer"]["id"] not in listed
     undone = call("render", doc=doc, path=os.path.join(work, "merge-undone.png"))["path"]
-    assert list(Image.open(before).getdata()) == list(Image.open(undone).getdata())
+    assert Image.open(before).convert("RGBA").tobytes() == Image.open(undone).convert("RGBA").tobytes()
