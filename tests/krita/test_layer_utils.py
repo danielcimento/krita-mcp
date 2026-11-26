@@ -471,7 +471,7 @@ class TrimLayersTest(Base):
             eight = self.assertOk(run("trim_layers", doc=handle, ids=["L", "K"],
                                       alpha_threshold=8, dry_run=True))
             self.assertEqual(dflt["alpha_threshold"], 8)
-            self.assertEqual(dflt["trimmed"], eight["trimmed"])
+            self.assertEqual(dflt["would_trim"], eight["would_trim"])
             self.assertEqual(dflt["totals"], eight["totals"])
 
     def test_undo_redo_exact(self):
