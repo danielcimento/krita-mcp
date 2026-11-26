@@ -1,8 +1,10 @@
-"""kritamcp.lint: the default rules over hand-written snapshots (D14, P4.2).
+"""kritamcp.lint: the rules over hand-written snapshots (D14, P4.2; the
+conventions set P5.9; speck-only stray-alpha P5.10).
 
 Each rule has a snapshot in tests/unit/snapshots/ with positive and
 negative cases. lint_four_findings.json is acceptance test 4's fixture
-document (acceptance.md § Fixtures, Lint fixture).
+document (acceptance.md § Fixtures, Lint fixture); conventions_clean.json
+is a small generic rig with no finding from any rule.
 """
 
 import collections
@@ -21,6 +23,10 @@ DEFAULT_RULES = ["node-type", "layer-style", "inherit-alpha", "blend-mode", "dup
 SEVERITY = {"node-type": "error", "layer-style": "error", "inherit-alpha": "error", "blend-mode": "error",
             "duplicate-name": "error", "side-token": "warning", "empty-layer": "warning",
             "out-of-canvas": "warning", "stray-alpha": "warning", "color-space": "error"}
+CONVENTION_RULES = ["nesting-depth", "name-case", "blend-suffix", "pose-visibility", "reference-hidden",
+                    "mask-suffix"]
+CONVENTION_SEVERITY = {"nesting-depth": "warning", "name-case": "info", "blend-suffix": "warning",
+                       "pose-visibility": "warning", "reference-hidden": "warning", "mask-suffix": "info"}
 
 
 def snap(name):
@@ -66,6 +72,17 @@ def test_snapshot_files_follow_the_format(name):
         assert n["depth"] == (parent["depth"] + 1 if parent else 1)
         assert n["path"] == (f"{parent['path']}/{n['name']}" if parent else n["name"])
         assert (n["alpha"] is not None) == (n["type"] == "paintlayer")
+        if n["alpha"] is not None:
+            a = n["alpha"]
+            assert set(a) == {"pixel_count", "opaque_bounds", "stray_count", "stray_specks"}
+            sp = a["stray_specks"]
+            assert set(sp) == {"count", "pixels", "regions", "samples", "truncated"}
+            assert sp["count"] <= sp["pixels"] <= a["stray_count"]
+            assert (a["stray_count"] == 0) <= (sp == {"count": 0, "pixels": 0, "regions": 0,
+                                                      "samples": [], "truncated": False})
+            assert len(sp["samples"]) == min(sp["count"], 5) or sp["truncated"]
+            for r in sp["samples"]:
+                assert set(r) == {"x", "y", "w", "h"} and r["w"] >= 1 and r["h"] >= 1
         if n["type"] in lint.MASK_TYPES:
             assert parent and parent["type"] not in lint.MASK_TYPES  # masks hang off a layer
         assert not (n["type"] == "selectionmask" and n["parent"] is None)  # D4: never in a snapshot
@@ -101,6 +118,15 @@ def test_default_set_is_the_ten_rules_with_their_severities():
     assert {r: lint.RULES[r].severity for r in DEFAULT_RULES} == SEVERITY
     assert set(DEFAULT_RULES) <= set(lint.set_members("all"))
     assert not set(lint.SETS) & set(lint.RULES)
+
+
+def test_conventions_set_is_the_six_rules_and_all_is_both():
+    assert lint.set_members("conventions") == CONVENTION_RULES
+    assert {r: lint.RULES[r].severity for r in CONVENTION_RULES} == CONVENTION_SEVERITY
+    assert lint.set_members("all") == DEFAULT_RULES + CONVENTION_RULES
+    assert not set(DEFAULT_RULES) & set(CONVENTION_RULES)
+    assert lint.run(snap("lint_four_findings"), ["default", "conventions"])["rules_run"] == \
+        DEFAULT_RULES + CONVENTION_RULES
 
 
 def test_rule_selection_runs_in_registry_order_without_duplicates():
@@ -368,14 +394,52 @@ def test_out_of_canvas_exact_fit_is_fine():
     assert paths(run1(s, "out-of-canvas")) == ["Overhang", "Top"]
 
 
-def test_stray_alpha():
+def test_stray_alpha_flags_specks_only():
     r = run1(snap("stray_alpha"), "stray-alpha")
-    assert paths(r) == ["Dust", "Speck"]
+    # Glow: 900 stray pixels in one region larger than stray_speck_max_px, no speck.
+    assert paths(r) == ["Dust", "Speck", "Glow Dust", "Noise"]
+    f = by_path(r)
+    assert f["Dust"]["message"] == (
+        "Paint layer 'Dust' has 6 stray specks, 37 px (groups of up to 16 px with alpha below 16, "
+        "more than 2 px from any pixel with alpha 16 or more), e.g. at (9, 9) 3x4, (15, 10) 5x5, "
+        "(20, 12) 2x2; erase them")
+    assert "has 1 stray speck, 1 px (" in f["Speck"]["message"]
+    assert f["Speck"]["message"].endswith("), at (12, 20) 1x1; erase them")
+    assert "2 stray specks, 5 px" in f["Glow Dust"]["message"]
+    assert ", at (8, 22) 2x2, (23, 23) 1x1; erase them" in f["Glow Dust"]["message"]
+    assert f["Noise"]["message"] == (
+        "Paint layer 'Noise' has 40000 stray pixels (alpha below 16, more than 2 px from any pixel "
+        "with alpha 16 or more), too fragmented to analyse for specks; look for noise and erase it")
+    assert all(x["severity"] == "warning" for x in r["findings"])
+
+
+def test_stray_alpha_without_specks_falls_back_to_stray_count():
+    # A snapshot from a collector before P5.10: no stray_specks.
+    s = snap("stray_alpha")
+    for n in s["nodes"]:
+        if n["alpha"]:
+            del n["alpha"]["stray_specks"]
+    r = run1(s, "stray-alpha")
+    assert paths(r) == ["Dust", "Speck", "Glow", "Glow Dust", "Noise"]
     f = by_path(r)
     assert f["Dust"]["message"] == (
         "Paint layer 'Dust' has 37 stray pixels (alpha below 16, more than 2 px from any pixel "
         "with alpha 16 or more); erase them")
     assert "has 1 stray pixel (" in f["Speck"]["message"]
+
+
+def test_stray_alpha_speck_without_samples():
+    s = snap("stray_alpha")
+    dust = next(n for n in s["nodes"] if n["name"] == "Dust")
+    dust["alpha"]["stray_specks"]["samples"] = []
+    msg = by_path(run1(s, "stray-alpha"))["Dust"]["message"]
+    assert msg.endswith("alpha 16 or more); erase them")
+
+
+def test_stray_alpha_default_speck_size_in_message():
+    s = snap("stray_alpha")
+    del s["settings"]["stray_speck_max_px"]
+    assert "groups of up to 64 px" in by_path(run1(s, "stray-alpha"))["Dust"]["message"]
 
 
 # --- color-space -------------------------------------------------------
@@ -435,3 +499,186 @@ def test_rules_do_not_modify_the_snapshot():
     before = copy.deepcopy(s)
     lint.run(s, ["all"])
     assert s == before  # rules never modify the snapshot
+
+
+# --- conventions set (P5.9) --------------------------------------------
+
+@pytest.mark.parametrize("name", SNAPSHOT_FILES)
+def test_every_rule_runs_on_every_snapshot(name):
+    s = snap(name)
+    before = copy.deepcopy(s)
+    r = lint.run(s, ["all"])
+    assert r["rules_run"] == DEFAULT_RULES + CONVENTION_RULES
+    assert s == before
+    for f in r["findings"]:
+        assert f["severity"] == {**SEVERITY, **CONVENTION_SEVERITY}[f["rule"]]
+
+
+def test_conventions_clean_rig_has_no_findings():
+    assert lint.run(snap("conventions_clean"), ["all"])["findings"] == []
+
+
+def test_conventions_set_is_opt_in():
+    s = snap("conventions_clean")
+    s["nodes"][0]["visible"] = True  # [ Guide ]: a reference-hidden finding
+    assert lint.run(s)["findings"] == []
+    assert [f["rule"] for f in lint.run(s, ["conventions"])["findings"]] == ["reference-hidden"]
+
+
+def test_nesting_depth():
+    r = run1(snap("nesting_depth"), "nesting-depth")
+    # Iris L is in exactly 3 groups; the Deep groups, the filter layer and the
+    # reference group's 4-deep sketch are exempt.
+    assert paths(r) == ["Head/Eyes/Eyeballs/Deep/Pupil L", "Head/Eyes/Eyeballs/Deep/Deeper/Glint L"]
+    f = by_path(r)
+    assert f["Head/Eyes/Eyeballs/Deep/Pupil L"]["message"] == (
+        "Paint layer 'Head/Eyes/Eyeballs/Deep/Pupil L' is 4 groups deep; nest at most 3 "
+        "(move it up or merge groups)")
+    assert " is 5 groups deep" in f["Head/Eyes/Eyeballs/Deep/Deeper/Glint L"]["message"]
+
+
+def test_name_case():
+    r = run1(snap("name_case"), "name-case")
+    assert paths(r) == ["hair shadow", "Eye_L", "Arm R a", "Face  Base", "ヘア", "the End",
+                        "Close-up", "front hair"]  # the filter layer and reference contents are exempt
+    f = by_path(r)
+    assert f["hair shadow"]["message"] == (
+        "Layer 'hair shadow' is not Title Case with space-separated words (lowercase 'hair', 'shadow'); "
+        "rename it to 'Hair Shadow'")
+    assert f["Eye_L"]["message"].endswith("(underscores instead of spaces); rename it to 'Eye L'")
+    assert f["Arm R a"]["message"].endswith("rename it to 'Arm R A'")
+    assert f["Face  Base"]["message"].endswith("(words not separated by single spaces); rename it to 'Face Base'")
+    assert f["ヘア"]["message"].endswith("(not English: 'ヘア')")  # no suggestion
+    assert f["the End"]["message"].endswith("rename it to 'The End'")
+    assert f["Close-up"]["message"].endswith("rename it to 'Close-Up'")
+    assert f["front hair"]["message"].startswith("Group 'front hair' is not Title Case")
+
+
+@pytest.mark.parametrize("name", [
+    "Upper Arm L", "Eyelashes R 1", "Highlight R 2", "Arm L A", "Hand R B", "Back of Head",
+    "Hair Shadow Multiply", "Face Shadow Mask", "FX Glow 2", "3D Box", "McKay", "Close-Up",
+    "Mother-in-Law", "[ Guide ]", "[ Expression References ]", "[Refs]", "Rock & Roll",
+    "Character's Hat", "Eye (Old)", "Layer 2.5",
+])
+def test_name_case_accepts(name):
+    assert lint.name_case_problems(name) == []
+    assert lint.title_case(name) is None
+
+
+@pytest.mark.parametrize("name,problems,fix", [
+    ("hair", ["lowercase 'hair'"], "Hair"),
+    ("Arm L a", ["lowercase 'a'"], "Arm L A"),            # a minor word, but last: a variant
+    ("of Mice", ["lowercase 'of'"], "Of Mice"),           # a minor word, but first
+    ("Lid l", ["lowercase 'l'"], "Lid L"),
+    ("eye_l", ["underscores instead of spaces", "lowercase 'eye', 'l'"], "Eye L"),
+    (" Hair", ["leading or trailing space"], "Hair"),
+    ("Hair\tBack", ["words not separated by single spaces"], "Hair Back"),
+    ("[ guide ]", ["lowercase 'guide'"], "[ Guide ]"),
+    ("x2", ["lowercase 'x2'"], "X2"),
+    ("ヘア L", ["not English: 'ヘア'"], None),
+    ("", ["empty name"], None),
+    ("   ", ["empty name"], None),
+])
+def test_name_case_rejects(name, problems, fix):
+    assert lint.name_case_problems(name) == problems
+    assert lint.title_case(name) == fix
+
+
+def test_blend_suffix():
+    r = run1(snap("blend_suffix"), "blend-suffix")
+    # Hair Shadow Multiply, Glow Add and Light Add (linear_dodge, D17) are right;
+    # the screen layer has no suffix (blend-mode's finding); groups are exempt.
+    assert paths(r) == ["Face Shadow", "Sparkle", "Cheek Multiply", "Rim Add", "Shine Multiply",
+                        "Tint multiply"]
+    f = by_path(r)
+    assert f["Face Shadow"]["message"] == (
+        "Layer 'Face Shadow' uses blend mode 'multiply' but its name doesn't end in ' Multiply'; "
+        "rename it to 'Face Shadow Multiply'")
+    assert f["Sparkle"]["message"].endswith("doesn't end in ' Add'; rename it to 'Sparkle Add'")
+    assert f["Cheek Multiply"]["message"] == (
+        "Layer 'Cheek Multiply' ends in ' Multiply' but uses blend mode 'normal'; set blend_mode "
+        "'multiply' with krita_update_layers, or rename it to 'Cheek'")
+    assert "set blend_mode 'add' with krita_update_layers, or rename it to 'Rim'" in f["Rim Add"]["message"]
+    assert f["Shine Multiply"]["message"] == (
+        "Layer 'Shine Multiply' uses blend mode 'add' but its name ends in ' Multiply'; rename it to "
+        "'Shine Add' or change its blend mode with krita_update_layers")
+    assert f["Tint multiply"]["message"] == (
+        "Layer 'Tint multiply' ends in ' multiply'; spell the suffix ' Multiply': rename it to "
+        "'Tint Multiply'")
+
+
+def test_blend_suffix_suggests_the_required_additive_spelling():
+    s = snap("blend_suffix")
+    s["settings"]["additive_mode"] = "linear_dodge"
+    assert "set blend_mode 'linear_dodge'" in by_path(run1(s, "blend-suffix"))["Rim Add"]["message"]
+
+
+def test_blend_suffix_one_word_name_has_no_suffix():
+    s = snap("blend_suffix")
+    plain = next(n for n in s["nodes"] if n["name"] == "Plain")
+    plain["name"] = plain["path"] = "Add"
+    assert "Add" not in paths(run1(s, "blend-suffix"))
+    plain["blend_mode"] = "add"
+    assert by_path(run1(s, "blend-suffix"))["Add"]["message"].endswith("rename it to 'Add Add'")
+
+
+def test_pose_visibility():
+    s = snap("pose_visibility")
+    r = run1(s, "pose-visibility")
+    # Arm L B is hidden (right); Arm R B hidden (right) but Arm R A is hidden too.
+    # Hand L A/B are paint layers, Eye L/R side tokens, Mouth B/C have no A,
+    # Hat A is alone, Tail A and Tail B have different parents.
+    assert paths(r) == ["Arms/Arm L C", "Arms/Arm R A"]
+    i = ids(s)
+    f = by_path(r)
+    assert f["Arms/Arm L C"]["message"] == (
+        "Pose group 'Arms/Arm L C' is visible; hide it (only pose A, 'Arm L A', stays visible)")
+    assert f["Arms/Arm L C"]["related_ids"] == [i["Arms/Arm L A"], i["Arms/Arm L B"]]
+    assert f["Arms/Arm R A"]["message"] == (
+        "Pose group 'Arms/Arm R A' is hidden; keep pose A visible and the others hidden")
+    assert f["Arms/Arm R A"]["related_ids"] == [i["Arms/Arm R B"]]
+
+
+@pytest.mark.parametrize("name,parts", [("Arm L A", ("Arm L", "A")), ("Hat B", ("Hat", "B")),
+                                        ("Arm L", None), ("Arm R", None), ("A", None), ("Arm a", None),
+                                        ("Arm L AB", None), ("Mouth Z", ("Mouth", "Z"))])
+def test_pose_parts(name, parts):
+    assert lint.pose_parts(name) == parts
+
+
+def test_reference_hidden():
+    r = run1(snap("reference_hidden"), "reference-hidden")
+    # [Refs] is hidden; [ Inner ] is inside a reference group (skipped);
+    # [ Note ] is a paint layer. A hidden parent doesn't excuse [ Sketch ].
+    assert paths(r) == ["[ Guide ]", "Extras/[ Sketch ]"]
+    assert r["findings"][0]["message"] == (
+        "Reference group '[ Guide ]' is visible; hide it (reference material stays hidden)")
+
+
+def test_mask_suffix():
+    s = snap("mask_suffix")
+    r = run1(s, "mask-suffix")
+    # Freckles clips to Cheek Mask (has the suffix); Bottom Shine has nothing
+    # below it; the transparency mask is not a sibling; reference contents skipped.
+    assert paths(r) == ["Face/Skin", "Body Base"]
+    i = ids(s)
+    f = by_path(r)
+    assert f["Face/Skin"]["message"] == (
+        "Layer 'Face/Skin' is the clipping base of 'Blush', 'Shading'; if it exists only to clip, "
+        "rename it to 'Skin Mask'")
+    assert f["Face/Skin"]["related_ids"] == [i["Face/Blush"], i["Face/Shading"]]
+    assert f["Body Base"]["message"].startswith("Group 'Body Base' is the clipping base of 'Clothes'")
+    assert lint.clipping_bases(s) == {i["Face/Skin"]: [i["Face/Blush"], i["Face/Shading"]],
+                                      i["Face/Cheek Mask"]: [i["Face/Freckles"]],
+                                      i["Body Base"]: [i["Clothes"]]}
+
+
+def test_mask_suffix_fires_only_with_inherit_alpha():
+    s = snap("mask_suffix")
+    for n in s["nodes"]:
+        n["inherit_alpha"] = False
+    assert lint.run(s, ["mask-suffix", "inherit-alpha"])["findings"] == []
+    r = lint.run(snap("mask_suffix"), ["mask-suffix", "inherit-alpha"])
+    clipped = {c for f in r["findings"] if f["rule"] == "mask-suffix" for c in f["related_ids"]}
+    flagged = {f["layer_id"] for f in r["findings"] if f["rule"] == "inherit-alpha"}
+    assert clipped <= flagged

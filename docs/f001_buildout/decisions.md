@@ -306,10 +306,15 @@ Settled in P5.1 (2026-11-25), `kritamcp/batch.py`, `commands/history.py`:
      {
        "allowed_dirs": ["~/umamo-art", "~/projects/mao"],
        "limits": {"max_canvas_dim": 16384, "max_canvas_pixels": 67108864},
-       "journal": {"max_actions": 20, "max_bytes": 1073741824},
-       "lint": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4}
+       "journal": {"max_actions": 20, "max_bytes": 1073741824, "max_disk_bytes": 4294967296},
+       "lint": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4,
+                "stray_speck_max_px": 64}
      }
      ```
+     *(2026-11-25)* `journal.max_disk_bytes` (default 4 GB) caps the pixel
+     snapshots spilled to PNGs beyond `max_bytes` (D6).
+     `lint.stray_speck_max_px` (1 to 1,000,000, default 64) is the largest
+     group of stray pixels `stray-alpha` flags (P5.10).
   3. `KRITA_MCP_ALLOWED_DIRS` (`os.pathsep`-separated) in **Krita's**
      environment. On macOS, apps started from the Dock or Finder don't see
      shell variables, so the config file is the documented way and the

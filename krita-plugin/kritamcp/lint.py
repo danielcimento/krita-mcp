@@ -5,11 +5,14 @@ P4.1) and hands it to ``run``. The snapshot format is in api-design.md
 § Snapshot (P4.1/P4.2); in short::
 
     {"document": {"width", "height", "color_model", "color_depth", "color_profile"},
-     "settings": {"additive_mode", "stray_alpha_below", "stray_alpha_distance"},
+     "settings": {"additive_mode", "stray_alpha_below", "stray_alpha_distance",
+                  "stray_speck_max_px"},
      "nodes": [{"id", "name", "path", "type", "parent", "depth", "order",
                 "visible", "opacity", "blend_mode", "inherit_alpha", "alpha_locked",
                 "locked", "pass_through", "has_layer_style", "bounds",
-                "alpha": {"pixel_count", "opaque_bounds", "stray_count"} | None}, ...]}
+                "alpha": {"pixel_count", "opaque_bounds", "stray_count",
+                          "stray_specks": {"count", "pixels", "regions", "samples",
+                                           "truncated"}} | None}, ...]}
 
 ``nodes`` is every node except the root-level selection mask, in global
 stacking order top to bottom; ``order`` is the position in that list.
@@ -30,6 +33,13 @@ Settled here (api-design.md § Lint rules, P4.2 note):
 - **Side tokens** (CONVENTIONS § Naming): the standard token is a separate
   word ``L`` or ``R``, after the first word, placed before trailing
   variant/index words (``Arm L A``, ``Highlight R 2``). See ``side_parts``.
+- **Specks** (P5.10): ``stray-alpha`` fires only for layers with stray
+  specks, 8-connected groups of at most ``stray_speck_max_px`` stray
+  pixels (``alphastats.components``); larger stray regions are soft glows.
+  A snapshot without ``stray_specks`` (an older collector) falls back to
+  ``stray_count > 0``.
+- **The conventions set** (P5.9, CONVENTIONS § Structure, § Naming): see
+  the rules' docstrings and api-design.md § Lint rules.
 """
 
 import re
@@ -38,7 +48,8 @@ from typing import NamedTuple
 from .errors import CommandError
 
 SEVERITIES = ("info", "warning", "error")
-DEFAULT_SETTINGS = {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4}
+DEFAULT_SETTINGS = {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4,
+                    "stray_speck_max_px": 64}
 ADDITIVE_MODES = ("either", "add", "linear_dodge")
 ADDITIVE = ("add", "linear_dodge")  # one mode, two IDs (D17)
 RIG_BLEND_MODES = ("normal", "multiply") + ADDITIVE
@@ -63,7 +74,7 @@ class Rule(NamedTuple):
 
 
 RULES = {}  # id -> Rule, in registration order
-SETS = ("default", "conventions", "all")  # "all" = every rule; "conventions" is filled by P5.9
+SETS = ("default", "conventions", "all")  # "all" = every rule
 
 
 def rule(rule_id, severity, sets=("default",)):
@@ -399,18 +410,43 @@ def out_of_canvas(snapshot):
     return out
 
 
+def _plural(n, word):
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
 @rule("stray-alpha", "warning")
 def stray_alpha(snapshot):
+    """Stray specks (P5.10): ``alpha.stray_specks.count > 0``. Larger stray
+    regions (soft glows) are not flagged. ``truncated`` (too many runs to
+    label) is a finding of its own. Without ``stray_specks`` (an older
+    collector): ``stray_count > 0``."""
     s = settings(snapshot)
+    below, dist = s["stray_alpha_below"], s["stray_alpha_distance"]
+    stray = f"alpha below {below}, more than {dist} px from any pixel with alpha {below} or more"
     out = []
     for n in checked_nodes(snapshot):
         a = _alpha(n)
-        count = a.get("stray_count") if a else None
-        if count:
+        if not a:
+            continue
+        path = n.get("path")
+        specks = a.get("stray_specks")
+        if specks is None:
+            count = a.get("stray_count")
+            if count:
+                out.append(finding("stray-alpha", n, (
+                    f"Paint layer '{path}' has {_plural(count, 'stray pixel')} ({stray}); erase them")))
+        elif specks.get("truncated"):
             out.append(finding("stray-alpha", n, (
-                f"Paint layer '{n.get('path')}' has {count} stray pixel{'s' if count != 1 else ''} "
-                f"(alpha below {s['stray_alpha_below']}, more than {s['stray_alpha_distance']} px from "
-                f"any pixel with alpha {s['stray_alpha_below']} or more); erase them")))
+                f"Paint layer '{path}' has {_plural(a.get('stray_count') or 0, 'stray pixel')} ({stray}), "
+                "too fragmented to analyse for specks; look for noise and erase it")))
+        elif specks.get("count"):
+            count, shown = specks["count"], (specks.get("samples") or [])[:3]
+            where = ", ".join(f"({r['x']}, {r['y']}) {r['w']}x{r['h']}" for r in shown)
+            if where:
+                where = f", {'e.g. ' if count > len(shown) else ''}at {where}"
+            out.append(finding("stray-alpha", n, (
+                f"Paint layer '{path}' has {_plural(count, 'stray speck')}, {specks.get('pixels', 0)} px "
+                f"(groups of up to {s['stray_speck_max_px']} px with {stray}){where}; erase them")))
     return out
 
 
@@ -430,3 +466,258 @@ def color_space(snapshot):
     return [finding("color-space", None, (
         f"Document has {', '.join(problems)}; the rig needs 8-bit RGBA sRGB (RGBA / U8, an sRGB "
         "profile): convert the image color space"))]
+
+
+# --- conventions set (P5.9; CONVENTIONS § Structure, § Naming) -----------
+
+MAX_NESTING = 3  # groups above a paint layer (CONVENTIONS: Head/Eyes/Eyeballs)
+
+
+@rule("nesting-depth", "warning", sets=("conventions",))
+def nesting_depth(snapshot):
+    """A paint layer inside more than ``MAX_NESTING`` groups (``depth`` > 4)."""
+    out = []
+    for n in checked_nodes(snapshot):
+        groups = (n.get("depth") or 1) - 1
+        if n.get("type") == PAINT and groups > MAX_NESTING:
+            out.append(finding("nesting-depth", n, (
+                f"Paint layer '{n.get('path')}' is {groups} groups deep; nest at most {MAX_NESTING} "
+                "(move it up or merge groups)")))
+    return out
+
+
+# Title Case (name-case). Lowercase minor words are fine inside a name,
+# never first or last (so a variant "a" at the end is still flagged).
+MINOR_WORDS = frozenset("a an and as at but by for from in into nor of on onto or per the to via vs with".split())
+_OPENERS = "([{\"'"
+_CLOSERS = ")]}\"'.,:;!?"
+
+
+def _part_problem(part, edge):
+    """None if the hyphen-separated word part is fine, else "lowercase" or
+    "uncased" (a letter without case, such as Japanese)."""
+    core = part.lstrip(_OPENERS).rstrip(_CLOSERS)
+    first = next((c for c in core if c.isalnum()), None)
+    if first is None or first.isdigit() or first.isupper():
+        return None  # symbols ("&", "[", "]"), numbers ("2", "3D"), capitalised words, acronyms
+    if first.islower():
+        return None if (not edge and core in MINOR_WORDS) else "lowercase"
+    return "uncased"
+
+
+def _word_parts(name):
+    """``(word, [(part, edge)])`` per space-separated word; ``edge`` marks
+    the very first and very last part of the name."""
+    words = name.split()
+    out = []
+    for i, word in enumerate(words):
+        parts = word.split("-")
+        out.append((word, [(p, (i == 0 and j == 0) or (i == len(words) - 1 and j == len(parts) - 1))
+                           for j, p in enumerate(parts)]))
+    return out
+
+
+def name_case_problems(name):
+    """Why ``name`` is not Title Case with space-separated words (CONVENTIONS
+    § Naming), as short phrases; ``[]`` when it is.
+
+    Words are separated by single spaces, with no leading or trailing
+    space and no ``_``. A word may be hyphenated (each part is checked).
+    A part is fine when its first letter or digit (after an opening
+    bracket or quote) is a digit (``2``, ``3D``) or an uppercase letter
+    (``Hair``, ``L``, ``A``, ``FX``, ``McKay``), when it has no letter or
+    digit at all (``&``, ``[``, ``]``), or when it is a lowercase minor word
+    (``MINOR_WORDS``: ``of``, ``and``, ``the``, ...) that is neither the
+    first nor the last word. Letters without case (Japanese) are not
+    English Title Case.
+    """
+    if not name.strip():
+        return ["empty name"]
+    problems = []
+    if name != name.strip():
+        problems.append("leading or trailing space")
+    if re.search(r"\s{2,}|[^\S ]", name.strip()):
+        problems.append("words not separated by single spaces")
+    if "_" in name:
+        problems.append("underscores instead of spaces")
+    bad = {"lowercase": [], "uncased": []}
+    for word, parts in _word_parts(name.replace("_", " ")):
+        kinds = {_part_problem(p, edge) for p, edge in parts} - {None}
+        for kind in sorted(kinds):
+            if word not in bad[kind]:
+                bad[kind].append(word)
+    if bad["lowercase"]:
+        problems.append("lowercase " + ", ".join(f"'{w}'" for w in bad["lowercase"]))
+    if bad["uncased"]:
+        problems.append("not English: " + ", ".join(f"'{w}'" for w in bad["uncased"]))
+    return problems
+
+
+def title_case(name):
+    """The Title Case spelling of ``name`` (spaces for ``_`` and runs of
+    whitespace, first letters raised), or None if that doesn't fix it."""
+    words = []
+    for word, parts in _word_parts(name.replace("_", " ")):
+        fixed = []
+        for p, edge in parts:
+            if _part_problem(p, edge) == "lowercase":
+                i = next(i for i, c in enumerate(p) if c.isalnum())
+                p = p[:i] + p[i].upper() + p[i + 1:]
+            fixed.append(p)
+        words.append("-".join(fixed))
+    fixed = " ".join(words)
+    return fixed if fixed != name and not name_case_problems(fixed) else None
+
+
+@rule("name-case", "info", sets=("conventions",))
+def name_case(snapshot):
+    """A paint layer's or group's name that ``name_case_problems`` objects
+    to. Other node types are ``node-type`` findings."""
+    out = []
+    for n in checked_nodes(snapshot):
+        if n.get("type") not in (PAINT, GROUP):
+            continue
+        name = n.get("name") or ""
+        problems = name_case_problems(name)
+        if problems:
+            fix = title_case(name)
+            out.append(finding("name-case", n, (
+                f"{'Group' if n.get('type') == GROUP else 'Layer'} '{n.get('path')}' is not Title Case "
+                f"with space-separated words ({'; '.join(problems)})"
+                + (f"; rename it to '{fix}'" if fix else ""))))
+    return out
+
+
+_BLEND_SUFFIX = {"multiply": "Multiply", "add": "Add", "linear_dodge": "Add"}  # D17: one Add
+
+
+@rule("blend-suffix", "warning", sets=("conventions",))
+def blend_suffix(snapshot):
+    """A paint layer in Multiply or Add (``add`` or ``linear_dodge``, D17)
+    whose last word isn't ``Multiply`` / ``Add``, or whose last word is one
+    of them (any case) but the mode doesn't match. A one-word name has no
+    suffix. Groups are exempt (group blending doesn't matter to the rig)."""
+    want_add = settings(snapshot)["additive_mode"]
+    want_add = "add" if want_add == "either" else want_add
+    out = []
+    for n in checked_nodes(snapshot):
+        if n.get("type") != PAINT:
+            continue
+        name, path = n.get("name") or "", n.get("path")
+        mode = n.get("blend_mode") or "normal"
+        words = name.split()
+        last = words[-1] if len(words) > 1 else ""
+        has = last.capitalize() if last.lower() in ("multiply", "add") else None
+        want = _BLEND_SUFFIX.get(mode)
+        stem = " ".join(words[:-1]) if has else name.strip()
+        if want and has == want:
+            if last != want:
+                msg = f"ends in ' {last}'; spell the suffix ' {want}': rename it to '{stem} {want}'"
+            else:
+                continue
+        elif want and not has:
+            msg = f"uses blend mode '{mode}' but its name doesn't end in ' {want}'; rename it to '{stem} {want}'"
+        elif want:
+            msg = (f"uses blend mode '{mode}' but its name ends in ' {last}'; rename it to '{stem} {want}' "
+                   f"or change its blend mode with krita_update_layers")
+        elif has:
+            mode_for = "multiply" if has == "Multiply" else want_add
+            msg = (f"ends in ' {last}' but uses blend mode '{mode}'; set blend_mode '{mode_for}' with "
+                   f"krita_update_layers, or rename it to '{stem}'")
+        else:
+            continue
+        out.append(finding("blend-suffix", n, f"Layer '{path}' {msg}"))
+    return out
+
+
+_POSE = re.compile(r"(.*\S) ([A-Z])")
+
+
+def pose_parts(name):
+    """``(stem, letter)`` for a pose name ``<X> A`` (the last word one
+    capital other than the side tokens ``L`` / ``R``), else None."""
+    m = _POSE.fullmatch(name)
+    if not m or m.group(2) in ("L", "R"):
+        return None
+    return m.group(1), m.group(2)
+
+
+@rule("pose-visibility", "warning", sets=("conventions",))
+def pose_visibility(snapshot):
+    """Sibling groups ``<X> A``, ``<X> B``, … (two or more, one of them
+    ``A``): pose ``A`` hidden, or another pose visible. Own ``visible``
+    flags only (siblings share their ancestors). A family without ``A`` is
+    not checked."""
+    families = {}
+    for n in checked_nodes(snapshot):
+        p = pose_parts(n.get("name") or "") if n.get("type") == GROUP else None
+        if p:
+            families.setdefault((n.get("parent"), p[0]), []).append((p[1], n))
+    out = []
+    for members in families.values():
+        if len(members) < 2 or not any(letter == "A" for letter, _ in members):
+            continue
+        a_name = next(n.get("name") for letter, n in members if letter == "A")
+        for letter, n in members:
+            others = [m["id"] for _, m in members if m is not n]
+            if letter == "A" and not n.get("visible", True):
+                out.append(finding("pose-visibility", n, (
+                    f"Pose group '{n.get('path')}' is hidden; keep pose A visible and the others hidden"),
+                    others))
+            elif letter != "A" and n.get("visible", True):
+                out.append(finding("pose-visibility", n, (
+                    f"Pose group '{n.get('path')}' is visible; hide it (only pose A, '{a_name}', "
+                    "stays visible)"), others))
+    return out
+
+
+@rule("reference-hidden", "warning", sets=("conventions",))
+def reference_hidden(snapshot):
+    """A reference group (``is_reference_group``) whose own ``visible`` is
+    true. Its contents stay skipped."""
+    return [finding("reference-hidden", n, (
+                f"Reference group '{n.get('path')}' is visible; hide it (reference material "
+                "stays hidden)"))
+            for n in checked_nodes(snapshot) if is_reference_group(n) and n.get("visible", True)]
+
+
+def clipping_bases(snapshot):
+    """``{base_id: [clipped ids]}``: for each ``inherit_alpha`` node, its
+    clipping base, the nearest sibling below it (same parent, later in the
+    stack) that doesn't inherit alpha itself, so a stack of clipped layers
+    shares one base (the clipping-mask idiom; Krita clips to everything
+    below in the group, which is the base in that idiom). Masks are not
+    siblings here. Only ``checked_nodes``."""
+    siblings = {}
+    for n in checked_nodes(snapshot):
+        if n.get("type") not in MASK_TYPES:
+            siblings.setdefault(n.get("parent"), []).append(n)
+    bases = {}
+    for group in siblings.values():
+        for i, n in enumerate(group):
+            if not n.get("inherit_alpha"):
+                continue
+            base = next((m for m in group[i + 1:] if not m.get("inherit_alpha")), None)
+            if base is not None:
+                bases.setdefault(base["id"], []).append(n["id"])
+    return bases
+
+
+@rule("mask-suffix", "info", sets=("conventions",))
+def mask_suffix(snapshot):
+    """A clipping base (``clipping_bases``) whose last word isn't ``Mask``.
+    Fires only where ``inherit-alpha`` does: it names the layer the clipped
+    ones would be merged into."""
+    by_id = {n["id"]: n for n in snapshot["nodes"]}
+    out = []
+    for base_id, clipped in clipping_bases(snapshot).items():
+        base = by_id[base_id]
+        name = (base.get("name") or "").strip()
+        if name.split()[-1:] == ["Mask"]:
+            continue
+        names = ", ".join(f"'{by_id[c].get('name')}'" for c in clipped)
+        kind = "Group" if base.get("type") == GROUP else "Layer"
+        out.append(finding("mask-suffix", base, (
+            f"{kind} '{base.get('path')}' is the clipping base of {names}; if it exists only to clip, "
+            f"rename it to '{name} Mask'"), clipped))
+    return out

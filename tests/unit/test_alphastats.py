@@ -130,14 +130,20 @@ def test_normalize_settings():
     assert a.normalize_settings(None) == a.DEFAULT_SETTINGS
     assert a.normalize_settings({}) == a.DEFAULT_SETTINGS
     assert a.normalize_settings({"stray_alpha_below": 4, "stray_alpha_distance": 0,
-                                 "additive_mode": "linear_dodge", "other": 1}) == {
-        "additive_mode": "linear_dodge", "stray_alpha_below": 4, "stray_alpha_distance": 0}
+                                 "additive_mode": "linear_dodge", "stray_speck_max_px": 1,
+                                 "other": 1}) == {
+        "additive_mode": "linear_dodge", "stray_alpha_below": 4, "stray_alpha_distance": 0,
+        "stray_speck_max_px": 1}
     obj = types.SimpleNamespace(additive_mode="add", stray_alpha_below=16)
     assert a.normalize_settings(obj) == {"additive_mode": "add", "stray_alpha_below": 16,
-                                         "stray_alpha_distance": 4}
+                                         "stray_alpha_distance": 4, "stray_speck_max_px": 64}
+    assert a.normalize_settings({"stray_speck_max_px": a.MAX_SPECK_PX})["stray_speck_max_px"] == \
+        a.MAX_SPECK_PX
     for bad in ({"stray_alpha_below": 0}, {"stray_alpha_below": 256}, {"stray_alpha_below": True},
                 {"stray_alpha_below": 4.0}, {"stray_alpha_distance": -1},
-                {"stray_alpha_distance": a.MAX_DISTANCE + 1}, {"additive_mode": "plus"}):
+                {"stray_alpha_distance": a.MAX_DISTANCE + 1}, {"additive_mode": "plus"},
+                {"stray_speck_max_px": 0}, {"stray_speck_max_px": a.MAX_SPECK_PX + 1},
+                {"stray_speck_max_px": 64.0}, {"stray_speck_max_px": False}):
         assert a.normalize_settings(bad) == a.DEFAULT_SETTINGS, bad
     assert a.normalize_settings({"stray_alpha_below": 4}) is not a.DEFAULT_SETTINGS
 
@@ -149,3 +155,228 @@ def test_pure_import():
     plugin = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)))), "krita-plugin")
     subprocess.run([sys.executable, "-c", code], check=True, cwd=plugin)
+
+
+# --- specks: connected components of stray pixels (P5.10) --------------
+
+def reference_components(mask, w, h):
+    """[(size, (x0, y0, x1, y1))] of the 8-connected components, by flood fill."""
+    seen = bytearray(w * h)
+    out = []
+    for start in range(w * h):
+        if not mask[start] or seen[start]:
+            continue
+        seen[start] = 1
+        stack, size = [start], 0
+        x0, y0, x1, y1 = w, h, -1, -1
+        while stack:
+            i = stack.pop()
+            size += 1
+            x, y = i % w, i // w
+            x0, y0, x1, y1 = min(x0, x), min(y0, y), max(x1, x), max(y1, y)
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < w and 0 <= ny < h:
+                        j = ny * w + nx
+                        if mask[j] and not seen[j]:
+                            seen[j] = 1
+                            stack.append(j)
+        out.append((size, (x0, y0, x1, y1)))
+    return out
+
+
+def grid(rows):
+    """A 0/1 mask from strings ('#' = 1): (bytes, w, h)."""
+    w, h = len(rows[0]), len(rows)
+    return bytes(1 if c == "#" else 0 for row in rows for c in row), w, h
+
+
+def rect(x, y, w, h):
+    return {"x": x, "y": y, "w": w, "h": h}
+
+
+def test_components_empty_mask():
+    assert a.components(bytes(12), 4, 3, 64) == {"specks": 0, "speck_pixels": 0, "regions": 0,
+                                                 "samples": [], "truncated": False}
+    assert a.components(b"", 0, 0, 64)["specks"] == 0
+
+
+def test_components_single_pixel():
+    m, w, h = grid(["....", "..#.", "...."])
+    assert a.components(m, w, h, 64) == {"specks": 1, "speck_pixels": 1, "regions": 0,
+                                         "samples": [rect(2, 1, 1, 1)], "truncated": False}
+
+
+def test_components_diagonal_chain_is_one_component():
+    m, w, h = grid(["#....", ".#...", "..#..", "...#.", "....#"])
+    r = a.components(m, w, h, 64)
+    assert (r["specks"], r["speck_pixels"], r["samples"]) == (1, 5, [rect(0, 0, 5, 5)])
+    m, w, h = grid(["....#", "...#.", "..#..", ".#...", "#...."])  # the other diagonal
+    assert a.components(m, w, h, 64)["samples"] == [rect(0, 0, 5, 5)]
+
+
+def test_components_one_pixel_gap_separates():
+    m, w, h = grid(["#.#", "...", "#.#"])
+    r = a.components(m, w, h, 64)
+    assert (r["specks"], r["speck_pixels"]) == (4, 4)
+    assert r["samples"] == [rect(0, 0, 1, 1), rect(2, 0, 1, 1), rect(0, 2, 1, 1), rect(2, 2, 1, 1)]
+
+
+def test_components_two_separate_specks():
+    m, w, h = grid(["##......", "##......", "......#.", ".....###"])
+    assert a.components(m, w, h, 64) == {"specks": 2, "speck_pixels": 8, "regions": 0,
+                                         "samples": [rect(0, 0, 2, 2), rect(5, 2, 3, 2)],
+                                         "truncated": False}
+
+
+def test_components_big_region_vs_small_specks():
+    m, w, h = grid(["#.........",
+                    "...#######",
+                    "...#######",
+                    "...#######",
+                    "...#######",
+                    "#.........",
+                    "..........",
+                    "......#..."])
+    r = a.components(m, w, h, 4)
+    # The 7x4 block is one region; the lone pixels are specks.
+    assert (r["specks"], r["speck_pixels"], r["regions"]) == (3, 3, 1)
+    assert r["samples"] == [rect(0, 0, 1, 1), rect(0, 5, 1, 1), rect(6, 7, 1, 1)]
+
+
+def test_components_u_shape_merges_later():
+    # The two arms are separate runs until the bottom row joins them.
+    m, w, h = grid(["#...#", "#...#", "#...#", "#####"])
+    r = a.components(m, w, h, 64)
+    assert (r["specks"], r["speck_pixels"], r["samples"]) == (1, 11, [rect(0, 0, 5, 4)])
+    # A W: three arms joined by one run, then a run touching the merged root again.
+    m, w, h = grid(["#.#.#", "#.#.#", "#####", "..#.."])
+    r = a.components(m, w, h, 64)
+    assert (r["specks"], r["speck_pixels"], r["samples"]) == (1, 12, [rect(0, 0, 5, 4)])
+    # Merged by a diagonal touch only.
+    m, w, h = grid(["#...#", ".#.#.", "..#.."])
+    assert a.components(m, w, h, 64)["specks"] == 1
+
+
+def test_components_max_size_boundary():
+    m, w, h = grid(["###.", "....", "##.."])
+    assert a.components(m, w, h, 3) == {"specks": 2, "speck_pixels": 5, "regions": 0,
+                                        "samples": [rect(0, 0, 3, 1), rect(0, 2, 2, 1)],
+                                        "truncated": False}
+    r = a.components(m, w, h, 2)
+    assert (r["specks"], r["speck_pixels"], r["regions"]) == (1, 2, 1)
+    assert a.components(m, w, h, 1)["regions"] == 2
+
+
+def test_components_samples_capped_and_ordered():
+    m, w, h = grid(["......#", "#.#.#..", ".......", "#.#.#.#"])
+    r = a.components(m, w, h, 64)
+    assert r["specks"] == 8 and len(r["samples"]) == a.MAX_SAMPLES == 5
+    assert r["samples"] == [rect(6, 0, 1, 1), rect(0, 1, 1, 1), rect(2, 1, 1, 1), rect(4, 1, 1, 1),
+                            rect(0, 3, 1, 1)]
+
+
+def test_components_rows_do_not_wrap():
+    m, w, h = grid(["...#", "#...", "...."])
+    assert a.components(m, w, h, 64)["specks"] == 2
+
+
+def test_components_truncation():
+    m, w, h = grid(["#.#.#", ".....", "#.#.#", ".....", "#.#.#"])
+    r = a.components(m, w, h, 64, max_runs=4)
+    assert r["truncated"] is True
+    assert r["specks"] == 6  # stopped after the row that took it past 4 runs
+    assert a.components(m, w, h, 64, max_runs=9)["truncated"] is False
+    assert a.components(m, w, h, 64, max_runs=9)["specks"] == 9
+
+
+@pytest.mark.parametrize("seed", range(16))
+def test_components_match_flood_fill(seed):
+    rng = random.Random(seed)
+    w, h = rng.randint(1, 40), rng.randint(1, 30)
+    density = rng.choice([0.05, 0.2, 0.4, 0.6])
+    m = bytes(1 if rng.random() < density else 0 for _ in range(w * h))
+    max_size = rng.choice([1, 3, 10, 64])
+    ref = reference_components(m, w, h)
+    specks = sorted((bb for size, bb in ref if size <= max_size), key=lambda bb: (bb[1], bb[0]))
+    r = a.components(m, w, h, max_size)
+    assert r["specks"] == len(specks)
+    assert r["speck_pixels"] == sum(size for size, _ in ref if size <= max_size)
+    assert r["regions"] == sum(1 for size, _ in ref if size > max_size)
+    # Two components never share a top-left-most pixel, so the order is unique.
+    assert [(s["x"], s["y"], s["x"] + s["w"] - 1, s["y"] + s["h"] - 1) for s in r["samples"]] == \
+        specks[:a.MAX_SAMPLES]
+    assert r["truncated"] is False
+
+
+def test_components_one_megapixel_is_fast():
+    import time
+    rng = random.Random(7)
+    w = h = 1000
+    m = bytearray(1 if rng.random() < 0.12 else 0 for _ in range(w * h))  # specks everywhere
+    for y in range(300, 700):  # plus a solid glow-like region
+        m[y * w + 300:y * w + 700] = b"\x01" * 400
+    m = bytes(m)
+    t = time.perf_counter()
+    r = a.components(m, w, h, 64)
+    elapsed = time.perf_counter() - t
+    assert elapsed < 1.0, elapsed
+    assert r["regions"] >= 1 and r["specks"] > 10000 and not r["truncated"]
+
+
+def test_stray_mask():
+    weak = bytes([1, 1, 0, 1, 0])
+    assert a.stray_mask(weak, bytes([0, 255, 255, 0, 0])) == bytes([1, 0, 0, 1, 0])
+    assert a.stray_mask(weak, bytes([0, 1, 0, 7, 0])) == bytes([1, 0, 0, 0, 0])
+    assert a.stray_mask(bytes([1, 0, 0]), bytes(3)) == bytes([1, 0, 0])  # leading byte kept
+    assert a.stray_mask(bytes([0, 0, 1]), bytes(3)) == bytes([0, 0, 1])
+    assert a.stray_mask(b"", b"") == b""
+    with pytest.raises(ValueError):
+        a.stray_mask(weak, bytes(4))
+
+
+@pytest.mark.parametrize("below,distance", [(8, 4), (8, 1), (3, 2), (8, 0)])
+def test_stray_stats_matches_stray_count_and_reference(below, distance):
+    rng = random.Random(below * 7 + distance)
+    w, h = 30, 22
+    values = [0] * 12 + [1, 2, 3, 5, 7, 8, 100, 255]
+    alpha = bytes(rng.choice(values) if rng.random() < 0.2 else 0 for _ in range(w * h))
+    count, specks, _ = a.stray_stats(alpha, w, h, below, distance, 3, origin=(100, 200))
+    assert count == a.stray_count(alpha, w, h, below, distance)[0] == reference_stray(alpha, w, h, below,
+                                                                                       distance)
+    strong = bytes(1 if v >= below else 0 for v in alpha)
+    grown = reference_dilate(strong, w, h, distance) if distance > 0 else strong
+    stray = bytes(1 if 0 < v < below and not grown[i] else 0 for i, v in enumerate(alpha))
+    want = a.components(stray, w, h, 3)
+    assert specks["count"] == want["specks"] and specks["pixels"] == want["speck_pixels"]
+    assert specks["regions"] == want["regions"] and specks["truncated"] is False
+    assert specks["samples"] == [rect(s["x"] + 100, s["y"] + 200, s["w"], s["h"]) for s in want["samples"]]
+
+
+def test_stray_stats_glow_is_a_region_not_a_speck():
+    # A faint 12x12 glow far from the strong block, and a 2-pixel speck.
+    w, h = 40, 20
+    alpha = bytearray(w * h)
+    for y in range(4, 8):
+        alpha[y * w + 2:y * w + 6] = b"\xff" * 4
+    for y in range(4, 16):
+        alpha[y * w + 20:y * w + 32] = b"\x03" * 12
+    alpha[18 * w + 2] = alpha[18 * w + 3] = 5
+    count, specks, dilated = a.stray_stats(bytes(alpha), w, h, 8, 4, 64)
+    assert dilated and count == 146
+    assert specks == {"count": 1, "pixels": 2, "regions": 1, "samples": [rect(2, 18, 2, 1)],
+                      "truncated": False}
+
+
+def test_stray_stats_without_stray_pixels():
+    assert a.stray_stats(bytes([0, 255, 255, 0]), 4, 1, 8, 4, 64) == (0, a.empty_specks(), False)
+    assert a.stray_stats(bytes([3, 255, 0, 0]), 4, 1, 8, 1, 64) == (0, a.empty_specks(), True)
+    # No strong pixel: every weak pixel is stray, without a dilation.
+    count, specks, dilated = a.stray_stats(bytes([3, 0, 3, 3]), 4, 1, 8, 4, 64)
+    assert (count, specks["count"], specks["pixels"], dilated) == (3, 2, 3, False)
+
+
+def test_empty_specks_is_a_fresh_dict():
+    a.empty_specks()["samples"].append(1)
+    assert a.empty_specks() == {"count": 0, "pixels": 0, "regions": 0, "samples": [], "truncated": False}

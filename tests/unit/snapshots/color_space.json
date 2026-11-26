@@ -1,8 +1,8 @@
 {
   "description": "color-space: a 16-bit grayscale document with a non-sRGB profile; one document-level finding.",
   "document": {"width": 64, "height": 64, "color_model": "GRAYA", "color_depth": "U16", "color_profile": "Gray-D50-elle-V2-srgbtrc.icc"},
-  "settings": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4},
+  "settings": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4, "stray_speck_max_px": 64},
   "nodes": [
-    {"id": "{00000011-0000-4000-8000-000000000001}", "name": "Body", "path": "Body", "type": "paintlayer", "parent": null, "depth": 1, "order": 0, "visible": true, "opacity": 1.0, "blend_mode": "normal", "inherit_alpha": false, "alpha_locked": false, "locked": false, "pass_through": null, "has_layer_style": false, "bounds": {"x": 8, "y": 8, "w": 16, "h": 16}, "alpha": {"pixel_count": 256, "opaque_bounds": {"x": 8, "y": 8, "w": 16, "h": 16}, "stray_count": 0}}
+    {"id": "{00000011-0000-4000-8000-000000000001}", "name": "Body", "path": "Body", "type": "paintlayer", "parent": null, "depth": 1, "order": 0, "visible": true, "opacity": 1.0, "blend_mode": "normal", "inherit_alpha": false, "alpha_locked": false, "locked": false, "pass_through": null, "has_layer_style": false, "bounds": {"x": 8, "y": 8, "w": 16, "h": 16}, "alpha": {"pixel_count": 256, "opaque_bounds": {"x": 8, "y": 8, "w": 16, "h": 16}, "stray_count": 0, "stray_specks": {"count": 0, "pixels": 0, "regions": 0, "samples": [], "truncated": false}}}
   ]
 }

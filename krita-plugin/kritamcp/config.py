@@ -45,14 +45,22 @@ CONFIG_FILE_ENV = "KRITA_MCP_CONFIG_FILE"  # overrides CONFIG_FILE (tests, scrip
 ALLOWED_DIRS_ENV = "KRITA_MCP_ALLOWED_DIRS"  # os.pathsep-separated
 
 DEFAULT_LIMITS = {"max_canvas_dim": 16384, "max_canvas_pixels": 67108864}  # D8
-DEFAULT_JOURNAL = {"max_actions": 20, "max_bytes": 1073741824}  # D6
+# D6. max_bytes: pixel snapshots kept in memory; max_disk_bytes: the total
+# spilled to PNGs under the state directory beyond that.
+DEFAULT_JOURNAL = {"max_actions": 20, "max_bytes": 1073741824, "max_disk_bytes": 4294967296}
 # Lint settings (D14, D17), copied into the lint snapshot's ``settings``.
 # additive_mode: which spelling of the rig's Add is accepted (D17).
 # stray_alpha_*: a pixel with 0 < alpha < below farther than distance px
 # from any pixel with alpha >= below is stray (api-design § Lint rules).
-DEFAULT_LINT = {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4}
+# stray_speck_max_px: an 8-connected group of stray pixels this size or
+# smaller is a speck (a finding); larger ones are soft glows, not flagged
+# (P5.10). 64 px (8x8) covers stray dabs and eraser leftovers; a glow that
+# fades out beyond the distance is a ring of hundreds of pixels or more.
+DEFAULT_LINT = {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4,
+                "stray_speck_max_px": 64}
 LINT_ADDITIVE_MODES = ("either", "add", "linear_dodge")
-LINT_INT_RANGES = {"stray_alpha_below": (1, 255), "stray_alpha_distance": (1, 64)}
+LINT_INT_RANGES = {"stray_alpha_below": (1, 255), "stray_alpha_distance": (1, 64),
+                   "stray_speck_max_px": (1, 1_000_000)}
 
 # Static sanity bound for coordinates and radii in the painting tools, ten
 # times the default per-side limit. Not affected by the config file.
