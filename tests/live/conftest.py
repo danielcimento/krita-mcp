@@ -68,9 +68,26 @@ class Caller:
     def _tool(self, tool):
         return getattr(self._server, tool if tool.startswith("krita_") else f"krita_{tool}")
 
+    # The live tests check behaviour on whole results; the compact tool
+    # defaults (F003 K3) are pinned by tests/unit/test_server_tools.py and
+    # tests/krita/test_smoke_sizes.py. So, unless a test passes its own,
+    # these tools are asked for everything.
+    FULL = {
+        "krita_list_layers": {"fields": ["all"], "limit": 100000},
+        "krita_export_layers": {"verbose": True},
+        "krita_create_layers": {"verbose": True},
+        "krita_lint": {"group_by": "none", "limit": 10000},
+    }
+
+    def _name(self, tool):
+        return tool if tool.startswith("krita_") else f"krita_{tool}"
+
     # Positional-only, so tool parameters such as new_canvas's ``name`` can
     # be passed as keywords.
     def __call__(self, tool, /, **kwargs):
+        full = self.FULL.get(self._name(tool), {})
+        if not (tool.endswith("list_layers") and (kwargs.get("summary_only") or kwargs.get("path"))):
+            kwargs = {**full, **kwargs}
         return self._tool(tool)(**kwargs)
 
     def error(self, code, tool, /, **kwargs):

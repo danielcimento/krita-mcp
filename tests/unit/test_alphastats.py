@@ -198,14 +198,16 @@ def rect(x, y, w, h):
 
 def test_components_empty_mask():
     assert a.components(bytes(12), 4, 3, 64) == {"specks": 0, "speck_pixels": 0, "regions": 0,
-                                                 "samples": [], "truncated": False}
+                                                 "samples": [], "bounds": None,
+                                                 "truncated": False}
     assert a.components(b"", 0, 0, 64)["specks"] == 0
 
 
 def test_components_single_pixel():
     m, w, h = grid(["....", "..#.", "...."])
     assert a.components(m, w, h, 64) == {"specks": 1, "speck_pixels": 1, "regions": 0,
-                                         "samples": [rect(2, 1, 1, 1)], "truncated": False}
+                                         "samples": [rect(2, 1, 1, 1)], "bounds": rect(2, 1, 1, 1),
+                                         "truncated": False}
 
 
 def test_components_diagonal_chain_is_one_component():
@@ -227,7 +229,7 @@ def test_components_two_separate_specks():
     m, w, h = grid(["##......", "##......", "......#.", ".....###"])
     assert a.components(m, w, h, 64) == {"specks": 2, "speck_pixels": 8, "regions": 0,
                                          "samples": [rect(0, 0, 2, 2), rect(5, 2, 3, 2)],
-                                         "truncated": False}
+                                         "bounds": rect(0, 0, 8, 4), "truncated": False}
 
 
 def test_components_big_region_vs_small_specks():
@@ -242,6 +244,7 @@ def test_components_big_region_vs_small_specks():
     r = a.components(m, w, h, 4)
     # The 7x4 block is one region; the lone pixels are specks.
     assert (r["specks"], r["speck_pixels"], r["regions"]) == (3, 3, 1)
+    assert r["bounds"] == rect(0, 0, 7, 8)  # the specks only, not the region
     assert r["samples"] == [rect(0, 0, 1, 1), rect(0, 5, 1, 1), rect(6, 7, 1, 1)]
 
 
@@ -263,7 +266,7 @@ def test_components_max_size_boundary():
     m, w, h = grid(["###.", "....", "##.."])
     assert a.components(m, w, h, 3) == {"specks": 2, "speck_pixels": 5, "regions": 0,
                                         "samples": [rect(0, 0, 3, 1), rect(0, 2, 2, 1)],
-                                        "truncated": False}
+                                        "bounds": rect(0, 0, 3, 3), "truncated": False}
     r = a.components(m, w, h, 2)
     assert (r["specks"], r["speck_pixels"], r["regions"]) == (1, 2, 1)
     assert a.components(m, w, h, 1)["regions"] == 2
@@ -366,7 +369,7 @@ def test_stray_stats_glow_is_a_region_not_a_speck():
     count, specks, dilated = a.stray_stats(bytes(alpha), w, h, 8, 4, 64)
     assert dilated and count == 146
     assert specks == {"count": 1, "pixels": 2, "regions": 1, "samples": [rect(2, 18, 2, 1)],
-                      "truncated": False}
+                      "bounds": rect(2, 18, 2, 1), "truncated": False}
 
 
 def test_stray_stats_without_stray_pixels():
@@ -379,7 +382,8 @@ def test_stray_stats_without_stray_pixels():
 
 def test_empty_specks_is_a_fresh_dict():
     a.empty_specks()["samples"].append(1)
-    assert a.empty_specks() == {"count": 0, "pixels": 0, "regions": 0, "samples": [], "truncated": False}
+    assert a.empty_specks() == {"count": 0, "pixels": 0, "regions": 0, "samples": [],
+                                "bounds": None, "truncated": False}
 
 
 # --- layer_stats / trim_layers helpers (P5.3) ---------------------------

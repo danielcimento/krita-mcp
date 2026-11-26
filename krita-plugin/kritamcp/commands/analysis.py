@@ -213,12 +213,66 @@ def cmd_lint(params):
     rules = params.get("rules")
     severity_min = params.get("severity_min")
     lint.check_args(rules, severity_min)
+    group_by = params.get("group_by") or "none"
+    if group_by not in GROUP_BY:
+        raise CommandError("bad_request", f"'group_by' must be one of {', '.join(GROUP_BY)}, "
+                           f"got {group_by!r}", {"param": "group_by"})
+    limit, offset = _whole(params, "limit", None, 1, 10_000), _whole(params, "offset", 0, 0, 10**7)
     handle, doc = registry.resolve_doc(params)
     snapshot = collect_snapshot(doc)
     result = lint.run(snapshot, rules, severity_min)
-    return {"doc": handle, "findings": result["findings"], "counts": result["counts"],
-            "rules_run": result["rules_run"], "settings": snapshot["settings"],
-            "pixel_stats": snapshot["document"]["pixel_stats"]}
+    out = {"doc": handle, "counts": result["counts"], "total": len(result["findings"]),
+           "rules_run": result["rules_run"], "settings": snapshot["settings"],
+           "pixel_stats": snapshot["document"]["pixel_stats"]}
+    if group_by == "rule":
+        out["group_by"] = "rule"
+        out["by_rule"] = group_findings(result["findings"], limit, offset)
+    else:
+        out["findings"], paging = _page(result["findings"], limit, offset)
+        out.update(paging)
+    return out
+
+
+GROUP_BY = ("none", "rule")
+
+
+def _whole(params, key, default, low, high):
+    value = params.get(key)
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise CommandError("bad_request", f"'{key}' must be a whole number from {low} to {high}, "
+                           f"got {value!r}", {"param": key})
+    return value
+
+
+def _page(items, limit, offset):
+    """``(page, paging)``: ``items[offset:offset + limit]`` (all from
+    ``offset`` without a limit) and, when paging was asked for, ``{offset,
+    limit, next_offset}`` (``next_offset`` None at the end)."""
+    page = items[offset:] if limit is None else items[offset:offset + limit]
+    if limit is None and not offset:
+        return page, {}
+    end = offset + len(page)
+    return page, {"offset": offset, "limit": limit,
+                  "next_offset": end if end < len(items) else None}
+
+
+def group_findings(findings, limit, offset):
+    """``{rule: {severity, count, items, next_offset}}`` in the order rules
+    first appear in ``findings`` (F003 K3): each rule's findings counted,
+    ``items`` the page ``[offset:offset + limit]`` of them."""
+    grouped = {}
+    for f in findings:
+        grouped.setdefault(f["rule"], []).append(f)
+    out = {}
+    for rule_id, items in grouped.items():
+        page, paging = _page(items, limit, offset)
+        end = offset + len(page)
+        out[rule_id] = {"severity": items[0]["severity"], "count": len(items), "items": page,
+                        "next_offset": paging.get("next_offset",
+                                                  end if end < len(items) else None)}
+    return out
 
 
 # --- layer_stats (P5.3) ----------------------------------------------------

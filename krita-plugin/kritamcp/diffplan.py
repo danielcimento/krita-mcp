@@ -20,15 +20,16 @@ passes before left unmatched:
 3. ``name``: the same name, when the name is unique in each whole
    document (not only among the unmatched nodes).
 
-**Pixels** (``diff_region``): two layers' ``pixelData`` over one
+**Pixels** (``diff_stats``): two layers' ``pixelData`` over one
 rectangle, read in strips of rows. A row whose bytes are equal is skipped
 (a C-level compare). For a row that differs, the two rows become big ints
 and are XORed; ``x | x >> 8`` then ``| x >> 16`` folds each pixel's four
 bytes into its lowest byte, and ``[0::4]`` keeps those, one byte per pixel,
 nonzero where the pixels differ. Pixels that are fully transparent in both
 rows count as equal whatever colour they hold (the colour under alpha 0
-is invisible, and PNG round trips crop it away): the OR of the two alpha
-rows says which pixels are visible in either. Both masks go through a
+is invisible) and are counted apart, as ``alpha0_rgb_count``: the OR of
+the two alpha rows says which pixels are visible in either. The largest
+channel difference comes from 16-bit lanes (``max_abs_diff``). Both masks go through a
 translate table to 0x00 / 0xFF and are ANDed as big ints; ``count`` gives
 the changed pixels of the row and ``lstrip`` / ``rstrip`` of zero bytes
 its first and last. So the work is O(rows) Python steps, each O(width)
@@ -200,60 +201,139 @@ def union(r1, r2):
     return x0, y0, x1 - x0, y1 - y0
 
 
-def diff_row(ra, rb, w):
-    """``(count, first, last)`` of the pixels that differ between two BGRA
-    rows of ``w`` pixels (``first`` / ``last``: x offsets in the row), or
-    None when none does. Pixels with alpha 0 in both are equal."""
+# --- pixel statistics (F003 K4) -----------------------------------------------
+
+def _spread(data):
+    """Each byte of ``data`` in its own 16-bit little-endian lane (low byte
+    the value, high byte 0)."""
+    out = bytearray(2 * len(data))
+    out[0::2] = data
+    return out
+
+
+_LANE_FF = bytes([0, 0xFF]) + bytes(254)  # translate: 1 -> 0xFF, 0 -> 0
+
+
+def max_abs_diff(ra, rb):
+    """``max |a - b|`` over the byte pairs of two equal-length byte strings
+    (0 when equal), without a per-byte loop. Each byte goes into a 16-bit
+    lane; ``(A | 0x100 per lane) - B`` leaves ``256 + a - b`` in every lane
+    (1..511: no borrow crosses lanes), whose low byte is ``a - b`` where
+    the high byte is 1 (``a >= b``). The same with A and B swapped gives
+    ``b - a`` where ``b >= a``; the larger of the two maxima is the
+    answer."""
+    n = len(ra)
+    if n == 0 or ra == rb:
+        return 0
+    a = int.from_bytes(_spread(ra), "little")
+    b = int.from_bytes(_spread(rb), "little")
+    high = int.from_bytes(bytes([0, 1]) * n, "little")
+    best = 0
+    for x, y in ((a, b), (b, a)):
+        lanes = ((x | high) - y).to_bytes(2 * n, "little")
+        keep = lanes[1::2].translate(_LANE_FF)
+        low = int.from_bytes(lanes[0::2], "little") & int.from_bytes(keep, "little")
+        best = max(best, max(low.to_bytes(n, "little")))
+    return best
+
+
+def _expand4(mask):
+    out = bytearray(4 * len(mask))
+    for c in range(4):
+        out[c::4] = mask
+    return bytes(out)
+
+
+def _span(mask, w):
+    """``(count, first, last)`` of the nonzero bytes of ``mask`` (``w``
+    bytes), or None when there are none."""
+    count = w - mask.count(0)
+    if count == 0:
+        return None
+    return count, w - len(mask.lstrip(b"\0")), len(mask.rstrip(b"\0")) - 1
+
+
+def diff_row_stats(ra, rb, w):
+    """Where two BGRA rows of ``w`` pixels differ, or None when they are
+    equal: ``(visible, alpha0, max_diff)``. ``visible``: the pixels that
+    differ with alpha > 0 in either row; ``alpha0``: those with alpha 0 in
+    both whose colour bytes differ (invisible); each ``(count, first,
+    last)`` (x offsets in the row) or None. ``max_diff``: the largest
+    channel difference over the visible ones."""
     if ra == rb:
         return None
     x = int.from_bytes(ra, "little") ^ int.from_bytes(rb, "little")
     x |= x >> 8
     x |= x >> 16
-    differs = x.to_bytes(4 * w, "little")[0::4].translate(_TO_FF)
+    differs = int.from_bytes(x.to_bytes(4 * w, "little")[0::4].translate(_TO_FF), "little")
     seen = (int.from_bytes(ra[3::4], "little") | int.from_bytes(rb[3::4], "little"))
-    visible = seen.to_bytes(w, "little").translate(_TO_FF)
-    hits = (int.from_bytes(differs, "little") & int.from_bytes(visible, "little")).to_bytes(
-        w, "little")
-    count = w - hits.count(0)
-    if count == 0:
-        return None
-    first = w - len(hits.lstrip(b"\0"))
-    last = len(hits.rstrip(b"\0")) - 1
-    return count, first, last
+    visible = int.from_bytes(seen.to_bytes(w, "little").translate(_TO_FF), "little")
+    hits = (differs & visible).to_bytes(w, "little")
+    hidden = (differs & ~visible & ((1 << (8 * w)) - 1)).to_bytes(w, "little")
+    v, z = _span(hits, w), _span(hidden, w)
+    max_diff = 0
+    if v is not None:
+        m = int.from_bytes(_expand4(hits), "little")
+        max_diff = max_abs_diff((int.from_bytes(ra, "little") & m).to_bytes(4 * w, "little"),
+                                (int.from_bytes(rb, "little") & m).to_bytes(4 * w, "little"))
+    return v, z, max_diff
 
 
-def diff_region(read_a, read_b, rect, strip_pixels=STRIP_PIXELS):
-    """Compare two images over ``rect`` (``(x, y, w, h)``): ``read_a`` /
-    ``read_b`` are ``read(x, y, w, h) -> BGRA bytes`` (``pixelData``).
-    Returns ``(changed_count, bounds)``, ``bounds`` the ``(x, y, w, h)``
-    around the changed pixels in the same coordinates as ``rect``, or None.
-    Reads ``strip_pixels`` at a time."""
+class Region:
+    """Accumulates changed pixels: ``count`` and the bounding box."""
+
+    __slots__ = ("count", "top", "bottom", "left", "right")
+
+    def __init__(self):
+        self.count, self.top, self.bottom, self.left, self.right = 0, None, None, None, None
+
+    def add(self, row, got):
+        count, first, last = got
+        self.count += count
+        self.top = row if self.top is None else self.top
+        self.bottom = row
+        self.left = first if self.left is None else min(self.left, first)
+        self.right = last if self.right is None else max(self.right, last)
+
+    def bounds(self, x0):
+        if self.count == 0:
+            return None
+        return (x0 + self.left, self.top, self.right - self.left + 1, self.bottom - self.top + 1)
+
+
+def diff_stats(read_a, read_b, rect, strip_pixels=STRIP_PIXELS):
+    """Compare two images over ``rect`` (``(x, y, w, h)``); ``read_a`` /
+    ``read_b`` are ``read(x, y, w, h) -> BGRA bytes``. Returns
+    ``{"changed_count", "bounds", "max_channel_diff", "alpha0_rgb_count",
+    "alpha0_rgb_bounds"}`` (F003 K4): the visible changes (alpha > 0 in
+    either image), their box and largest channel difference (0-255), and
+    the pixels that are transparent in both but hold different colour (no
+    visible effect: a PNG round trip or Krita's compositing can leave them)
+    with their box. Boxes are ``(x, y, w, h)`` or None."""
     x, y, w, h = rect
-    if w < 1 or h < 1:
-        return 0, None
-    rows = max(1, min(h, strip_pixels // w))
-    stride = 4 * w
-    count, top, bottom, left, right = 0, None, None, None, None
-    for y0 in range(y, y + h, rows):
-        n = min(rows, y + h - y0)
-        da, db = read_a(x, y0, w, n), read_b(x, y0, w, n)
-        if len(da) != stride * n or len(db) != stride * n:
-            raise CommandError("krita_error",
-                               f"Read {len(da)} and {len(db)} bytes for {w}x{n} pixels")
-        if da == db:
-            continue
-        for r in range(n):
-            s = r * stride
-            got = diff_row(da[s:s + stride], db[s:s + stride], w)
-            if got is None:
+    visible, alpha0, max_diff = Region(), Region(), 0
+    if w >= 1 and h >= 1:
+        rows = max(1, min(h, strip_pixels // w))
+        stride = 4 * w
+        for y0 in range(y, y + h, rows):
+            n = min(rows, y + h - y0)
+            da, db = read_a(x, y0, w, n), read_b(x, y0, w, n)
+            if len(da) != stride * n or len(db) != stride * n:
+                raise CommandError("krita_error",
+                                   f"Read {len(da)} and {len(db)} bytes for {w}x{n} pixels")
+            if da == db:
                 continue
-            c, first, last = got
-            count += c
-            row = y0 + r
-            top = row if top is None else top
-            bottom = row
-            left = first if left is None else min(left, first)
-            right = last if right is None else max(right, last)
-    if count == 0:
-        return 0, None
-    return count, (x + left, top, right - left + 1, bottom - top + 1)
+            for r in range(n):
+                s = r * stride
+                got = diff_row_stats(da[s:s + stride], db[s:s + stride], w)
+                if got is None:
+                    continue
+                v, z, m = got
+                if v is not None:
+                    visible.add(y0 + r, v)
+                    max_diff = max(max_diff, m)
+                if z is not None:
+                    alpha0.add(y0 + r, z)
+    return {"changed_count": visible.count, "bounds": visible.bounds(x),
+            "max_channel_diff": max_diff if visible.count else 0,
+            "alpha0_rgb_count": alpha0.count, "alpha0_rgb_bounds": alpha0.bounds(x)}

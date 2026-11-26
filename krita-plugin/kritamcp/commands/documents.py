@@ -126,27 +126,46 @@ def cmd_get_document_info(params):
     }
 
 
+@command("reload_config")
+def cmd_reload_config(params):
+    """Re-read the config file now (F003 K2) and report the result, as
+    ``/health`` does. The plugin also re-reads it by itself when it
+    changes, so this is for checking an edit took effect."""
+    config.reset_cache()
+    return config.describe(config.current())
+
+
 # --- new_canvas ---------------------------------------------------------
 
+NO_LAYER = "none"  # new_canvas(background="none"): a document with no layer at all
+
+
 def _background_param(params):
-    """``None`` for "transparent", else ``(r, g, b)``."""
+    """``None`` for "transparent", ``NO_LAYER`` for "none", else ``(r, g, b)``."""
     value = params.get("background", DEFAULT_BACKGROUND)
     if isinstance(value, str) and value.strip().lower() == "transparent":
         return None
+    if isinstance(value, str) and value.strip().lower() == NO_LAYER:
+        return NO_LAYER
     color = QColor(value) if isinstance(value, str) else QColor()
     if not color.isValid() or color.alpha() != 255:
         raise CommandError("bad_request",
                            f"'background' must be an opaque color such as '#1a1a2e', "
-                           f"or 'transparent'; got {value!r}")
+                           f"'transparent' (an empty Background layer) or 'none' (no layer); "
+                           f"got {value!r}")
     return color.red(), color.green(), color.blue()
 
 
 def _profile_param(params):
-    value = params.get("color_profile", "")
+    return check_profile(params.get("color_profile", ""))
+
+
+def check_profile(value, field="color_profile"):
+    """An installed RGBA/U8 profile name, or "" for Krita's default."""
     if value is None:
         value = ""
     if not isinstance(value, str):
-        raise CommandError("bad_request", "'color_profile' must be a profile name (a string)")
+        raise CommandError("bad_request", f"'{field}' must be a profile name (a string)")
     if value:
         available = list(Krita.instance().profiles(COLOR_MODEL, COLOR_DEPTH))
         if value not in available:
@@ -173,21 +192,12 @@ def _background_node(doc):
     return None
 
 
-# new_canvas writes a full-canvas buffer, so it gets the long timeout too.
-@command("new_canvas", timeout=LONG_TIMEOUT, mutating=True)
-def cmd_new_canvas(params):
-    """Create an RGBA/U8 document. Every parameter is checked before
-    anything is created. The ``Background`` layer ``createDocument`` makes
-    is reused: filled with the color (skipped for opaque white, which it
-    already is), or, for "transparent", replaced by an empty paint layer of
-    the same name. The new document is not marked modified."""
-    # Limits are read per call, so a config file change applies at once (D8).
-    width, height = canvas_size(params, config.current().limits)
-    name = _name_param(params)
-    rgb = _background_param(params)
-    profile = _profile_param(params)
-    resolution = float_param(params, "resolution", DEFAULT_RESOLUTION, *RESOLUTION_RANGE)
-
+def create_document(width, height, name, background, profile, resolution):
+    """Create an RGBA/U8 document and register it; returns ``(handle, doc,
+    background_node)``. ``background``: ``(r, g, b)``, None (an empty
+    ``Background`` layer) or ``NO_LAYER`` (no layer; ``background_node``
+    None). Shown in the active window when there is one. The caller has
+    checked every argument. Not marked modified."""
     app = Krita.instance()
     doc = app.createDocument(width, height, name, COLOR_MODEL, COLOR_DEPTH, profile, resolution)
     if doc is None:
@@ -195,19 +205,58 @@ def cmd_new_canvas(params):
     # The registry keeps the wrapper, and with it the document: headless
     # (no view) it would be destroyed when ``doc`` goes out of scope.
     handle = registry.handle_for(doc)
-
     try:
-        background = _fill_background(doc, rgb, width, height)
+        if background == NO_LAYER:
+            node = _background_node(doc)
+            if node is not None:
+                node.remove()
+            background_node = None
+        else:
+            background_node = _fill_background(doc, background, width, height)
         doc.refreshProjection()
         doc.waitForDone()
         doc.setModified(False)
     except Exception:
-        doc.setModified(False)  # don't leave a half-made document open
-        doc.close()
-        del doc
+        discard(doc)
         raise
     _add_view(doc)
+    return handle, doc, background_node
 
+
+def discard(doc):
+    """Close ``doc`` without saving. The caller must drop its reference
+    afterwards (crash hazard: never touch a closed document's wrapper)."""
+    try:
+        doc.setModified(False)  # so close() never prompts
+    finally:
+        doc.close()
+
+
+def _background_text(rgb):
+    if rgb is None:
+        return "transparent"
+    if rgb == NO_LAYER:
+        return NO_LAYER
+    return "#%02x%02x%02x" % rgb
+
+
+# new_canvas writes a full-canvas buffer, so it gets the long timeout too.
+@command("new_canvas", timeout=LONG_TIMEOUT, mutating=True)
+def cmd_new_canvas(params):
+    """Create an RGBA/U8 document. Every parameter is checked before
+    anything is created. The ``Background`` layer ``createDocument`` makes
+    is reused: filled with the color (skipped for opaque white, which it
+    already is), for "transparent" replaced by an empty paint layer of the
+    same name, for "none" removed. The new document is not marked
+    modified."""
+    # Limits are read per call, so a config file change applies at once (D8).
+    width, height = canvas_size(params, config.current().limits)
+    name = _name_param(params)
+    rgb = _background_param(params)
+    profile = _profile_param(params)
+    resolution = float_param(params, "resolution", DEFAULT_RESOLUTION, *RESOLUTION_RANGE)
+
+    handle, doc, background = create_document(width, height, name, rgb, profile, resolution)
     return {
         "doc": handle,
         "name": doc.name(),
@@ -215,8 +264,8 @@ def cmd_new_canvas(params):
         "height": doc.height(),
         "color_profile": doc.colorProfile(),
         "resolution": doc.resolution(),
-        "background": "transparent" if rgb is None else "#%02x%02x%02x" % rgb,
-        "background_layer": nodes.node_id(background),
+        "background": _background_text(rgb),
+        "background_layer": None if background is None else nodes.node_id(background),
     }
 
 

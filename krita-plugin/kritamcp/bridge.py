@@ -73,18 +73,12 @@ def config_health():
     browser requests). Pure Python and ``os.stat``: safe on the HTTP thread.
     """
     try:
-        s = config.current()
-        return {
-            "allowed_dirs": list(s.roots),  # [0] is the output dir
-            "config_file": s.config_file,
-            "config_loaded": s.config_loaded,
-            "limits": dict(s.limits),
-            "lint": dict(s.lint),  # krita_lint's settings (D14, D17)
-            "config_errors": list(s.errors),
-        }
+        return config.describe(config.current())
     except Exception as e:
-        return {"allowed_dirs": [], "config_file": None, "config_loaded": False, "limits": None,
-                "lint": None, "config_errors": [f"could not load the config: {type(e).__name__}: {e}"]}
+        return {"allowed_dirs": [], "config_file": None, "config_loaded": False,
+                "config_exists": None, "config_key": config.ALLOWED_DIRS_KEY,
+                "config_reload": config.RELOAD_NOTE, "limits": None, "lint": None,
+                "config_errors": [f"could not load the config: {type(e).__name__}: {e}"]}
 
 
 def envelope_status(envelope):

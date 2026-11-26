@@ -131,20 +131,30 @@ def test_empty_layers_are_not_pixel_compared():
 # --- diffplan: pixels --------------------------------------------------------------
 
 def brute(da, db, rect):
-    """Per-pixel reference: changed unless equal, or alpha 0 in both."""
+    """Per-pixel reference for ``diff_stats``: visible changes (alpha > 0 in
+    either), their box and largest channel difference; alpha-0-only
+    changes and their box."""
     x, y, w, h = rect
-    count, xs, ys = 0, [], []
+    vis, hid, max_diff = [], [], 0
     for j in range(h):
         for i in range(w):
             o = 4 * (j * w + i)
             pa, pb = da[o:o + 4], db[o:o + 4]
-            if pa != pb and not (pa[3] == 0 and pb[3] == 0):
-                count += 1
-                xs.append(x + i)
-                ys.append(y + j)
-    if not count:
-        return 0, None
-    return count, (min(xs), min(ys), max(xs) - min(xs) + 1, max(ys) - min(ys) + 1)
+            if pa == pb:
+                continue
+            if pa[3] == 0 and pb[3] == 0:
+                hid.append((x + i, y + j))
+            else:
+                vis.append((x + i, y + j))
+                max_diff = max(max_diff, max(abs(p - q) for p, q in zip(pa, pb)))
+
+    def box(points):
+        if not points:
+            return None
+        xs, ys = [p[0] for p in points], [p[1] for p in points]
+        return (min(xs), min(ys), max(xs) - min(xs) + 1, max(ys) - min(ys) + 1)
+    return {"changed_count": len(vis), "bounds": box(vis), "max_channel_diff": max_diff,
+            "alpha0_rgb_count": len(hid), "alpha0_rgb_bounds": box(hid)}
 
 
 def reader(data, rect):
@@ -157,8 +167,8 @@ def reader(data, rect):
     return read
 
 
-@pytest.mark.parametrize("seed", range(8))
-def test_diff_region_matches_brute_force(seed):
+@pytest.mark.parametrize("seed", range(12))
+def test_diff_stats_matches_brute_force(seed):
     rnd = random.Random(seed)
     w, h = rnd.randint(1, 23), rnd.randint(1, 17)
     rect = (rnd.randint(-5, 5), rnd.randint(-5, 5), w, h)
@@ -170,28 +180,38 @@ def test_diff_region_matches_brute_force(seed):
     for _ in range(rnd.randint(0, 12)):
         o = 4 * rnd.randrange(w * h)
         c = rnd.randrange(4)
-        db[o + c] = rnd.randrange(256)
+        db[o + c] = rnd.randrange(256) if rnd.random() < 0.5 else (db[o + c] + rnd.choice((1, 255))) % 256
     da, db = bytes(da), bytes(db)
     for strip in (1, w, 3 * w, 10 ** 6):
-        assert diffplan.diff_region(reader(da, rect), reader(db, rect), rect,
-                                    strip_pixels=strip) == brute(da, db, rect)
+        assert diffplan.diff_stats(reader(da, rect), reader(db, rect), rect,
+                                   strip_pixels=strip) == brute(da, db, rect)
 
 
-def test_diff_row_details():
+def test_diff_stats_alpha0_and_off_by_one():
     w = 5
     a = bytes(4 * w)
     b = bytearray(a)
-    b[4 * 1:4 * 1 + 3] = b"\x01\x02\x03"  # colour under alpha 0 in both: equal
-    assert diffplan.diff_row(a, bytes(b), w) is None
-    b[4 * 3 + 3] = 1  # alpha 0 -> 1
-    b[4 * 4 + 0] = 9  # alpha 0 in both
-    assert diffplan.diff_row(a, bytes(b), w) == (1, 3, 3)
-    c = bytes((7, 7, 7, 255)) * w
+    b[4 * 1:4 * 1 + 3] = b"\x01\x02\x03"  # colour under alpha 0 in both
+    got = diffplan.diff_stats(reader(a, (0, 0, w, 1)), reader(bytes(b), (0, 0, w, 1)), (0, 0, w, 1))
+    assert got == {"changed_count": 0, "bounds": None, "max_channel_diff": 0,
+                   "alpha0_rgb_count": 1, "alpha0_rgb_bounds": (1, 0, 1, 1)}
+    c = bytes((7, 7, 7, 9)) * w
     d = bytearray(c)
-    d[0] = 8
-    d[4 * 4 + 2] = 0
-    assert diffplan.diff_row(c, bytes(d), w) == (2, 0, 4)
-    assert diffplan.diff_row(c, c, w) is None
+    d[0] = 8          # +1
+    d[4 * 4 + 2] = 6  # -1
+    got = diffplan.diff_stats(reader(c, (0, 0, w, 1)), reader(bytes(d), (0, 0, w, 1)), (0, 0, w, 1))
+    assert (got["changed_count"], got["bounds"], got["max_channel_diff"]) == (2, (0, 0, 5, 1), 1)
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_max_abs_diff(seed):
+    rnd = random.Random(seed)
+    n = rnd.randint(1, 300)
+    ra = bytes(rnd.randrange(256) for _ in range(n))
+    rb = bytes(rnd.randrange(256) for _ in range(n))
+    assert diffplan.max_abs_diff(ra, rb) == max(abs(p - q) for p, q in zip(ra, rb))
+    assert diffplan.max_abs_diff(ra, ra) == 0
+    assert diffplan.max_abs_diff(b"\x00\xff", b"\xff\x00") == 255
 
 
 def test_union():

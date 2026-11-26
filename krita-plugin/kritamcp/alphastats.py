@@ -193,7 +193,8 @@ def stray_mask(weak01, grown):
 
 def empty_specks():
     """``stray_specks`` for a layer with no stray pixel."""
-    return {"count": 0, "pixels": 0, "regions": 0, "samples": [], "truncated": False}
+    return {"count": 0, "pixels": 0, "regions": 0, "samples": [], "bounds": None,
+            "truncated": False}
 
 
 def stray_stats(alpha, w, h, below, distance, speck_max_px, dilate=dilate_shift, origin=(0, 0)):
@@ -212,8 +213,10 @@ def stray_stats(alpha, w, h, below, distance, speck_max_px, dilate=dilate_shift,
     c = components(mask, w, h, speck_max_px)
     ox, oy = origin
     samples = [{"x": r["x"] + ox, "y": r["y"] + oy, "w": r["w"], "h": r["h"]} for r in c["samples"]]
+    b = c["bounds"]
+    bounds = None if b is None else {"x": b["x"] + ox, "y": b["y"] + oy, "w": b["w"], "h": b["h"]}
     return count, {"count": c["specks"], "pixels": c["speck_pixels"], "regions": c["regions"],
-                   "samples": samples, "truncated": c["truncated"]}, dilated
+                   "samples": samples, "bounds": bounds, "truncated": c["truncated"]}, dilated
 
 
 _RUN = re.compile(rb"\x01+")
@@ -225,7 +228,8 @@ def components(mask01, w, h, max_size, max_runs=MAX_RUNS):
     "truncated"}``. A *speck* has at most ``max_size`` pixels; ``regions``
     counts the larger components. ``samples`` are the bounding boxes
     (``{x, y, w, h}``, mask coordinates) of up to ``MAX_SAMPLES`` specks,
-    top-most first, then left-most.
+    top-most first, then left-most; ``bounds`` the box around every speck
+    (None without specks), so a caller can judge a trim without rendering.
 
     Run-length union-find over rows. Each row's runs of 1s come from one
     ``re.finditer`` (in C). A run ``[a, b)`` touches a run ``[c, d)`` of
@@ -315,8 +319,13 @@ def components(mask01, w, h, max_size, max_runs=MAX_RUNS):
     specks.sort(key=lambda i: (y0s[i], x0s[i]))
     samples = [{"x": x0s[i], "y": y0s[i], "w": x1s[i] - x0s[i] + 1, "h": y1s[i] - y0s[i] + 1}
                for i in specks[:MAX_SAMPLES]]
+    bounds = None
+    if specks:
+        bx0, by0 = min(x0s[i] for i in specks), min(y0s[i] for i in specks)
+        bx1, by1 = max(x1s[i] for i in specks), max(y1s[i] for i in specks)
+        bounds = {"x": bx0, "y": by0, "w": bx1 - bx0 + 1, "h": by1 - by0 + 1}
     return {"specks": len(specks), "speck_pixels": speck_pixels, "regions": regions,
-            "samples": samples, "truncated": truncated}
+            "samples": samples, "bounds": bounds, "truncated": truncated}
 
 
 # --- layer_stats and trim_layers (P5.3) -----------------------------------

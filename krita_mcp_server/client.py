@@ -35,7 +35,7 @@ import httpx
 from fastmcp.exceptions import ToolError
 
 # Must equal the plugin's kritamcp/version.py PROTOCOL.
-PROTOCOL = 2
+PROTOCOL = 3
 
 KRITA_URL = os.environ.get("KRITA_URL", "http://localhost:5678")
 TOKEN_FILE = os.path.expanduser(os.environ.get("KRITA_MCP_TOKEN_FILE", "~/.krita-mcp-token"))

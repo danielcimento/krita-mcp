@@ -38,6 +38,7 @@ EXPECTED_REGISTRY = {
     "new_canvas": (300, True),
     "open_file": (300, True),
     "redo": (300, True),
+    "reload_config": (30, False),
     "render": (300, False),
     "save": (300, False),
     "select": (30, False),
@@ -233,7 +234,9 @@ class DispatchTest(EnvelopeAssertions, unittest.TestCase):
     def test_open_file_bad_extension(self):
         err = run("open_file", path="notes.txt")
         self.assertIs(err["ok"], False)
-        self.assertEqual(err["error"]["message"], "File type not allowed: notes.txt")
+        self.assertTrue(err["error"]["message"].startswith(
+            "File type not allowed: notes.txt (extension '.txt'); allowed here: "),
+            err["error"]["message"])
 
     def test_brush_preset_needs_a_view(self):
         self.assertError(run("set_brush", preset="Basic"), "conflict",
@@ -287,7 +290,7 @@ class PaintTest(PaintStateMixin, EnvelopeAssertions, unittest.TestCase):
             ha, hb = registry.handle_for(a), registry.handle_for(b)
             self.assertOk(run("set_color", color="#ff0000"))
             result = self.assertOk(run("fill", doc=ha, layer="Ink", x=8, y=8, radius=3))
-            self.assertEqual(result, {"x": 8, "y": 8, "radius": 3, "doc": ha,
+            self.assertEqual(result, {"color": "#ff0000", "x": 8, "y": 8, "radius": 3, "doc": ha,
                                       "layer": nodes.node_id(ink_a)})
             settle(a)
             settle(b)

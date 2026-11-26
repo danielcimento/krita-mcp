@@ -43,6 +43,7 @@ MAX_BYTES = 16 * 1024 * 1024
 SPEC_FIELDS = frozenset({
     "key", "name", "type", "parent", "above", "visible", "opacity", "blend_mode",
     "locked", "alpha_locked", "inherit_alpha", "pass_through", "png", "x", "y",
+    "device_origin",
 })
 # Informative manifest-only entry fields: accepted, then dropped.
 INFO_FIELDS = frozenset({"id", "path", "stack_index", "w", "h", "projection"})

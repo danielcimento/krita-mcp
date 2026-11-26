@@ -1,6 +1,6 @@
 """Acceptance tests 1 (Mao rebuild, P2.4) and 2 (round trip, Mao variant,
 P3.2; compared through ``render`` since P3.4), and lint on Mao (P4.4, the
-17 duplicate names), headless.
+11 duplicate names since F003 K6), headless.
 
 Skipped unless ``KRITA_MCP_MAO_ORA`` names the Mao ``.ora``
 (acceptance.md § Fixtures). kritarunner is started by ``make test-krita``
@@ -390,7 +390,7 @@ def stray_size_report(doc, snapshot):
 @unittest.skipUnless(os.environ.get(MAO_ENV), f"set {MAO_ENV} to the Mao .ora (acceptance § 1)")
 class MaoLintTest(EnvelopeAssertions, unittest.TestCase):
     """Acceptance § Fixtures, secondary check: lint on the rebuilt Mao
-    (without new_canvas's Background) gives exactly 17 duplicate-name
+    (without new_canvas's Background) gives exactly 11 duplicate-name
     findings. The per-rule counts of the ``default`` and ``conventions``
     sets, the snapshot time and a stray-alpha report (P5.10: layers
     flagged, specks, the component-size histogram) are printed as
@@ -464,5 +464,9 @@ class MaoLintTest(EnvelopeAssertions, unittest.TestCase):
         _log(f"truncated: {report['truncated']}; report took {report_s:.1f} s")
 
         dups = [f for f in result["findings"] if f["rule"] == "duplicate-name"]
-        self.assertEqual(len(dups), 17, [f["message"] for f in dups])
+        # F003 K6: 11, all A/B pose pairs; the 6 group-vs-layer clashes
+        # (Front Hair, Nose, Face, Neck, Hood, Hat Underside) are allowed.
+        self.assertEqual(len(dups), 11, [f["message"] for f in dups])
         self.assertTrue(all(len(f["related_ids"]) == 2 for f in dups))  # each name used twice
+        self.assertTrue(all(sorted(s["name"][-1] for s in f["suggested_names"]) == ["A", "B"]
+                            for f in dups), [f["message"] for f in dups])

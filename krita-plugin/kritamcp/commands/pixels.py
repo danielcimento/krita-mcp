@@ -458,28 +458,71 @@ def _create_order(index):
             stack.extend(("node", c) for c in index.children(nid))
 
 
-def _write_pixels(read, bounds, crop, canvas, path, level, written):
-    """Write the pixels ``read(x, y, w, h)`` gives within ``bounds`` as a
-    PNG at ``path``. Returns ``(rect, off_canvas, nbytes)``, or None when
-    no pixel has alpha > 0 (nothing written).
+TILE = 64  # Krita's paint-device tile size; tiles start at the device origin
 
-    With ``crop`` the PNG is the opaque bounds (alpha >= 1) of the
-    ``bounds`` window, ``rect`` where it goes on the canvas; without, the
-    whole canvas at (0, 0). ``off_canvas``: the opaque bounds reach past
-    the canvas edge."""
+
+def tile_window(bounds, origin):
+    """``bounds`` (``(x, y, w, h)``) grown to whole tiles of the paint
+    device whose origin (``Node.position()``) is ``origin``. Colour under
+    alpha 0 lives in the tiles that hold the layer's pixels, and
+    ``Node.bounds()`` only reaches its alpha > 0 pixels (F003 E2)."""
+    x, y, w, h = bounds
+    ox, oy = origin
+    x0 = ox + (x - ox) // TILE * TILE
+    y0 = oy + (y - oy) // TILE * TILE
+    x1 = ox - (-(x + w - ox) // TILE) * TILE
+    y1 = oy - (-(y + h - oy) // TILE) * TILE
+    return x0, y0, x1 - x0, y1 - y0
+
+
+def _content(data, bounds, window):
+    """The rectangle to export, relative to ``window``: the layer's
+    ``bounds`` (its alpha > 0 pixels) grown to take in the colour under
+    alpha 0 that ``window`` holds next to them (F003 E2). Pixels outside
+    ``bounds`` with alpha > 0 are the layer's default pixel (the white of
+    the Background layer ``createDocument`` makes, which reads as opaque
+    everywhere), not content, so only alpha-0 pixels with colour count
+    there. None when nothing in ``window`` is nonzero."""
+    bx, by, bw, bh = window
+    inner = (bounds[0] - bx, bounds[1] - by, bounds[2], bounds[3])
+    if (bw, bh) == (bounds[2], bounds[3]):
+        return pixels.content_bounds(data, bw, bh)
+    hidden = pixels.alpha0_colour_bounds(data, bw, bh)
+    opaque = pixels.opaque_bounds(pixels.crop(data, bw, bh, inner), inner[2], inner[3])
+    if opaque is not None:
+        opaque = (inner[0] + opaque[0], inner[1] + opaque[1], opaque[2], opaque[3])
+    if hidden is None:
+        return opaque
+    if opaque is None:
+        return hidden
+    return _union(opaque, hidden)
+
+
+def _write_pixels(read, bounds, crop, canvas, path, level, written, origin=None):
+    """Write the pixels ``read(x, y, w, h)`` gives as a PNG at ``path``.
+    Returns ``(rect, off_canvas, nbytes)``, or None when every pixel is
+    (0, 0, 0, 0) (nothing written).
+
+    With ``crop`` the PNG is the tightest rectangle around the pixels with
+    any nonzero byte (alpha > 0, or colour under alpha 0) inside
+    ``bounds``, grown to the device's tiles when ``origin`` is given
+    (``tile_window``); ``rect`` is where it goes on the canvas. Without
+    ``crop``, the whole canvas at (0, 0). ``off_canvas``: the pixels reach
+    past the canvas edge."""
     if bounds is None:
         return None
-    bx, by, bw, bh = bounds
+    window = bounds if origin is None else tile_window(bounds, origin)
+    bx, by, bw, bh = window
     data = pixels.as_bytes(read(bx, by, bw, bh))
-    opaque = pixels.opaque_bounds(data, bw, bh)
-    if opaque is None:
+    found = _content(data, bounds, window)
+    if found is None:
         return None
-    x, y, w, h = bx + opaque[0], by + opaque[1], opaque[2], opaque[3]
+    x, y, w, h = bx + found[0], by + found[1], found[2], found[3]
     cw, ch = canvas
     off_canvas = x < 0 or y < 0 or x + w > cw or y + h > ch
     if crop:
         if (w, h) != (bw, bh):
-            data = pixels.crop(data, bw, bh, opaque)
+            data = pixels.crop(data, bw, bh, found)
     else:
         x, y, w, h = 0, 0, cw, ch
         data = pixels.as_bytes(read(0, 0, cw, ch))
@@ -551,10 +594,10 @@ class _Exporter:
         }
         return position, entry
 
-    def _pixels(self, position, name, read, node, entry):
+    def _pixels(self, position, name, read, node, entry, origin=None):
         path = os.path.join(self.dir, manifest.png_name(position, name))
         out = _write_pixels(read, _bounds(node), self.crop, self.canvas, path, self.level,
-                            self.written)
+                            self.written, origin)
         if out is None:
             entry["png"] = None
             return
@@ -589,9 +632,12 @@ class _Exporter:
             entry.update(inherit_alpha=bool(node.inheritAlpha()), locked=bool(node.locked()),
                          pass_through=bool(node.passThroughMode()))
         else:
+            origin = node.position()
+            origin = (origin.x(), origin.y())
             entry.update(inherit_alpha=bool(node.inheritAlpha()),
-                         alpha_locked=bool(node.alphaLocked()), locked=bool(node.locked()))
-            self._pixels(position, node.name(), node.pixelData, node, entry)
+                         alpha_locked=bool(node.alphaLocked()), locked=bool(node.locked()),
+                         device_origin={"x": origin[0], "y": origin[1]})
+            self._pixels(position, node.name(), node.pixelData, node, entry, origin)
         entry["stack_index"] = position - 1
         self.entries.append(entry)
 
@@ -739,6 +785,7 @@ def cmd_export_layers(params):
     opts = (_bool(params, "crop", True), _bool(params, "include_hidden", True),
             _bool(params, "include_groups"), _png_level(params))
     overwrite = _bool(params, "overwrite")
+    verbose = _bool(params, "verbose", True)  # the MCP tool sends false by default (F003 K3)
     given = params.get("dir")
     if not isinstance(given, str) or given == "":
         raise CommandError("bad_request", "'dir' is required (the output directory)",
@@ -762,6 +809,14 @@ def cmd_export_layers(params):
                 pass
         raise
     total = exporter.nbytes + os.path.getsize(manifest_path)
-    return {"doc": handle, "dir": out_dir, "manifest": manifest_path, "count": exporter.count,
-            "layers": exporter.entries, "skipped": exporter.skipped,
-            "warnings": exporter.warnings(), "bytes": total}
+    entries = exporter.entries
+    counts = {"paint": sum(1 for e in entries if e["type"] == "paint" and not e.get("projection")),
+              "group": sum(1 for e in entries if e["type"] == "group"),
+              "projection": sum(1 for e in entries if e.get("projection")),
+              "png": exporter.count, "skipped": len(exporter.skipped)}
+    out = {"doc": handle, "dir": out_dir, "manifest": manifest_path, "count": exporter.count,
+           "counts": counts, "skipped": exporter.skipped, "warnings": exporter.warnings(),
+           "bytes": total}
+    if verbose:  # the manifest entries again; they are in the manifest file either way
+        out["layers"] = entries
+    return out

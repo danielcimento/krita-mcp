@@ -8,9 +8,9 @@ from fastmcp.exceptions import ToolError
 
 from krita_mcp_server import client
 
-HEALTH_OK = {"status": "ok", "plugin": "kritamcp", "protocol": 2,
-             "version": "0.2.0", "krita_version": "5.3.4"}
-INFO_OK = {"status": "ok", "protocol": 2, "commands": ["fill", "save", "undo"],
+HEALTH_OK = {"status": "ok", "plugin": "kritamcp", "protocol": 3,
+             "version": "0.3.0", "krita_version": "5.3.4"}
+INFO_OK = {"status": "ok", "protocol": 3, "commands": ["fill", "save", "undo"],
            "timeouts": {"fill": 30, "save": 300, "undo": 30}, "mutating": ["fill"]}
 
 
@@ -157,8 +157,8 @@ def test_non_json_is_krita_error(krita):
 
 @pytest.mark.parametrize("health", [
     {"status": "ok", "plugin": "kritamcp"},                 # pre-protocol plugin
-    {"status": "ok", "plugin": "kritamcp", "protocol": 1},
-    {"status": "ok", "plugin": "kritamcp", "protocol": 3},
+    {"status": "ok", "plugin": "kritamcp", "protocol": 2},  # F001's plugin
+    {"status": "ok", "plugin": "kritamcp", "protocol": 4},
 ])
 def test_protocol_mismatch_refuses_to_post(krita, health):
     krita.health = health
@@ -167,7 +167,7 @@ def test_protocol_mismatch_refuses_to_post(krita, health):
     msg = str(exc.value)
     assert msg.startswith("protocol_mismatch: ")
     assert "restart Krita" in msg
-    assert ("newer" if health.get("protocol") == 3 else "older") in msg
+    assert ("newer" if health.get("protocol") == 4 else "older") in msg
     assert krita.posts == []
 
 
@@ -220,7 +220,7 @@ def test_token_file_used_when_env_unset(monkeypatch, tmp_path):
 
 def test_protocol_matches_plugin():
     from kritamcp import version
-    assert client.PROTOCOL == version.PROTOCOL == 2
+    assert client.PROTOCOL == version.PROTOCOL == 3
 
 
 # --- timeouts (D9) ---
@@ -270,7 +270,7 @@ def test_unknown_action_uses_fallback(krita):
     (httpx.ConnectError("refused"), 200),
     ({"error": "Missing or invalid token"}, 401),
     (b"<html>", 200),
-    ({"status": "ok", "protocol": 2, "commands": []}, 200),  # no timeouts
+    ({"status": "ok", "protocol": 3, "commands": []}, 200),  # no timeouts
 ])
 def test_info_failure_falls_back_and_is_retried(krita, info, status):
     krita.info, krita.info_status = info, status

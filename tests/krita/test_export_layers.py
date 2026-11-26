@@ -194,7 +194,7 @@ class ExportLayersTest(ExportLayersBase):
             build(doc)
             handle = registry.handle_for(doc)
             result = self.export(handle)
-            self.assertEqual(set(result), {"doc", "dir", "manifest", "count", "layers",
+            self.assertEqual(set(result), {"doc", "dir", "manifest", "count", "counts", "layers",
                                            "skipped", "warnings", "bytes"})
             self.assertEqual(result["doc"], handle)
             self.assertEqual(result["dir"], os.path.realpath(os.path.join(self.root, "out")))
@@ -229,7 +229,7 @@ class ExportLayersTest(ExportLayersBase):
             # Properties as stored; groups vs paint layers.
             self.assertEqual(
                 {k: v for k, v in by_path["Body/Shade"].items()
-                 if k not in ("id", "png", "x", "y", "w", "h")},
+                 if k not in ("id", "png", "x", "y", "w", "h", "device_origin")},
                 {"key": "L0004", "name": "Shade", "path": "Body/Shade", "type": "paint",
                  "parent": "$L0002", "visible": True, "opacity": 0.502,
                  "blend_mode": "multiply", "inherit_alpha": True, "alpha_locked": False,
@@ -555,9 +555,9 @@ class RoundTripTest(ExportLayersBase):
     def test_zero_alpha_colour_outside_alpha_bounds(self):
         # Colour under alpha 0 next to a layer's alpha bounds (as in PNGs
         # with coloured transparent margins) can show up in Krita's
-        # projection at fully transparent pixels. crop=true cuts to alpha
-        # > 0, so the rebuild has no such colour; crop=false keeps it
-        # within the canvas.
+        # projection at fully transparent pixels. Since F003 (E2) crop=true
+        # reads the layer's tiles and keeps that colour, so both crops
+        # rebuild byte for byte.
         block = bytes((40, 80, 120, 255)) * (6 * 4)
         margin = bytearray(bytes((30, 28, 130, 0)) * (8 * 6))
         for r in range(4):
@@ -592,7 +592,7 @@ class RoundTripTest(ExportLayersBase):
         # (byte-identical, alpha identical, margin colour in the original's
         # render): Krita's projection keeps the colour, and render writes it;
         # only crop=false reproduces it.
-        self.assertEqual(results, {True: (False, True, True), False: (True, True, True)})
+        self.assertEqual(results, {True: (True, True, True), False: (True, True, True)})
 
     def test_masks_and_filter_layers_do_not_round_trip(self):
         # Documented limit (warnings masks_not_applied / not_exported).

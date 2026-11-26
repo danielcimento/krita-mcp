@@ -11,6 +11,15 @@ from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
 
+class Point(BaseModel):
+    """A canvas point ``{x, y}`` in whole pixels."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    x: StrictInt
+    y: StrictInt
+
+
 class LayerSpec(BaseModel):
     """One layer for ``krita_create_layers`` (api-design § krita_create_layers)."""
 
@@ -43,6 +52,11 @@ class LayerSpec(BaseModel):
                                                      "only with png")
     y: Optional[StrictInt] = Field(None, description="Canvas y of the PNG's top-left, default 0; "
                                                      "only with png")
+    device_origin: Optional[Point] = Field(
+        None, description="Paint layers only: the paint device's origin {x, y} "
+                          "(krita_export_layers records it), set before the pixels are "
+                          "written so the rebuild composites exactly like the source; "
+                          "default (0, 0)")
 
     def to_params(self) -> dict:
         """The fields the caller set to a value, for the plugin. ``False``

@@ -80,10 +80,11 @@ If using a virtual environment:
 
 | Tool | Description |
 |------|-------------|
-| `krita_health` | Whether Krita and the plugin are running; protocol, allowed dirs, limits, lint settings, config errors, the busy command |
+| `krita_health` | Whether Krita and the plugin are running; protocol, allowed dirs and how to add one (`config_file`, `config_key`), limits, lint settings, config errors, the busy command |
+| `krita_reload_config` | Re-read `~/.krita-mcp-config.json` now and report the allowed dirs and config errors (the plugin also re-reads it by itself; no restart) |
 | `krita_list_documents` | Open documents with their `doc` handles, size, path, modified and active flags |
 | `krita_get_document_info` | One document's size, resolution, colour space, layer counts, nesting depth and selection |
-| `krita_new_canvas` | New RGBA canvas (size, background colour or `"transparent"`, profile, resolution); returns its `doc` handle |
+| `krita_new_canvas` | New RGBA canvas (size, background colour, `"transparent"` or `"none"` for no layer, profile, resolution); returns its `doc` handle |
 | `krita_open_file` | Open a `.kra`, `.ora`, `.png`, …; returns its `doc` handle (an already open file keeps its handle) |
 | `krita_save` | Save in place, save as `.kra` (the document moves there), or export to PNG/JPG/PSD/ORA; Add / Linear Dodge layers are converted for `.psd` / `.ora` on a copy (`blend_conversions`) |
 | `krita_close_document` | Close a document by handle; refuses unsaved changes unless `discard=true` |
@@ -93,8 +94,8 @@ If using a virtual environment:
 
 | Tool | Description |
 |------|-------------|
-| `krita_list_layers` | The tree as a flat list, top to bottom: id, name, path, type, parent, visibility, opacity, blend mode, locks, exact bounds; `root`, `depth`, `fields` |
-| `krita_create_layers` | Groups and paint layers in one all-or-nothing call, from specs (`key` / `"$key"` nesting, properties, `png` pixels) or a `manifest.json`; `dry_run` |
+| `krita_list_layers` | The tree as a flat list, top to bottom, in pages (`limit` 30, `offset`) with an `overview` (counts, depth, hidden layers, non-normal blend modes); default fields id, name, type, visibility, blend mode, children, others via `fields` (path, parent, opacity, locks, exact bounds, …); `summary_only`, `path` (whole tree to a JSON file), `root`, `depth` |
+| `krita_create_layers` | Groups and paint layers in one all-or-nothing call, from specs (`key` / `"$key"` nesting, properties, `png` pixels, `device_origin`) or a `manifest.json`; `new_document` builds the document the manifest describes in the same call; `dry_run`, `verbose` |
 | `krita_update_layers` | Change name, visibility, opacity, blend mode, locks, clipping, pass-through of many layers at once; `dry_run` |
 | `krita_move_layers` | Reorder and reparent layers (`parent`, `above` / `below` / `index`); groups move with their subtree; `dry_run` |
 | `krita_delete_layers` | Delete layers (a group with its subtree) in one call; `dry_run` |
@@ -108,7 +109,7 @@ If using a virtual environment:
 |------|-------------|
 | `krita_import_png` | Write a PNG into a paint layer at `x`/`y`: `replace` (exact) or `over`, optional `clear_outside`; one undo step |
 | `krita_trim_layers` | Clear faint pixels (alpha below `alpha_threshold`, colour zeroed too) in paint layers, optionally only those farther than `near_px` from stronger pixels (keeps anti-aliased edges); `dry_run`, one undo step |
-| `krita_export_layers` | Each paint layer's own pixels as a PNG (cropped to alpha > 0) plus a `manifest.json` that `krita_create_layers` rebuilds the tree from |
+| `krita_export_layers` | Each paint layer's own pixels as a straight-RGBA PNG (cropped to its content, colour under alpha 0 kept) plus a `manifest.json` (document block, device origins) that `krita_create_layers` rebuilds the tree from, byte for byte; returns counts and paths (`verbose` for every entry) |
 | `krita_render` | Render to a PNG without changing the document: `region`, `scale` (0.25 for fast previews), `only` / `hide` layers, `background`, `png_level` |
 | `krita_get_canvas` | The whole canvas as a PNG in the output dir; a shortcut for a full-canvas `krita_render` |
 | `krita_get_color_at` | Eyedropper: the colour at a pixel, of the composite or of one layer |
@@ -125,10 +126,10 @@ If using a virtual environment:
 
 | Tool | Description |
 |------|-------------|
-| `krita_lint` | Check a document against the Live2D rig rules (node types, layer styles, clipping, blend modes, duplicate names, side tokens, empty / off-canvas layers, stray-alpha specks, colour space); opt-in `"conventions"` set (nesting depth, name case, blend suffixes, pose visibility, hidden references, mask suffixes); `rules`, `severity_min`; findings sorted by stacking order |
+| `krita_lint` | Check a document against the Live2D rig rules (node types, layer styles, clipping, blend modes, duplicate names, side tokens, empty / off-canvas layers, stray-alpha specks, colour space); opt-in `"conventions"` set (nesting depth, name case, blend suffixes, pose visibility, hidden references, mask suffixes); `rules`, `severity_min`; grouped by rule with the first `limit` findings each (`group_by`, `offset`), sorted by stacking order |
 | `krita_layer_stats` | Per paint layer: bounds, opaque bounds, pixel and opaque counts, an alpha histogram (`buckets`), empty, overhang past the canvas, lint's stray-alpha numbers |
 | `krita_occlusion_map` | How much of a paint layer the layers drawn after it hide (global draw order, visible, `modes` default Normal only): a grayscale PNG of alpha x coverage over its bounds, `covered_pct` at `threshold`, `fully_hidden`, the layers counted; for skipping hidden areas in part separation |
-| `krita_diff_documents` | Compare two open documents: layers added, removed, renamed, moved and changed (matched by id, then name path, then unique name), and with `pixels` which paint layers' pixels differ (count and bounds) and whether the projections differ |
+| `krita_diff_documents` | Compare two open documents: layers added, removed, renamed, moved and changed (matched by id, then name path, then unique name), and with `pixels` which paint layers' pixels differ and how the projections differ (changed pixels, bounds, largest channel difference, and alpha-0-only colour changes, ignored by default: `ignore_alpha0_rgb`) |
 
 **Painting**
 
@@ -137,9 +138,9 @@ If using a virtual environment:
 | `krita_set_color` | Set the paint colour (kept by the plugin, so it works without a window) |
 | `krita_set_brush` | Set the brush preset, size and opacity |
 | `krita_list_brushes` | List brush presets |
-| `krita_stroke` | Paint a stroke through a list of [x, y] points |
-| `krita_fill` | Fill a circle at a point |
-| `krita_draw_shape` | Draw a rectangle, ellipse or line |
+| `krita_stroke` | Paint a stroke through a list of [x, y] points; optional `color` |
+| `krita_fill` | Fill a circle at a point; optional `color` |
+| `krita_draw_shape` | Draw a rectangle, ellipse or line; optional `color` |
 | `krita_clear` | Clear a layer to a colour, or `"transparent"` |
 
 **History**
@@ -236,6 +237,9 @@ Every key is optional:
   ignored as a whole and `krita_health` says why.
 - **No restart needed.** The plugin re-reads the file whenever it changes
   (mtime, size, mode), and notices a listed directory being created later.
+  `krita_reload_config` re-reads it on demand and shows the result. A
+  `forbidden_path` error names the allowed dirs, this file, the key and
+  the JSON that would allow the path.
 - **Allowed dirs.** File tools (`save`, `open_file`, …) may only touch
   paths inside the output dir or one of these. That includes saving a
   document in place: its own file must be inside them too. `save`
@@ -266,9 +270,11 @@ Every key is optional:
   or Finder don't see shell variables, so the file is the usual way.
   `KRITA_MCP_CONFIG_FILE` (also Krita's environment) reads a different
   config file instead of `~/.krita-mcp-config.json`.
-- **Check it.** `krita_health` returns `allowed_dirs` (the output dir
-  first), `limits`, `lint`, `config_file` and `config_errors` (bad keys or values,
-  skipped dirs, a refused file); its summary lists the errors.
+- **Check it.** `krita_health` (and `krita_reload_config`) return
+  `allowed_dirs` (the output dir first), `config_file`, `config_exists`,
+  `config_key` (`"allowed_dirs"`), `config_dirs` (the file's entries as
+  written), `limits`, `lint` and `config_errors` (bad keys or values,
+  skipped dirs, a refused file); the health summary lists the errors.
 
 Only the plugin reads this file. The MCP server can't widen the allowed
 dirs.

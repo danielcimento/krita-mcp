@@ -61,10 +61,17 @@ def krita_health() -> dict:
     Never fails: when Krita can't be reached it returns ``running: false``.
     ``protocol_ok`` is false when the installed plugin doesn't match this
     server (update the plugin and restart Krita). ``allowed_dirs`` lists the
-    directories file tools may use (the first is the output dir), and
-    ``config_errors`` the problems with the plugin's config file
-    (``~/.krita-mcp-config.json``), such as a skipped directory; ``limits``
-    and ``lint`` are the canvas limits and krita_lint's settings. ``busy``
+    directories file tools may use (the first is the output dir).
+    To allow another folder, add it to the list under ``config_key``
+    ("allowed_dirs") in the JSON file ``config_file``
+    (``~/.krita-mcp-config.json``; ``config_exists`` says whether it
+    exists yet), e.g. {"allowed_dirs": ["~/my-project/out"]}: the folder
+    must exist and must not be your home folder or above it. Changes apply
+    from the next call without restarting Krita (``config_reload``);
+    krita_reload_config shows the result. ``config_dirs`` are the file's
+    entries as written, ``config_errors`` the problems, such as a skipped
+    directory; ``limits`` and ``lint`` are the canvas limits and
+    krita_lint's settings. ``busy``
     is the command Krita is running now (``{"action", "elapsed_ms"}``) or
     null, and ``queued`` how many wait behind it.
     """
@@ -90,7 +97,10 @@ def krita_health() -> dict:
     allowed_dirs = data.get("allowed_dirs") or []
     config_errors = data.get("config_errors") or []
     if allowed_dirs:
-        summary += f"; {len(allowed_dirs)} allowed dir{'s' if len(allowed_dirs) != 1 else ''}"
+        summary += (f"; {len(allowed_dirs)} allowed dir{'s' if len(allowed_dirs) != 1 else ''}: "
+                    f"{', '.join(str(d) for d in allowed_dirs)} (add more under "
+                    f"\"{data.get('config_key') or 'allowed_dirs'}\" in "
+                    f"{data.get('config_file') or '~/.krita-mcp-config.json'})")
     busy = data.get("busy")
     if isinstance(busy, dict):
         elapsed = busy.get("elapsed_ms")
@@ -106,6 +116,33 @@ def krita_health() -> dict:
             "busy": busy if isinstance(busy, dict) else None,
             "running": True, "protocol_ok": protocol_ok,
             "elapsed_ms": elapsed_ms, "summary": summary}
+
+
+@mcp.tool()
+def krita_reload_config(timeout_s: Optional[float] = None) -> dict:
+    """
+    Re-read the plugin's config file (~/.krita-mcp-config.json) now and
+    report the result: allowed_dirs (resolved; the first is the output
+    dir), config_file, config_exists, config_key ("allowed_dirs"),
+    config_dirs (the file's entries as written), limits, lint and
+    config_errors (e.g. a folder skipped because it doesn't exist). The
+    plugin also re-reads the file by itself when it changes, so this is
+    for checking that an edit took effect; Krita needs no restart.
+
+    Args:
+        timeout_s: Seconds to wait for Krita, up to 900; default per command
+    """
+    result = client.call("reload_config", {}, timeout_s=timeout_s)
+    dirs = result.get("allowed_dirs") or []
+    summary = f"Config reloaded from {result.get('config_file')}"
+    if not result.get("config_exists"):
+        summary += " (the file does not exist; defaults in use)"
+    summary += f"; allowed dirs: {', '.join(str(d) for d in dirs) or 'none'}"
+    errors = result.get("config_errors") or []
+    if errors:
+        summary += f"; {_count(len(errors), 'config error')}: " + "; ".join(
+            " ".join(str(e).split()) for e in errors)
+    return _done(result, summary)
 
 
 # --- Documents (api-design § Documents) ------------------------------------
@@ -192,19 +229,24 @@ def krita_new_canvas(
     configurable by the user in the plugin's ~/.krita-mcp-config.json
     ("limits"); over a limit fails with too_large. The canvas has one
     paint layer, "Background", filled with ``background``
-    (``background_layer`` is its id). The defaults are kept from earlier
-    versions for compatibility.
+    (``background_layer`` is its id), or no layer at all with
+    background="none" (``background_layer`` null), for a rebuild. The
+    defaults are kept from earlier versions for compatibility; to rebuild
+    an exported document with its own size and resolution, use
+    krita_create_layers(manifest=..., new_document=true) instead.
 
     Args:
         width: Canvas width in pixels (default 800)
         height: Canvas height in pixels (default 600)
         name: Document name (default "New Canvas")
         background: Background color as hex (default "#1a1a2e", dark blue),
-                    or "transparent" for an empty Background layer
+                    "transparent" for an empty Background layer, or "none"
+                    for no layer
         color_profile: An installed RGBA/U8 profile name; default Krita's
                        sRGB ("sRGB-elle-V2-srgbtrc.icc"). An unknown name
                        fails with bad_request listing the available ones
-        resolution: Resolution in dpi, 1 to 10000 (default 120)
+        resolution: Resolution in dpi, 1 to 10000 (default 120; Krita's own
+                    default and most source files are 72)
         timeout_s: Seconds to wait for Krita, up to 900; default per command
     """
     result = client.call("new_canvas", _with({
@@ -439,29 +481,65 @@ def _type_counts(counts) -> str:
     return ", ".join(parts)
 
 
+# list_layers' default fields and page size (F003 K3): about 190 bytes per
+# layer, so a page plus the summary stays under 8 KB.
+LIST_DEFAULT_FIELDS = ["id", "name", "type", "visible", "blend_mode", "children"]
+LIST_DEFAULT_LIMIT = 30
+
+
+def _summary_note(summary) -> str:
+    """"; 2 hidden, 7 multiply, depth 4" from a list_layers overview."""
+    if not isinstance(summary, dict):
+        return ""
+    parts = []
+    hidden = (summary.get("hidden") or {}).get("count")
+    if hidden:
+        parts.append(f"{hidden} hidden")
+    for mode, entry in (summary.get("blend_modes") or {}).items():
+        if isinstance(entry, dict) and entry.get("count"):
+            parts.append(f"{entry['count']} {mode}")
+    if summary.get("max_depth"):
+        parts.append(f"depth {summary['max_depth']}")
+    return ("; " + ", ".join(parts)) if parts else ""
+
+
 @mcp.tool()
 def krita_list_layers(doc: Optional[str] = None, root: Optional[str] = None,
                       depth: Optional[int] = None, fields: Optional[list[str]] = None,
+                      summary_only: bool = False, path: Optional[str] = None,
+                      limit: Annotated[int, Field(ge=1, le=100000)] = LIST_DEFAULT_LIMIT,
+                      offset: Annotated[int, Field(ge=0)] = 0,
                       timeout_s: Optional[float] = None) -> dict:
     """
     List a document's layer tree as a flat list of layer objects,
     depth-first and top to bottom (the order of Krita's Layers docker: a
     group comes right before its contents). Returns {doc, root, layers,
-    counts}: root is "/" or the root layer's id; counts has nodes per type
-    over the listed layers (e.g. {"grouplayer": 38, "paintlayer": 184}) and
-    "total". The document's global selection is never listed.
+    counts, overview, offset, limit, next_offset}: root is "/" or the root
+    layer's id; counts has nodes per type over everything under root (e.g.
+    {"grouplayer": 38, "paintlayer": 184}) and "total". The document's
+    global selection is never listed.
 
-    Each layer object has: id (braced UUID), name, path (name path from the
-    document root, "/" in names escaped as "\\/"), type ("paintlayer",
-    "grouplayer", ...), parent (id, null at the top level), index (position
-    in the parent counted from the bottom, like Krita's childNodes()),
-    visible (the layer's own flag), opacity (0.0-1.0), blend_mode (a Krita
-    id such as "normal", "multiply", "add"), locked, alpha_locked,
+    Big trees come in pages so the result stays small: `limit` layers
+    (default 30) from `offset`; next_offset is where the next page starts,
+    null after the last. overview describes the whole listing: counts,
+    max_depth, hidden (layers whose own visibility is off: count and up to
+    20 paths) and blend_modes (each non-normal mode: count and up to 20
+    paths). summary_only=true returns just counts and overview;
+    path="tree.json" writes the full listing (every field, every layer) to
+    a JSON file inside an allowed directory and returns the path and
+    overview instead.
+
+    Each layer object has, by default, id (braced UUID), name, type
+    ("paintlayer", "grouplayer", ...), visible (the layer's own flag),
+    blend_mode (a Krita id such as "normal", "multiply", "add") and
+    children (child ids, top to bottom). fields chooses others: path (name
+    path from the document root, "/" in names escaped as "\\/"), parent
+    (id, null at the top level), index (position in the parent counted
+    from the bottom), opacity (0.0-1.0), locked, alpha_locked,
     inherit_alpha (clipping), pass_through (bool on groups, null
-    otherwise), has_layer_style, bounds and children (child ids, top to
-    bottom). bounds is {x, y, w, h} in exact canvas pixels, or null for a
-    layer with no pixels. It is not clipped to the canvas, so it may start
-    at negative x/y or extend past the canvas edge.
+    otherwise), has_layer_style, bounds ({x, y, w, h} in exact canvas
+    pixels, null for a layer with no pixels; not clipped to the canvas);
+    ["all"] gives every field.
 
     Args:
         doc: Document handle such as "doc-3" (new_canvas and open_file return
@@ -476,14 +554,30 @@ def krita_list_layers(doc: Optional[str] = None, root: Optional[str] = None,
                1 = root's direct children only (for a layer root: the layer
                and its direct children). Layers at the cut-off still list
                their children ids, so pass one as root to go deeper
-        fields: Layer-object keys to include, e.g. ["type", "bounds"], to keep
-                big listings small; id, name and children are always
-                included. Unknown keys fail with bad_request. Default all
+        fields: Layer-object keys to include, e.g. ["path", "bounds"], or
+                ["all"]; id, name and children are always included. Unknown
+                keys fail with bad_request. Default id, name, type, visible,
+                blend_mode, children
+        summary_only: Return only counts and overview, no layers
+        path: Write the full listing to this .json file (absolute, ~, or
+              relative to the output dir; inside an allowed directory)
+              and return its path; not with summary_only
+        limit: Layers per page, default 30
+        offset: Layers to skip, default 0 (pass next_offset for the next page)
         timeout_s: Seconds to wait for Krita, up to 900; default per command
     """
-    result = client.call("list_layers",
-                         _with({}, doc=doc, root=root, depth=depth, fields=fields),
-                         timeout_s=timeout_s)
+    if fields is not None and list(fields) == ["all"]:
+        send_fields = None
+    else:
+        send_fields = LIST_DEFAULT_FIELDS if fields is None else list(fields)
+    params = _with({"overview": True}, doc=doc, root=root, depth=depth, fields=send_fields)
+    if summary_only:
+        params["summary_only"] = True
+    elif path is not None:
+        params["path"] = path
+    else:
+        params.update(limit=limit, offset=offset)
+    result = client.call("list_layers", params, timeout_s=timeout_s)
     layers = result.get("layers") or []
     counts = result.get("counts") or {}
     what = _type_counts(counts) or "No layers"
@@ -493,12 +587,22 @@ def krita_list_layers(doc: Optional[str] = None, root: Optional[str] = None,
     summary = what + (_in(result) or f" in {doc or 'the active document'}")
     if depth is not None:
         summary += f" (depth {depth})"
+    summary += _summary_note(result.get("overview"))
+    if result.get("path"):
+        summary += f"; full listing written to {result['path']} ({_size(result.get('bytes'))})"
+    elif not summary_only and "offset" in result:
+        shown_from = result.get("offset", 0)
+        summary += f"; listed {shown_from + 1 if layers else shown_from}-{shown_from + len(layers)}"
+        if result.get("next_offset") is not None:
+            summary += f" (next page: offset={result['next_offset']})"
     return _done(result, summary)
 
 
 @mcp.tool()
 def krita_create_layers(specs: Optional[list[LayerSpec]] = None, manifest: Optional[str] = None,
-                        doc: Optional[str] = None, dry_run: bool = False,
+                        doc: Optional[str] = None, new_document: bool = False,
+                        name: Optional[str] = None, dry_run: bool = False,
+                        verbose: Optional[bool] = None,
                         timeout_s: Optional[float] = None) -> dict:
     """
     Create groups and paint layers in one all-or-nothing call, from either
@@ -525,8 +629,11 @@ def krita_create_layers(specs: Optional[list[LayerSpec]] = None, manifest: Optio
     pass_through (groups only, default false); png (paint layers only: a PNG
     inside an allowed directory, at most the canvas size limits per side;
     needs an 8-bit RGBA document) placed with its top-left at canvas x, y
-    (default 0, 0; only with png). Pixels outside the canvas are kept, not
-    clipped. Unknown keys fail.
+    (default 0, 0; only with png); device_origin (paint layers only: {x,
+    y}, the origin of Krita's tile grid for the layer, as export_layers
+    records it; set before the pixels are written). Pixels outside the
+    canvas are kept, not clipped; PNG pixels are written byte for byte,
+    colour under alpha 0 included. Unknown keys fail.
 
     A manifest is the manifest.json that krita_export_layers writes (or
     tools/ora_to_manifest.py): {"version": 1, "document": {...}, "layers":
@@ -536,10 +643,22 @@ def krita_create_layers(specs: Optional[list[LayerSpec]] = None, manifest: Optio
     directory. Entries marked "projection": true are skipped. Errors name
     the manifest entry: "layers[i]: ..." with details.index = i.
 
+    new_document=true (manifest only, instead of doc) first creates the
+    document the manifest's "document" block describes (size, resolution,
+    colour profile; no layer of its own), builds into it and returns its
+    handle as doc: a full rebuild in one call, with no document-level
+    differences from the source. On failure the new document is closed
+    again.
+
     Returns {doc, created: [{key, id, name, type, path}], counts} (counts
-    per Krita type plus "total"); with dry_run, {doc, would_create: [{key,
-    name, type, parent, above, png?, x?, y?, w?, h?}], counts} and nothing
-    changes. With a manifest it also has manifest (resolved path), skipped
+    per Krita type plus "total"). created is listed for up to 20 layers
+    (verbose=true: always; false: never); a bigger batch returns
+    created_listed: false instead, and krita_list_layers finds the layers.
+    With dry_run, {doc, would_create: [{key, name, type, parent, above,
+    png?, x?, y?, w?, h?, device_origin?}], counts} (the first 20 unless
+    verbose=true; would_create_listed says how many when cut) and nothing
+    changes. With new_document, also new_document {name, width, height,
+    resolution, color_profile}. With a manifest it also has manifest (resolved path), skipped
     ([{index, key, reason}]) and warnings ([{code, message, ...}], e.g.
     "document_size" when the manifest's document size differs from this
     document's; not an error). One successful call is one agent undo step.
@@ -551,17 +670,30 @@ def krita_create_layers(specs: Optional[list[LayerSpec]] = None, manifest: Optio
         doc: Document handle such as "doc-3" (new_canvas and open_file return
              one), or the absolute path of an open document; default the
              active document
+        new_document: Create the document from the manifest first (see
+                      above); not with doc or specs
+        name: The new document's name (new_document only); default the
+              manifest's
         dry_run: Only validate and report what would be created
+        verbose: List every created layer (true), none (false), or up to 20
+                 (default)
         timeout_s: Seconds to wait for Krita, up to 900; default 300
     """
     if (specs is None) == (manifest is None):
         raise ToolError("bad_request: pass exactly one of specs and manifest")
+    if new_document and manifest is None:
+        raise ToolError("bad_request: new_document needs a manifest (its document block gives "
+                        "the canvas size); with specs, call krita_new_canvas first")
+    if new_document and doc is not None:
+        raise ToolError("bad_request: pass either doc or new_document, not both")
     if manifest is not None:
         params = {"manifest": manifest}
     else:
         params = {"specs": [(s if isinstance(s, LayerSpec) else LayerSpec.model_validate(s))
                             .to_params() for s in specs]}
-    result = client.call("create_layers", _with(params, doc=doc, dry_run=dry_run or None),
+    params["verbose"] = "auto" if verbose is None else verbose
+    result = client.call("create_layers", _with(params, doc=doc, dry_run=dry_run or None,
+                                                new_document=new_document or None, name=name),
                          timeout_s=timeout_s)
     counts = result.get("counts") or {}
     total = counts.get("total", len(result.get("created") or result.get("would_create") or []))
@@ -571,6 +703,12 @@ def krita_create_layers(specs: Optional[list[LayerSpec]] = None, manifest: Optio
         what += f" ({groups} group{'s' if groups != 1 else ''})"
     where = _in(result) or f" in {doc or 'the active document'}"
     verb = "Would create " if result.get("dry_run") else "Created "
+    if result.get("new_document") and not result.get("dry_run"):
+        nd = result["new_document"]
+        where = (f" in new document {result.get('doc')} ({nd.get('width')}x{nd.get('height')}, "
+                 f"{nd.get('resolution')} dpi)")
+    elif result.get("new_document"):
+        where = " in a new document"
     summary = verb + what + where
     if manifest is not None:
         summary += f" from {result.get('manifest') or manifest}"
@@ -975,6 +1113,7 @@ def krita_export_layers(dir: str, ids: Union[Literal["all"], list[str]] = "all",
                         crop: bool = True, include_hidden: bool = True,
                         include_groups: bool = False, overwrite: bool = False,
                         png_level: Annotated[Optional[int], Field(ge=0, le=9)] = None,
+                        verbose: bool = False,
                         doc: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
     """
     Export layers as PNGs plus a manifest.json into a directory, without
@@ -986,10 +1125,19 @@ def krita_export_layers(dir: str, ids: Union[Literal["all"], list[str]] = "all",
 
     - One PNG per paint layer, the layer's own pixels bit for bit (its
       opacity, blend mode and visibility are in the manifest, not baked
-      in). With crop (default) each PNG is cut to the layer's opaque bounds
-      (alpha > 0), which may lie partly off the canvas, and the manifest
-      gives its x, y; with crop=false each PNG is canvas-sized at (0, 0),
-      and pixels past the canvas edge are lost (warning "off_canvas").
+      in), as straight (non-premultiplied) RGBA. With crop (default) each
+      PNG is cut to the pixels that hold anything (alpha > 0, or colour
+      under alpha 0 next to them), which may lie partly off the canvas, and
+      the manifest gives its x, y, w, h; with crop=false each PNG is
+      canvas-sized at (0, 0), and pixels past the canvas edge are lost
+      (warning "off_canvas").
+    - Each paint layer's entry also has device_origin {x, y}, the origin of
+      Krita's tile grid for that layer; krita_create_layers sets it again,
+      which is what makes the rebuilt composite identical to the source
+      (without it Krita's compositing can round soft edges by 1).
+    - The manifest's "document" block (width, height, resolution, colour
+      model, depth and profile, name) lets krita_create_layers(manifest=…,
+      new_document=true) rebuild the whole document in one call.
     - Every group gets a manifest entry (no PNG). A paint layer with no
       pixels gets an entry with png null, so the structure round-trips.
     - Order: the manifest lists layers in create order (depth-first, each
@@ -1018,9 +1166,11 @@ def krita_export_layers(dir: str, ids: Union[Literal["all"], list[str]] = "all",
     5800x8400); png_level=1 is much faster than the default for a few
     percent more bytes.
 
-    Returns {doc, dir, manifest (path), count (PNGs written), layers (the
-    manifest entries), skipped ([{id, path, type, reason}]), warnings
-    ([{code, message, ...}]), bytes (total written)}.
+    Returns {doc, dir, manifest (path), count (PNGs written), counts
+    ({paint, group, projection, png, skipped}), skipped ([{id, path, type,
+    reason}]), warnings ([{code, message, ...}]), bytes (total written)};
+    with verbose=true also layers (the manifest entries, which are in the
+    manifest file either way).
 
     Args:
         dir: Output directory (absolute, "~"-prefixed, or relative to the
@@ -1033,6 +1183,7 @@ def krita_export_layers(dir: str, ids: Union[Literal["all"], list[str]] = "all",
         overwrite: Write into a non-empty directory (default false)
         png_level: zlib level 0 (fastest, biggest) to 9 (smallest), or
                    null for the default (6)
+        verbose: Also return every manifest entry (default false)
         doc: Document handle such as "doc-3" (new_canvas and open_file return
              one), or the absolute path of an open document; default the
              active document
@@ -1052,13 +1203,19 @@ def krita_export_layers(dir: str, ids: Union[Literal["all"], list[str]] = "all",
                    include_hidden=None if include_hidden else False,
                    include_groups=include_groups or None, overwrite=overwrite or None,
                    png_level=png_level, doc=doc)
+    params["verbose"] = verbose
     result = client.call("export_layers", params, timeout_s=timeout_s)
-    layers = result.get("layers") or []
-    groups = sum(1 for e in layers if e.get("type") == "group")
-    projections = sum(1 for e in layers if e.get("projection"))
+    counts = result.get("counts")
+    if isinstance(counts, dict):
+        paint, groups = counts.get("paint", 0), counts.get("group", 0)
+        projections = counts.get("projection", 0)
+    else:  # an entry list only (an older plugin)
+        layers = result.get("layers") or []
+        groups = sum(1 for e in layers if e.get("type") == "group")
+        projections = sum(1 for e in layers if e.get("projection"))
+        paint = len(layers) - groups - projections
     count = result.get("count", 0)
-    what = (f"{_count(count, 'PNG')} for {_count(len(layers) - groups - projections, 'layer')}"
-            f" and {_count(groups, 'group')}")
+    what = f"{_count(count, 'PNG')} for {_count(paint, 'layer')} and {_count(groups, 'group')}"
     if projections:
         what += f" ({_count(projections, 'group projection')})"
     summary = (f"Exported {what}" + (_in(result) or f" from {doc or 'the active document'}")
@@ -1556,6 +1713,10 @@ def _lint_summary(result: dict, doc: Optional[str]) -> str:
     rules_run = result.get("rules_run")
     ran = f" ({_count(len(rules_run), 'rule')})" if isinstance(rules_run, list) else ""
     summary = (", ".join(parts) if parts else "No findings") + where + ran
+    by_rule = result.get("by_rule")
+    if isinstance(by_rule, dict) and by_rule:
+        summary += ": " + ", ".join(f"{rule} {g.get('count')}" for rule, g in by_rule.items()
+                                    if isinstance(g, dict))
     if result.get("pixel_stats") is False:
         summary += "; pixel rules skipped (not an 8-bit RGBA document)"
     return summary
@@ -1564,6 +1725,9 @@ def _lint_summary(result: dict, doc: Optional[str]) -> str:
 @mcp.tool()
 def krita_lint(doc: Optional[str] = None, rules: Optional[list[str]] = None,
                severity_min: Optional[Literal["info", "warning", "error"]] = None,
+               group_by: Literal["rule", "none"] = "rule",
+               limit: Annotated[int, Field(ge=1, le=10000)] = 5,
+               offset: Annotated[int, Field(ge=0)] = 0,
                timeout_s: Optional[float] = None) -> dict:
     """
     Check a document against the Live2D rig conventions (part separation
@@ -1578,8 +1742,12 @@ def krita_lint(doc: Optional[str] = None, rules: Optional[list[str]] = None,
       clipping into the pixels
     - blend-mode (error): a paint layer's blend mode other than normal,
       multiply or add (add and linear_dodge are the same mode)
-    - duplicate-name (error): a name used by several nodes anywhere in the
-      document; one finding per name, related_ids lists them all
+    - duplicate-name (error): a name used by several groups, or by several
+      layers, anywhere in the document (a group may share its name with a
+      layer, e.g. the Face group holding the Face layer); one finding per
+      name, related_ids lists them all, the message gives their paths and
+      a fix, and suggested_names ([{id, name}]) the pose-suffix names when
+      the copies sit in pose groups ("Hand L A" / "Hand L B")
     - side-token (warning): "Eye" next to "Eye L" in one group, or a
       non-standard side token such as "Eye_L", "Left Eye", "(L)"
     - empty-layer (warning): a paint layer with no pixels
@@ -1587,7 +1755,9 @@ def krita_lint(doc: Optional[str] = None, rules: Optional[list[str]] = None,
     - stray-alpha (warning): isolated specks of faint pixels: groups of at
       most stray_speck_max_px (default 64) px with alpha below 8, more
       than 4 px from any stronger pixel; anti-aliased edges and larger
-      soft regions (glows) don't count
+      soft regions (glows) don't count. The finding has pixels (the specks'
+      pixel count) and bounds (their box), enough to decide on
+      krita_trim_layers without rendering
     - color-space (error): the document is not 8-bit RGBA sRGB (one
       document-level finding)
     The contents of reference groups (a group named in brackets, such as
@@ -1619,12 +1789,20 @@ def krita_lint(doc: Optional[str] = None, rules: Optional[list[str]] = None,
     (default 4 px) and stray_speck_max_px (default 64). The result's
     settings shows the ones used.
 
-    Findings are {rule, severity, layer_id, path, message, related_ids?},
-    sorted by stacking order (top to bottom, as in the Layers docker),
-    document-level findings (layer_id and path null) first, then by rule.
+    Findings are {rule, severity, layer_id, path, message, related_ids?,
+    suggested_names?, pixels?, bounds?}, sorted by stacking order (top to
+    bottom, as in the Layers docker), document-level findings (layer_id
+    and path null) first, then by rule.
 
-    Returns {doc, findings, counts ({error, warning, info}, of the findings
-    returned), rules_run, settings, pixel_stats}.
+    Results are grouped by rule (group_by "rule", the default) so a big
+    document's lint fits in context: by_rule {rule: {severity, count,
+    items (the first `limit` findings, from `offset`), next_offset}}.
+    group_by "none" gives the flat findings list instead, paged the same
+    way (offset, limit, next_offset). To see every finding of one rule,
+    pass rules=["<rule>"] and a larger limit, or page with offset.
+
+    Returns {doc, by_rule | findings, counts ({error, warning, info}, over
+    all findings), total, rules_run, settings, pixel_stats}.
 
     Args:
         doc: Document handle such as "doc-3" (new_canvas and open_file return
@@ -1634,12 +1812,18 @@ def krita_lint(doc: Optional[str] = None, rules: Optional[list[str]] = None,
                unknown name fails with bad_request listing the valid ones
         severity_min: Drop findings less severe than this ("info",
                       "warning" or "error"); default all
+        group_by: "rule" (default: counts and the first findings per rule)
+                  or "none" (one flat list)
+        limit: Findings listed per rule (group_by "rule") or in all
+               ("none"), 1 to 10000; default 5
+        offset: Findings to skip first (per rule with "rule"); default 0
         timeout_s: Seconds to wait for Krita, up to 900; default 300
     """
     if rules is not None and (isinstance(rules, str) or not rules):
         raise ToolError("bad_request: rules must be a non-empty list of rule ids and/or set names")
-    params = _with({}, doc=doc, rules=None if rules is None else list(rules),
-                   severity_min=severity_min)
+    params = _with({"group_by": group_by, "limit": limit}, doc=doc,
+                   rules=None if rules is None else list(rules), severity_min=severity_min,
+                   offset=offset or None)
     result = client.call("lint", params, timeout_s=timeout_s)
     return _done(result, _lint_summary(result, doc))
 
@@ -1799,8 +1983,25 @@ def _diff_summary(result: dict, doc_a: str, doc_b: str) -> str:
     pixel_changes = counts.get("pixel_changes")
     if pixel_changes:
         parts.append(f"{_count(pixel_changes, 'layer')} with pixel changes")
+    projection = result.get("projection") or {}
     if result.get("projection_changed"):
-        parts.append("projection changed")
+        text = "projection changed"
+        if projection.get("changed_count"):
+            box = projection.get("bounds") or {}
+            text += (f": {_count(projection['changed_count'], 'visible pixel')}, max channel "
+                     f"difference {projection.get('max_channel_diff')}, within "
+                     f"{_rect_text(box)}")
+        parts.append(text)
+    alpha0 = projection.get("alpha0_rgb_count")
+    alpha0_layers = counts.get("alpha0_rgb_only_layers")
+    hidden = []
+    if alpha0:
+        hidden.append(f"{_count(alpha0, 'transparent pixel')} of the projection")
+    if alpha0_layers:
+        hidden.append(_count(alpha0_layers, "layer"))
+    if hidden:
+        verb = "ignored" if result.get("ignore_alpha0_rgb", True) else "counted"
+        parts.append("colour under alpha 0 differs in " + " and ".join(hidden) + f" ({verb})")
     matched = counts.get("matched") or {}
     how = ", ".join(f"{matched[k]} by {k}" for k in ("uuid", "path", "name") if matched.get(k))
     note = f" ({_count(matched.get('total', 0), 'layer')} matched{': ' + how if how else ''})"
@@ -1817,6 +2018,7 @@ def _diff_summary(result: dict, doc_a: str, doc_b: str) -> str:
 
 @mcp.tool()
 def krita_diff_documents(doc_a: str, doc_b: str, pixels: bool = True,
+                         ignore_alpha0_rgb: bool = True,
                          timeout_s: Optional[float] = None) -> dict:
     """
     Compare two open documents: which layers were added, removed, renamed,
@@ -1845,15 +2047,27 @@ def krita_diff_documents(doc_a: str, doc_b: str, pixels: bool = True,
       visible, opacity, blend_mode, locked, alpha_locked, inherit_alpha,
       pass_through, has_layer_style
     - pixel_changes (with pixels): [{..., changed_count, bounds {x, y, w,
-      h}}] for matched paint layers whose pixels differ over the union of
-      both layers' bounds; pixels transparent in both count as equal. Null
-      when not compared: pixels=false, documents of different sizes, or
-      not 8-bit RGBA (a warning says which)
+      h}, max_channel_diff, alpha0_rgb_count, alpha0_rgb_bounds}] for
+      matched paint layers whose pixels differ (over both layers' bounds,
+      grown to Krita's 64 px tiles). changed_count counts the visible
+      changes (alpha > 0 in either), bounds is their box and
+      max_channel_diff the largest difference in any channel (0-255; 1
+      means rounding). alpha0_rgb_count counts the pixels transparent in
+      both whose hidden colour differs (no visible effect). Null when not
+      compared: pixels=false, documents of different sizes, or not 8-bit
+      RGBA (a warning says which)
     - projection_changed: whether the composited images differ (null when
-      pixels were not compared)
+      pixels were not compared); projection: the same numbers as a
+      pixel_changes entry for the whole composite, so a change can be
+      judged by size and place without rendering
+    - ignore_alpha0_rgb (default true): differences only in the colour of
+      fully transparent pixels don't make projection_changed true or put a
+      layer in pixel_changes (they are still counted: projection's
+      alpha0_rgb_count, counts.alpha0_rgb_only_layers)
     - document_changes: {width | height | color_model | color_depth |
       color_profile | resolution: [a, b]} for the ones that differ
-    - counts: per category, plus matched {uuid, path, name, total}
+    - counts: per category, plus matched {uuid, path, name, total} and
+      alpha0_rgb_only_layers
 
     Args:
         doc_a: The first (older) document: handle such as "doc-3", or the
@@ -1861,11 +2075,16 @@ def krita_diff_documents(doc_a: str, doc_b: str, pixels: bool = True,
         doc_b: The second (newer) document, a different one
         pixels: Compare paint layers' pixels and the projections too
                 (default true; false for a quick structural diff)
+        ignore_alpha0_rgb: Treat pixels that are transparent in both
+                           documents as equal whatever colour they hide
+                           (default true; false counts them as changes)
         timeout_s: Seconds to wait for Krita, up to 900; default 300
     """
     params = {"doc_a": doc_a, "doc_b": doc_b}
     if not pixels:
         params["pixels"] = False
+    if not ignore_alpha0_rgb:
+        params["ignore_alpha0_rgb"] = False
     result = client.call("diff_documents", params, timeout_s=timeout_s)
     return _done(result, _diff_summary(result, doc_a, doc_b))
 
@@ -1921,10 +2140,12 @@ def krita_set_brush(
 
 @mcp.tool()
 def krita_stroke(points: list[list[int]], pressure: float = 1.0,
+                 color: Optional[str] = None,
                  doc: Optional[str] = None, layer: Optional[str] = None,
                  timeout_s: Optional[float] = None) -> dict:
     """
-    Paint a stroke through a series of points with the current color.
+    Paint a stroke through a series of points with the current color, or
+    with ``color``.
 
     One call is one agent undo step (krita_undo restores the old pixels;
     a write too big for the undo journal's caps warns "not_undoable").
@@ -1932,6 +2153,9 @@ def krita_stroke(points: list[list[int]], pressure: float = 1.0,
     Args:
         points: List of [x, y] coordinate pairs, e.g., [[100, 100], [150, 120], [200, 150]]
         pressure: Brush pressure (0.0 to 1.0, affects stroke thickness/opacity)
+        color: Paint color for this call only, as hex (e.g. "#3fa34d");
+               default the current color (krita_set_color), which this
+               does not change
         doc: Document handle such as "doc-3" (new_canvas and open_file return
              one), or the absolute path of an open document; default the
              active document
@@ -1947,16 +2171,18 @@ def krita_stroke(points: list[list[int]], pressure: float = 1.0,
     result = client.call("stroke", _with({
         "points": points,
         "pressure": pressure
-    }, doc=doc, layer=layer), timeout_s=timeout_s)
+    }, color=color, doc=doc, layer=layer), timeout_s=timeout_s)
     return _done(result, f"Stroke painted with {result.get('points_count', len(points))} points"
                          + _in(result) + _warnings_note(result.get("warnings")))
 
 
 @mcp.tool()
-def krita_fill(x: int, y: int, radius: int = 50, doc: Optional[str] = None,
-               layer: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
+def krita_fill(x: int, y: int, radius: int = 50, color: Optional[str] = None,
+               doc: Optional[str] = None, layer: Optional[str] = None,
+               timeout_s: Optional[float] = None) -> dict:
     """
-    Fill an area with current color (paints a filled circle at the point).
+    Fill an area with the current color, or with ``color`` (paints a
+    filled circle at the point).
 
     One call is one agent undo step (krita_undo restores the old pixels;
     a write too big for the undo journal's caps warns "not_undoable").
@@ -1965,6 +2191,9 @@ def krita_fill(x: int, y: int, radius: int = 50, doc: Optional[str] = None,
         x: X coordinate
         y: Y coordinate
         radius: Fill radius in pixels
+        color: Paint color for this call only, as hex (e.g. "#3fa34d");
+               default the current color (krita_set_color), which this
+               does not change
         doc: Document handle such as "doc-3" (new_canvas and open_file return
              one), or the absolute path of an open document; default the
              active document
@@ -1974,8 +2203,8 @@ def krita_fill(x: int, y: int, radius: int = 50, doc: Optional[str] = None,
                and masks fail with conflict
         timeout_s: Seconds to wait for Krita, up to 900; default per command
     """
-    result = client.call("fill", _with({"x": x, "y": y, "radius": radius}, doc=doc, layer=layer),
-                         timeout_s=timeout_s)
+    result = client.call("fill", _with({"x": x, "y": y, "radius": radius}, color=color, doc=doc,
+                                       layer=layer), timeout_s=timeout_s)
     return _done(result, f"Filled circle at ({x}, {y}) with radius {radius}" + _in(result)
                  + _warnings_note(result.get("warnings")))
 
@@ -1991,12 +2220,14 @@ def krita_draw_shape(
     stroke: bool = False,
     x2: Optional[int] = None,
     y2: Optional[int] = None,
+    color: Optional[str] = None,
     doc: Optional[str] = None,
     layer: Optional[str] = None,
     timeout_s: Optional[float] = None,
 ) -> dict:
     """
-    Draw a shape on the canvas with the current color.
+    Draw a shape on the canvas with the current color, or with ``color``
+    (no krita_set_color call needed).
 
     One call is one agent undo step (krita_undo restores the old pixels;
     a write too big for the undo journal's caps warns "not_undoable").
@@ -2011,6 +2242,9 @@ def krita_draw_shape(
         stroke: Whether to draw outline
         x2: End X for lines (optional)
         y2: End Y for lines (optional)
+        color: Paint color for this call only, as hex (e.g. "#3fa34d");
+               default the current color (krita_set_color), which this
+               does not change
         doc: Document handle such as "doc-3" (new_canvas and open_file return
              one), or the absolute path of an open document; default the
              active document
@@ -2034,7 +2268,8 @@ def krita_draw_shape(
     if y2 is not None:
         params["y2"] = y2
 
-    result = client.call("draw_shape", _with(params, doc=doc, layer=layer), timeout_s=timeout_s)
+    result = client.call("draw_shape", _with(params, color=color, doc=doc, layer=layer),
+                         timeout_s=timeout_s)
     return _done(result, f"Drew {result.get('shape', shape)} at ({x}, {y})" + _in(result)
                  + _warnings_note(result.get("warnings")))
 

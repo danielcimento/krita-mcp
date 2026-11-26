@@ -28,7 +28,7 @@ Settled here (api-design.md § Lint rules, P4.2 note):
   ``[`` and ends with ``]`` (``[ Guide ]``, ``[Refs]``). Everything inside
   one, at any depth, is skipped by every rule here. The bracket group
   itself is a normal group and is checked (its name counts for
-  ``duplicate-name``). Only groups count: a bracket-named paint layer is
+  ``duplicate-name`` among groups). Only groups count: a bracket-named paint layer is
   linted like any other.
 - **Side tokens** (CONVENTIONS § Naming): the standard token is a separate
   word ``L`` or ``R``, after the first word, placed before trailing
@@ -264,18 +264,64 @@ def blend_mode(snapshot):
     return out
 
 
+def _pose_letter(node, by_id):
+    """The pose letter of the nearest enclosing pose group (``<X> A``,
+    ``<X> B``, …; ``pose_parts``) of ``node``, or None."""
+    parent = by_id.get(node.get("parent"))
+    while parent is not None:
+        p = pose_parts(parent.get("name") or "") if parent.get("type") == GROUP else None
+        if p:
+            return p[1]
+        parent = by_id.get(parent.get("parent"))
+    return None
+
+
+def _rename_suggestion(name, nodes, by_id):
+    """``(text, [{id, name}])``: how CONVENTIONS § Naming would rename the
+    copies of ``name``. When each copy sits in a different pose group, the
+    pose suffix (``Hand L A`` / ``Hand L B``), as data too; otherwise an
+    index suffix, as text only (which copy is which is the artist's call)."""
+    letters = [_pose_letter(n, by_id) for n in nodes]
+    if all(letters) and len(set(letters)) == len(letters):
+        names = [f"{name} {letter}" for letter in letters]
+        shown = " / ".join(f"'{n}'" for n in names)
+        return (f"rename to {shown} (pose suffix, CONVENTIONS § Naming)",
+                [{"id": n["id"], "name": new} for n, new in zip(nodes, names)])
+    shown = " / ".join(f"'{name} {i}'" for i in range(1, min(len(nodes), 3) + 1))
+    return (f"rename them to say what differs, or add an index: {shown}"
+            f"{' / …' if len(nodes) > 3 else ''}", None)
+
+
 @rule("duplicate-name", "error")
 def duplicate_name(snapshot):
+    """Names must be unique among groups and, separately, among layers
+    (paint layers and the other layer types): a group may share its name
+    with a layer, e.g. the Face group holding the Face layer (CONVENTIONS
+    § Naming, F003 K6). One finding per clashing name and kind; the
+    message lists the copies' paths and a fix, ``suggested_names`` the
+    new names when they follow from pose groups."""
+    by_id = {n["id"]: n for n in snapshot["nodes"]}
     by_name = {}
     for n in checked_nodes(snapshot):
-        by_name.setdefault(n.get("name"), []).append(n)
+        kind = "group" if n.get("type") == GROUP else "layer"
+        by_name.setdefault((kind, n.get("name")), []).append(n)
     out = []
-    for name, nodes in by_name.items():
-        if len(nodes) > 1:
-            paths = ", ".join(f"'{n.get('path')}'" for n in nodes)
-            out.append(finding("duplicate-name", nodes[1], (
-                f"Name '{name}' is used by {len(nodes)} nodes ({paths}); "
-                "names must be unique in the whole document"), [n["id"] for n in nodes]))
+    for (kind, name), nodes in by_name.items():
+        if len(nodes) < 2:
+            continue
+        if kind == "group":
+            what, rule_text = "groups", "group names must be unique (a layer may share one)"
+        else:
+            what = "paint layers" if all(n.get("type") == PAINT for n in nodes) else "layers"
+            rule_text = f"{what[:-1]} names must be unique (a group may share one)"
+        paths = ", ".join(f"'{n.get('path')}'" for n in nodes)
+        fix, suggested = _rename_suggestion(name, nodes, by_id)
+        f = finding("duplicate-name", nodes[1], (
+            f"Name '{name}' is used by {len(nodes)} {what} ({paths}); {rule_text}: {fix}"),
+            [n["id"] for n in nodes])
+        if suggested:
+            f["suggested_names"] = suggested
+        out.append(f)
     return out
 
 
@@ -444,9 +490,18 @@ def stray_alpha(snapshot):
             where = ", ".join(f"({r['x']}, {r['y']}) {r['w']}x{r['h']}" for r in shown)
             if where:
                 where = f", {'e.g. ' if count > len(shown) else ''}at {where}"
-            out.append(finding("stray-alpha", n, (
+            box = specks.get("bounds")
+            within = (f", all within ({box['x']}, {box['y']}) {box['w']}x{box['h']}"
+                      if box and count > len(shown) else "")
+            f = finding("stray-alpha", n, (
                 f"Paint layer '{path}' has {_plural(count, 'stray speck')}, {specks.get('pixels', 0)} px "
-                f"(groups of up to {s['stray_speck_max_px']} px with {stray}){where}; erase them")))
+                f"(groups of up to {s['stray_speck_max_px']} px with {stray}){where}{within}; "
+                f"erase them, or clear them with krita_trim_layers(ids=[...], "
+                f"alpha_threshold={below}, near_px={dist})"))
+            # K7: enough to decide on a trim without rendering.
+            f["pixels"] = specks.get("pixels", 0)
+            f["bounds"] = box
+            out.append(f)
     return out
 
 

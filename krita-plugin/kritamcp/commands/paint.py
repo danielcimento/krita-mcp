@@ -41,9 +41,13 @@ def _color_param(params, key="color", default=None):
     return QColor(value)
 
 
-def _paint_rgb():
-    """The paint color: the stored one; else the active view's foreground;
-    else black."""
+def _paint_rgb(params=None):
+    """The paint color: ``params["color"]`` when given (this call only; the
+    stored color is unchanged, F003 K7); else the stored one; else the
+    active view's foreground; else black."""
+    if params is not None and params.get("color") is not None:
+        color = _color_param(params)
+        return color.red(), color.green(), color.blue()
     if current_color is not None:
         color = QColor(current_color)
     else:
@@ -171,7 +175,7 @@ def cmd_stroke(params):
             raise CommandError("bad_request", "Each point must be an [x, y] pair of numbers")
 
     handle, doc, layer = _paint_target(params)
-    r, g, b = _paint_rgb()
+    r, g, b = _paint_rgb(params)
 
     width = doc.width()
     height = doc.height()
@@ -264,7 +268,7 @@ def cmd_stroke(params):
     doc.refreshProjection()
     extra = _record(handle, "stroke", layer, (min_x, min_y, w, h), old)
 
-    return {"points_count": len(points), "hardness": hardness,
+    return {"color": "#%02x%02x%02x" % (r, g, b), "points_count": len(points), "hardness": hardness,
             "doc": handle, "layer": nodes.node_id(layer), **extra}
 
 
@@ -276,7 +280,7 @@ def cmd_fill(params):
     radius = int_param(params, "radius", 50, 1, COORD)  # the box is clipped to the document
 
     handle, doc, layer = _paint_target(params)
-    r, g, b = _paint_rgb()
+    r, g, b = _paint_rgb(params)
 
     # Paint a filled circle using pixel data
     # Create a bounding box
@@ -311,7 +315,7 @@ def cmd_fill(params):
     doc.refreshProjection()
     extra = _record(handle, "fill", layer, (x1, y1, w, h), old)
 
-    return {"x": x, "y": y, "radius": radius, "doc": handle, "layer": nodes.node_id(layer),
+    return {"color": "#%02x%02x%02x" % (r, g, b), "x": x, "y": y, "radius": radius, "doc": handle, "layer": nodes.node_id(layer),
             **extra}
 
 
@@ -326,7 +330,7 @@ def cmd_draw_shape(params):
     fill = params.get("fill", True)
 
     handle, doc, layer = _paint_target(params)
-    r, g, b = _paint_rgb()
+    r, g, b = _paint_rgb(params)
     written = None  # (rect, old bytes) of the write, for the journal
 
     if shape == "line":
@@ -421,7 +425,7 @@ def cmd_draw_shape(params):
     doc.refreshProjection()
     extra = _record(handle, "draw_shape", layer, *written) if written else {}
 
-    return {"shape": shape, "doc": handle, "layer": nodes.node_id(layer), **extra}
+    return {"color": "#%02x%02x%02x" % (r, g, b), "shape": shape, "doc": handle, "layer": nodes.node_id(layer), **extra}
 
 
 # clear writes a full-canvas buffer, so it gets the long timeout.

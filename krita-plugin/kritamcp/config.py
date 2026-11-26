@@ -66,6 +66,9 @@ LINT_INT_RANGES = {"stray_alpha_below": (1, 255), "stray_alpha_distance": (1, 64
 # times the default per-side limit. Not affected by the config file.
 COORD = 10 * DEFAULT_LIMITS["max_canvas_dim"]
 KNOWN_KEYS = ("allowed_dirs", "limits", "journal", "lint")
+# The config-file key that lists extra allowed directories (K2: named in
+# every forbidden_path error and in /health).
+ALLOWED_DIRS_KEY = "allowed_dirs"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -81,6 +84,7 @@ class Settings:
     config_loaded: bool     # the file existed and was used
     requested_roots: tuple  # the extra roots as given (file, then env), valid or not
     lint: types.MappingProxyType = types.MappingProxyType(DEFAULT_LINT)
+    file_dirs: tuple = ()   # the config file's allowed_dirs strings, as written
 
 
 def load(config_file=None, env=None, output_dir=None, home=None):
@@ -136,6 +140,7 @@ def load(config_file=None, env=None, output_dir=None, home=None):
         limits=types.MappingProxyType(limits), journal=types.MappingProxyType(journal),
         errors=tuple(errors), config_file=config_file, config_loaded=loaded,
         requested_roots=tuple(requested), lint=types.MappingProxyType(lint),
+        file_dirs=tuple(d for d in file_dirs if isinstance(d, str)),
     )
 
 
@@ -264,6 +269,31 @@ def _merge_lint(data, into, config_file, errors):
             else:
                 errors.append(f"config file {config_file}: lint.{key} must be an integer from {lo} to {hi}, "
                               f"got {value!r}; default {into[key]} kept")
+
+
+# How config changes take effect (/health's config_reload; K2).
+RELOAD_NOTE = ("automatic: the plugin re-reads the config file when it changes, from the "
+               "next call on; no restart needed")
+
+
+def describe(settings):
+    """The config fields of ``/health`` and ``reload_config`` (K2): the
+    resolved ``allowed_dirs`` (the output dir first), the config file, the
+    key that lists extra folders, whether the file exists and was used,
+    how changes apply, limits, lint settings and problems."""
+    return {
+        "allowed_dirs": list(settings.roots),
+        "config_file": settings.config_file,
+        "config_exists": os.path.isfile(settings.config_file),
+        "config_loaded": settings.config_loaded,
+        "config_key": ALLOWED_DIRS_KEY,
+        "config_dirs": list(settings.file_dirs),  # the file's entries, as written
+        "allowed_dirs_env": ALLOWED_DIRS_ENV,
+        "config_reload": RELOAD_NOTE,
+        "limits": dict(settings.limits),
+        "lint": dict(settings.lint),  # krita_lint's settings (D14, D17)
+        "config_errors": list(settings.errors),
+    }
 
 
 # --- Cached access ------------------------------------------------------

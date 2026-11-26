@@ -1,6 +1,7 @@
 """server.py's tools, with client.call / client.get_health mocked (no Krita)."""
 
 import asyncio
+import types
 
 import pytest
 from fastmcp import Client
@@ -11,6 +12,7 @@ from krita_mcp_server import client
 
 EXPECTED_TOOLS = {
     "krita_health",
+    "krita_reload_config",
     "krita_new_canvas",
     "krita_set_color",
     "krita_set_brush",
@@ -72,6 +74,10 @@ CASES = {
     "krita_undo": ({}, "undo", {"doc": "doc-1",
                                 "undone": {"label": "stroke", "layers": ["{1}"]},
                                 "remaining": {"undo": 2, "redo": 1}, "warnings": []}),
+    "krita_reload_config": ({}, "reload_config",
+                            {"allowed_dirs": ["/out"], "config_file": "/c.json",
+                             "config_exists": False, "config_key": "allowed_dirs",
+                             "config_errors": []}),
     "krita_redo": ({}, "redo", {"doc": "doc-1",
                                 "redone": {"label": "stroke", "layers": ["{1}"]},
                                 "remaining": {"undo": 3, "redo": 0}, "warnings": []}),
@@ -344,8 +350,8 @@ def test_health_unreachable_does_not_raise(monkeypatch):
 
 
 def test_health_ok(monkeypatch):
-    health = {"status": "ok", "plugin": "kritamcp", "protocol": 2,
-              "version": "0.2.0", "krita_version": "5.3.4"}
+    health = {"status": "ok", "plugin": "kritamcp", "protocol": 3,
+              "version": "0.3.0", "krita_version": "5.3.4"}
     monkeypatch.setattr(client, "get_health", lambda timeout=None: dict(health))
     result = server.krita_health()
     assert result["running"] is True and result["protocol_ok"] is True
@@ -363,7 +369,7 @@ def test_health_flags_protocol_mismatch(monkeypatch):
 
 
 def test_health_reports_roots_and_config_errors(monkeypatch):
-    health = {"status": "ok", "plugin": "kritamcp", "protocol": 2, "version": "0.2.0",
+    health = {"status": "ok", "plugin": "kritamcp", "protocol": 3, "version": "0.3.0",
               "krita_version": "5.3.4", "allowed_dirs": ["/out", "/art"],
               "config_file": "/home/u/.krita-mcp-config.json", "config_loaded": True,
               "limits": {"max_canvas_dim": 16384, "max_canvas_pixels": 67108864},
@@ -381,16 +387,16 @@ def test_health_reports_roots_and_config_errors(monkeypatch):
 
 
 def test_health_without_config_fields(monkeypatch):
-    health = {"status": "ok", "plugin": "kritamcp", "protocol": 2, "version": "0.2.0",
+    health = {"status": "ok", "plugin": "kritamcp", "protocol": 3, "version": "0.3.0",
               "krita_version": "5.3.4", "allowed_dirs": ["/out"], "config_errors": []}
     monkeypatch.setattr(client, "get_health", lambda timeout=None: dict(health))
     result = server.krita_health()
     assert result["config_errors"] == [] and "config error" not in result["summary"]
-    assert "1 allowed dir" in result["summary"] and "dirs" not in result["summary"]
+    assert "1 allowed dir: /out" in result["summary"]
 
 
 def test_health_reports_busy(monkeypatch):
-    health = {"status": "ok", "plugin": "kritamcp", "protocol": 2, "version": "0.2.0",
+    health = {"status": "ok", "plugin": "kritamcp", "protocol": 3, "version": "0.3.0",
               "krita_version": "5.3.4", "allowed_dirs": ["/out"], "config_errors": [],
               "busy": {"action": "save", "elapsed_ms": 12345}, "queued": 2}
     monkeypatch.setattr(client, "get_health", lambda timeout=None: dict(health))
@@ -401,7 +407,7 @@ def test_health_reports_busy(monkeypatch):
 
 
 def test_health_idle_has_busy_null(monkeypatch):
-    health = {"status": "ok", "plugin": "kritamcp", "protocol": 2, "version": "0.2.0",
+    health = {"status": "ok", "plugin": "kritamcp", "protocol": 3, "version": "0.3.0",
               "krita_version": "5.3.4", "busy": None, "queued": 0}
     monkeypatch.setattr(client, "get_health", lambda timeout=None: dict(health))
     result = server.krita_health()
@@ -617,22 +623,33 @@ def test_close_document_params_and_summary(fake_call):
 # P2.1: list_layers.
 
 def test_list_layers_forwards_only_set_params(fake_call):
+    page = {"overview": True, "limit": 30, "offset": 0}
     server.krita_list_layers()
-    assert fake_call.calls[0][1] == {}
+    assert fake_call.calls[0][1] == {**page, "fields": server.LIST_DEFAULT_FIELDS}
     server.krita_list_layers(doc="doc-2", root="Head", depth=2, fields=["bounds"])
-    assert fake_call.calls[1][1] == {"doc": "doc-2", "root": "Head", "depth": 2,
+    assert fake_call.calls[1][1] == {**page, "doc": "doc-2", "root": "Head", "depth": 2,
                                      "fields": ["bounds"]}
     server.krita_list_layers(fields=[])  # an empty list is sent: only id, name, children
-    assert fake_call.calls[2][1] == {"fields": []}
+    assert fake_call.calls[2][1] == {**page, "fields": []}
+    server.krita_list_layers(fields=["all"], limit=5, offset=10)
+    assert fake_call.calls[3][1] == {"overview": True, "limit": 5, "offset": 10}
+    server.krita_list_layers(summary_only=True)
+    assert fake_call.calls[4][1] == {"overview": True, "summary_only": True,
+                                     "fields": server.LIST_DEFAULT_FIELDS}
+    server.krita_list_layers(path="tree.json")
+    assert fake_call.calls[5][1] == {"overview": True, "path": "tree.json",
+                                     "fields": server.LIST_DEFAULT_FIELDS}
 
 
 def test_list_layers_schema():
     tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
     tool = tools["krita_list_layers"]
     props = tool.parameters["properties"]
-    assert set(props) == {"doc", "root", "depth", "fields", "timeout_s"}
+    assert set(props) == {"doc", "root", "depth", "fields", "summary_only", "path", "limit",
+                          "offset", "timeout_s"}
     assert not tool.parameters.get("required")
     assert "top to bottom" in tool.description and "not clipped" in tool.description
+    assert props["limit"]["default"] == 30 and props["offset"]["default"] == 0
 
 
 def test_list_layers_summary(fake_call):
@@ -650,6 +667,15 @@ def test_list_layers_summary(fake_call):
     fake_call.payload = {"root": "/", "layers": [],
                          "counts": {"weirdlayer": 2, "total": 2}}
     assert server.krita_list_layers()["summary"] == "2 weirdlayer in the active document"
+    fake_call.payload = {"doc": "doc-2", "root": "/", "layers": [{"id": "{1}"}] * 30,
+                         "counts": {"paintlayer": 184, "grouplayer": 38, "total": 222},
+                         "offset": 0, "limit": 30, "next_offset": 30,
+                         "overview": {"hidden": {"count": 2, "paths": ["a", "b"]},
+                                     "blend_modes": {"multiply": {"count": 7, "paths": []}},
+                                     "max_depth": 4}}
+    assert server.krita_list_layers()["summary"] == (
+        "38 groups, 184 paint layers in doc-2; 2 hidden, 7 multiply, depth 4; listed 1-30 "
+        "(next page: offset=30)")
 
 
 # P2.3: create_layers.
@@ -663,17 +689,18 @@ def test_create_layers_sends_only_set_fields(fake_call):
     assert action == "create_layers" and timeout_s is None
     assert params == {"specs": [{"name": "G", "type": "group", "key": "g"},
                                 {"name": "A", "parent": "$g", "visible": False, "opacity": 0.0,
-                                 "png": "a.png", "x": 0, "y": 0}]}
-    server.krita_create_layers([{"name": "A"}], doc="doc-2", dry_run=True, timeout_s=60)
-    assert fake_call.calls[1][1:] == ({"specs": [{"name": "A"}], "doc": "doc-2",
-                                       "dry_run": True}, 60)
+                                 "png": "a.png", "x": 0, "y": 0}], "verbose": "auto"}
+    server.krita_create_layers([{"name": "A", "device_origin": {"x": 3, "y": -4}}], doc="doc-2",
+                               dry_run=True, verbose=True, timeout_s=60)
+    assert fake_call.calls[1][1:] == ({"specs": [{"name": "A", "device_origin": {"x": 3, "y": -4}}],
+                                       "doc": "doc-2", "dry_run": True, "verbose": True}, 60)
 
 
 def test_create_layers_schema_and_typos():
     tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
     tool = tools["krita_create_layers"]
-    assert set(tool.parameters["properties"]) == {"specs", "manifest", "doc", "dry_run",
-                                                  "timeout_s"}
+    assert set(tool.parameters["properties"]) == {"specs", "manifest", "doc", "new_document",
+                                                  "name", "dry_run", "verbose", "timeout_s"}
     assert not tool.parameters.get("required")
     assert "bottom to top" in tool.description and "$<key>" in tool.description
     assert "relative to the manifest's directory" in " ".join(tool.description.split())
@@ -707,10 +734,29 @@ def test_create_layers_manifest_forwarded(fake_call):
                          "manifest": "/out/m/manifest.json", "skipped": [], "warnings": []}
     result = server.krita_create_layers(manifest="m/manifest.json", doc="doc-2", timeout_s=600)
     assert fake_call.calls == [("create_layers", {"manifest": "m/manifest.json",
-                                                  "doc": "doc-2"}, 600)]
+                                                  "verbose": "auto", "doc": "doc-2"}, 600)]
     assert result["summary"] == "Created 2 layers (1 group) in doc-2 from /out/m/manifest.json"
     server.krita_create_layers(manifest="m.json", dry_run=True)
-    assert fake_call.calls[1][1] == {"manifest": "m.json", "dry_run": True}
+    assert fake_call.calls[1][1] == {"manifest": "m.json", "dry_run": True, "verbose": "auto"}
+
+
+def test_create_layers_new_document(fake_call):
+    fake_call.payload = {"doc": "doc-5", "dry_run": False, "counts": {"total": 222},
+                         "created_listed": False, "manifest": "/out/m/manifest.json",
+                         "skipped": [], "warnings": [],
+                         "new_document": {"name": "mao", "width": 5800, "height": 8400,
+                                          "resolution": 72, "color_profile": "sRGB"}}
+    result = server.krita_create_layers(manifest="m/manifest.json", new_document=True,
+                                        name="Rebuild")
+    assert fake_call.calls[0][1] == {"manifest": "m/manifest.json", "verbose": "auto",
+                                     "new_document": True, "name": "Rebuild"}
+    assert result["summary"] == ("Created 222 layers in new document doc-5 (5800x8400, 72 dpi) "
+                                 "from /out/m/manifest.json")
+    for kwargs in ({"specs": [{"name": "a"}], "new_document": True},
+                   {"manifest": "m.json", "new_document": True, "doc": "doc-1"}):
+        with pytest.raises(ToolError, match="^bad_request: "):
+            server.krita_create_layers(**kwargs)
+    assert len(fake_call.calls) == 1
 
 
 def test_create_layers_needs_exactly_one_input(fake_call):
@@ -740,10 +786,27 @@ def _tools():
 
 
 def _call_tool(name, args):
+    """Call a tool through the MCP layer (schema validation included) with
+    ``client.call`` replaced, so nothing ever reaches a running Krita. A
+    call that gets past validation to the plugin counts as not an error."""
+    reached = []
+
+    def guard(action, params, timeout_s=None):
+        reached.append(action)
+        return {}
+
     async def go():
         async with Client(server.mcp) as c:
             return await c.call_tool(name, args, raise_on_error=False)
-    return asyncio.run(go())
+    original = client.call
+    client.call = guard
+    try:
+        result = asyncio.run(go())
+    finally:
+        client.call = original
+    if reached:
+        return types.SimpleNamespace(is_error=False, reached=reached)
+    return result
 
 
 def test_update_layers_sends_only_set_fields(fake_call):
@@ -877,15 +940,16 @@ def test_import_png_summary(fake_call):
 
 def test_export_layers_params(fake_call):
     server.krita_export_layers("out")
-    assert fake_call.calls[0] == ("export_layers", {"dir": "out"}, None)
+    assert fake_call.calls[0] == ("export_layers", {"dir": "out", "verbose": False}, None)
     server.krita_export_layers("~/x", ids=["Head", "{1}"], crop=False, include_hidden=False,
                                include_groups=True, overwrite=True, png_level=1, doc="doc-2",
                                timeout_s=600)
     assert fake_call.calls[1] == ("export_layers", {
         "dir": "~/x", "ids": ["Head", "{1}"], "crop": False, "include_hidden": False,
-        "include_groups": True, "overwrite": True, "png_level": 1, "doc": "doc-2"}, 600)
-    server.krita_export_layers("out", ids="all", png_level=0)
-    assert fake_call.calls[2][1] == {"dir": "out", "png_level": 0}
+        "include_groups": True, "overwrite": True, "png_level": 1, "doc": "doc-2",
+        "verbose": False}, 600)
+    server.krita_export_layers("out", ids="all", png_level=0, verbose=True)
+    assert fake_call.calls[2][1] == {"dir": "out", "png_level": 0, "verbose": True}
 
 
 def test_export_layers_validates_ids_and_png_level(fake_call):
@@ -900,7 +964,7 @@ def test_export_layers_validates_ids_and_png_level(fake_call):
 def test_export_layers_schema_and_typos():
     params = _tools()["krita_export_layers"].parameters
     assert set(params["properties"]) == {"dir", "ids", "crop", "include_hidden", "include_groups",
-                                         "overwrite", "png_level", "doc", "timeout_s"}
+                                         "overwrite", "png_level", "verbose", "doc", "timeout_s"}
     assert params["required"] == ["dir"]
     ids = params["properties"]["ids"]
     assert ids["default"] == "all"
@@ -912,7 +976,7 @@ def test_export_layers_schema_and_typos():
                    "png_level=1", "8-bit RGBA"):
         assert phrase in description, phrase
     for args in ({"dir": "out", "png_level": 10}, {"dir": "out", "ids": "Head"},
-                 {"dir": "out", "ids": [1]}, {"ids": "all"}, {"dir": "out", "crop": "no"}):
+                 {"dir": "out", "ids": [1]}, {"ids": "all"}, {"dir": "out", "crop": "maybe"}):
         assert _call_tool("krita_export_layers", args).is_error, args
 
 
@@ -1028,10 +1092,11 @@ def test_get_canvas_summary_and_docstring(fake_call):
 
 def test_lint_params(fake_call):
     server.krita_lint()
-    assert fake_call.calls[0] == ("lint", {}, None)
+    assert fake_call.calls[0] == ("lint", {"group_by": "rule", "limit": 5}, None)
     server.krita_lint(doc="doc-2", rules=("default", "node-type"), severity_min="warning",
-                      timeout_s=600)
-    assert fake_call.calls[1] == ("lint", {"doc": "doc-2", "rules": ["default", "node-type"],
+                      group_by="none", limit=50, offset=50, timeout_s=600)
+    assert fake_call.calls[1] == ("lint", {"group_by": "none", "limit": 50, "offset": 50,
+                                           "doc": "doc-2", "rules": ["default", "node-type"],
                                            "severity_min": "warning"}, 600)
 
 
@@ -1047,7 +1112,8 @@ def test_lint_schema_and_docstring():
 
     tool = _tools()["krita_lint"]
     params = tool.parameters
-    assert set(params["properties"]) == {"doc", "rules", "severity_min", "timeout_s"}
+    assert set(params["properties"]) == {"doc", "rules", "severity_min", "group_by", "limit",
+                                         "offset", "timeout_s"}
     assert params.get("required", []) == []
     assert params["properties"]["severity_min"]["anyOf"][0]["enum"] == ["info", "warning", "error"]
     description = " ".join(tool.description.split())
@@ -1057,7 +1123,8 @@ def test_lint_schema_and_docstring():
                    "stray_alpha_distance", "stacking order", "document-level", "related_ids",
                    "Reads only"):
         assert phrase in description, phrase
-    for args in ({"severity_min": "fatal"}, {"rules": "default"}, {"rules": [1]}, {"bogus": 1}):
+    for args in ({"severity_min": "fatal"}, {"rules": "default"}, {"rules": [1]}, {"bogus": 1},
+                 {"group_by": "layer"}, {"limit": 0}, {"offset": -1}):
         assert _call_tool("krita_lint", args).is_error, args
 
 
@@ -1506,10 +1573,62 @@ def test_diff_documents_params_and_summaries(fake_call):
 def test_diff_documents_schema_and_typos():
     tools = _tools()
     params = tools["krita_diff_documents"].parameters
-    assert set(params["properties"]) == {"doc_a", "doc_b", "pixels", "timeout_s"}
+    assert set(params["properties"]) == {"doc_a", "doc_b", "pixels", "ignore_alpha0_rgb",
+                                         "timeout_s"}
     assert sorted(params["required"]) == ["doc_a", "doc_b"]
     text = " ".join(tools["krita_diff_documents"].description.split())
     assert "by id" in text and "unique in each whole document" in text
-    assert "transparent in both count as equal" in text
+    assert "transparent in both whose hidden colour differs" in text
+    assert "ignore_alpha0_rgb" in text
     for args in ({"doc_a": "doc-1"}, {"doc_a": "doc-1", "doc_b": "doc-2", "doc": "doc-3"}):
         assert _call_tool("krita_diff_documents", args).is_error, args
+
+
+# --- F003 ------------------------------------------------------------------
+
+def test_paint_tools_forward_color(fake_call):
+    server.krita_draw_shape("ellipse", 1, 2, color="#3fa34d")
+    assert fake_call.calls[0][1]["color"] == "#3fa34d"
+    server.krita_stroke([[0, 0], [5, 5]], color="#ff0000")
+    assert fake_call.calls[1][1]["color"] == "#ff0000"
+    server.krita_fill(3, 4, color="#00ff00")
+    assert fake_call.calls[2][1]["color"] == "#00ff00"
+    server.krita_fill(3, 4)
+    assert "color" not in fake_call.calls[3][1]
+
+
+def test_diff_summary_quantifies_the_projection(fake_call):
+    fake_call.payload = {
+        "doc_a": "doc-1", "doc_b": "doc-2", "projection_changed": True, "ignore_alpha0_rgb": True,
+        "projection": {"changed_count": 316, "bounds": {"x": 953, "y": 1948, "w": 2951, "h": 5721},
+                       "max_channel_diff": 1, "alpha0_rgb_count": 2859,
+                       "alpha0_rgb_bounds": {"x": 0, "y": 0, "w": 1, "h": 1}},
+        "counts": {"pixel_changes": 0, "alpha0_rgb_only_layers": 0,
+                   "matched": {"path": 222, "total": 222}},
+        "document_changes": {}, "warnings": []}
+    summary = server.krita_diff_documents("doc-1", "doc-2")["summary"]
+    assert summary == ("doc-1 -> doc-2: projection changed: 316 visible pixels, max channel "
+                       "difference 1, within 2951x5721 at (953, 1948), colour under alpha 0 "
+                       "differs in 2859 transparent pixels of the projection (ignored) "
+                       "(222 layers matched: 222 by path)")
+    server.krita_diff_documents("doc-1", "doc-2", ignore_alpha0_rgb=False)
+    assert fake_call.calls[1][1] == {"doc_a": "doc-1", "doc_b": "doc-2",
+                                     "ignore_alpha0_rgb": False}
+
+
+def test_reload_config_summary(fake_call):
+    fake_call.payload = {"allowed_dirs": ["/out", "/art"], "config_file": "/c.json",
+                         "config_exists": True, "config_errors": ["allowed root 'x' skipped"]}
+    assert server.krita_reload_config()["summary"] == (
+        "Config reloaded from /c.json; allowed dirs: /out, /art; 1 config error: "
+        "allowed root 'x' skipped")
+    assert fake_call.calls[0][:2] == ("reload_config", {})
+
+
+def test_health_summary_says_where_to_add_a_dir(monkeypatch):
+    health = {"status": "ok", "plugin": "kritamcp", "protocol": 3, "version": "0.3.0",
+              "allowed_dirs": ["/out"], "config_errors": [], "config_key": "allowed_dirs",
+              "config_file": "/home/me/.krita-mcp-config.json"}
+    monkeypatch.setattr(client, "get_health", lambda timeout=None: dict(health))
+    assert ('add more under "allowed_dirs" in /home/me/.krita-mcp-config.json'
+            in server.krita_health()["summary"])

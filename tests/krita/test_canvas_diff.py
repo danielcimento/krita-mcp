@@ -294,7 +294,10 @@ class DiffDocumentsTest(Base):
         self.assertEqual(result["warnings"], [])
         self.assertEqual(result["counts"], {
             "added": 0, "removed": 0, "renamed": 0, "moved": 0, "changed": 0,
-            "pixel_changes": 0, "matched": matched})
+            "pixel_changes": 0, "alpha0_rgb_only_layers": 0, "matched": matched})
+        self.assertEqual(result["projection"], {"changed_count": 0, "bounds": None,
+                                                "max_channel_diff": 0, "alpha0_rgb_count": 0,
+                                                "alpha0_rgb_bounds": None})
 
     def saved_copy(self, handle, name="copy.kra"):
         kra = self.assertOk(run("save", doc=handle, path=os.path.join(self.root, "a.kra")))["path"]
@@ -342,16 +345,27 @@ class DiffDocumentsTest(Base):
                 "id_a": ids["Head/Eye L"], "id_b": ids["Head/Eye L"], "path": "Head/Eye L",
                 "match": "uuid", "fields": {"opacity": [1.0, 0.502],
                                             "blend_mode": ["normal", "multiply"]}}])
-            self.assertEqual(result["pixel_changes"], [
+            stats = ("max_channel_diff", "alpha0_rgb_count", "alpha0_rgb_bounds")
+            self.assertEqual([{k: v for k, v in e.items() if k not in stats}
+                              for e in result["pixel_changes"]], [
                 {"id_a": ids["Head/Eye L"], "id_b": ids["Head/Eye L"], "path": "Head/Eye L",
                  "match": "uuid", "changed_count": 2, "bounds": {"x": 30, "y": 0, "w": 2, "h": 1}},
                 {"id_a": ids["Body"], "id_b": ids["Body"], "path": "Torso", "path_a": "Body",
                  "match": "uuid", "changed_count": 6,
                  "bounds": {"x": 10, "y": 10, "w": 3, "h": 2}}])
+            eye_change, body_change = result["pixel_changes"]
+            self.assertEqual(eye_change["max_channel_diff"], 255)  # alpha 0 -> 255
+            # The colour under alpha 0 at (20, 20) is counted apart (F003 K4).
+            self.assertEqual((body_change["alpha0_rgb_count"], body_change["alpha0_rgb_bounds"]),
+                             (1, {"x": 20, "y": 20, "w": 1, "h": 1}))
             self.assertIs(result["projection_changed"], True)
             self.assertEqual(result["counts"], {
                 "added": 1, "removed": 1, "renamed": 1, "moved": 1, "changed": 1,
-                "pixel_changes": 2, "matched": {"uuid": 9, "path": 0, "name": 0, "total": 9}})
+                "pixel_changes": 2, "alpha0_rgb_only_layers": 0,
+                "matched": {"uuid": 9, "path": 0, "name": 0, "total": 9}})
+            strict = self.diff(ha, hb, ignore_alpha0_rgb=False)
+            self.assertEqual(len(strict["pixel_changes"]), 2)
+            self.assertIs(strict["ignore_alpha0_rgb"], False)
             # The other way round: added and removed swap.
             back = self.diff(hb, ha)
             self.assertEqual([e["id"] for e in back["added"]], [ids["Hat"]])

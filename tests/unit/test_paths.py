@@ -7,7 +7,9 @@ file. Expected values are realpath'd, since macOS temp dirs live under
 """
 
 import contextlib
+import json
 import os
+import re
 
 import pytest
 
@@ -82,7 +84,7 @@ def test_absolute_path_inside_root_is_returned_realpathed(tmp_path, root):
 
 
 def test_path_outside_root_is_refused(tmp_path, root):
-    with refused("forbidden_path", "^Path is outside the allowed directories: /etc/a.png$"):
+    with refused("forbidden_path", "^/etc/a.png is outside the allowed directories"):
         resolve("/etc/a.png", root)
     with refused("forbidden_path", "outside the allowed directories"):
         resolve(str(tmp_path / "a.png"), root)
@@ -136,9 +138,76 @@ def test_second_root_is_allowed(tmp_path, root):
     assert got == os.path.join(os.path.realpath(other), "a.png")
 
 
+# --- forbidden_path messages name the fix (F003 K2) -------------------------
+
+def _config_file(tmp_path, data):
+    path = tmp_path / "cfg.json"
+    path.write_text(json.dumps(data))
+    path.chmod(0o600)
+    return str(path)
+
+
+def test_forbidden_message_names_allowed_dirs_config_and_fix(tmp_path, root, monkeypatch):
+    elsewhere = tmp_path / "smoke-out"
+    elsewhere.mkdir()
+    cfg = _config_file(tmp_path, {"allowed_dirs": ["/does/not/exist"]})
+    monkeypatch.setenv(config.CONFIG_FILE_ENV, cfg)
+    config.reset_cache()
+    target = os.path.join(os.path.realpath(elsewhere), "x.png")
+    with refused("forbidden_path", "outside the allowed directories") as info:
+        resolve(target, root)
+    lines = info.value.message.split("\n")
+    assert lines[0] == f"{target} is outside the allowed directories"
+    assert lines[1] == f"  allowed: {root}"
+    folder = os.path.realpath(elsewhere)
+    assert lines[2].startswith(f'  to allow it: add the folder "{folder}" in "allowed_dirs" in {cfg}, '
+                               "e.g. ")
+    example = json.loads(lines[2].split("e.g. ", 1)[1].split("; it applies", 1)[0])
+    assert example == {"allowed_dirs": ["/does/not/exist", folder]}
+    assert "no restart needed" in lines[2]
+    assert lines[3].startswith("  config problems: allowed root '/does/not/exist' skipped")
+    d = info.value.details
+    assert d["allowed_dirs"] == [root]
+    assert (d["config_file"], d["config_key"], d["config_exists"]) == (cfg, "allowed_dirs", True)
+    assert d["suggested_dir"] == folder
+
+
+def test_forbidden_fix_works_when_applied(tmp_path, root, monkeypatch):
+    """The JSON the message suggests, written to the config file, allows the path."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    cfg = tmp_path / "missing.json"
+    monkeypatch.setenv(config.CONFIG_FILE_ENV, str(cfg))
+    monkeypatch.setattr(config, "CANVAS_OUTPUT_DIR", root)
+    config.reset_cache()
+    target = str(elsewhere / "a.png")
+    with refused("forbidden_path", "create the file with") as info:
+        paths.resolve_allowed_path(target)
+    fix = info.value.message.split("\n")[2]
+    cfg.write_text(fix.split("e.g. ", 1)[1].split("; it applies", 1)[0])
+    cfg.chmod(0o600)
+    assert paths.resolve_allowed_path(target) == os.path.join(os.path.realpath(elsewhere), "a.png")
+
+
+def test_forbidden_missing_folder_suggests_nearest_existing(tmp_path, root):
+    base = tmp_path / "proj"
+    base.mkdir()
+    with refused("forbidden_path", "outside") as info:
+        paths.resolve_output_dir(str(base / "a" / "b"), roots=[root], base_dir=root)
+    assert info.value.details["suggested_dir"] == os.path.realpath(base)
+    assert "does not exist yet" in info.value.message
+
+
+def test_forbidden_never_suggests_home_or_root(root):
+    with refused("forbidden_path", "outside") as info:
+        resolve("/a.png", root)
+    assert info.value.details["suggested_dir"] is None
+    assert "not your home folder or above" in info.value.message
+
+
 @pytest.mark.parametrize("name", ["a.txt", "a", "a.png.txt", ".png"])
 def test_disallowed_extension_is_refused(root, name):
-    with refused("forbidden_path", f"^File type not allowed: {name}$"):
+    with refused("forbidden_path", f"^File type not allowed: {re.escape(name)} \\(extension "):
         resolve(name, root)
 
 
@@ -189,7 +258,7 @@ def test_empty_or_non_string_is_refused(root, bad):
 
 @pytest.mark.parametrize("name", ["manifest.json", "M.JSON"])
 def test_json_refused_by_default(root, name):
-    with refused("forbidden_path", f"^File type not allowed: {name}$"):
+    with refused("forbidden_path", f"^File type not allowed: {re.escape(name)} \\(extension "):
         resolve(name, root)
 
 

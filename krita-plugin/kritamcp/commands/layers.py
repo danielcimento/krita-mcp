@@ -21,6 +21,9 @@ import traceback
 from .. import batch, config, layerprops, manifest, nodes, paths, pixels, refs, registry
 from ..dispatch import LONG_TIMEOUT, command
 from ..errors import CommandError
+from ..params import canvas_size, float_param
+from .documents import (COLOR_DEPTH, COLOR_MODEL, NO_LAYER, RESOLUTION_RANGE, check_profile,
+                        create_document, discard)
 
 
 def _depth_param(params):
@@ -49,10 +52,66 @@ def subtree(index, root, depth=None):
     return out
 
 
+SUMMARY_LIST_MAX = 20  # paths listed per summary entry; the counts are always complete
+
+
+def _bool_param(params, key, default=False):
+    value = params.get(key, default)
+    if value is None:
+        return default
+    if type(value) is not bool:
+        raise CommandError("bad_request", f"'{key}' must be true or false, got {value!r}",
+                           {"param": key})
+    return value
+
+
+def _page_param(params, key, default, low, high):
+    value = params.get(key)
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise CommandError("bad_request", f"'{key}' must be a whole number from {low} to {high}, "
+                           f"got {value!r}", {"param": key})
+    return value
+
+
+def _capped(paths):
+    """``{"count", "paths"}`` with at most ``SUMMARY_LIST_MAX`` paths."""
+    return {"count": len(paths), "paths": paths[:SUMMARY_LIST_MAX]}
+
+
+def tree_summary(index, by_id, ids, root):
+    """A compact overview of the listed nodes ``ids`` (F003 K3): counts by
+    type, the deepest level below ``root``, the nodes whose own visibility
+    is off, the non-normal blend modes (paths per mode) and the groups
+    that are pass-through. Each path list is capped at
+    ``SUMMARY_LIST_MAX``; its ``count`` is exact."""
+    counts, hidden, blends, depth = {}, [], {}, 0
+    base = 0 if root == refs.ROOT else len(index.ancestors(root)) + 1
+    for nid in ids:
+        node, kind = by_id[nid], index.get(nid)["type"]
+        counts[kind] = counts.get(kind, 0) + 1
+        depth = max(depth, len(index.ancestors(nid)) + 1 - base)
+        if not node.visible():
+            hidden.append(index.path_of(nid))
+        mode = node.blendingMode()
+        if mode != "normal" and kind not in MASK_TYPES:
+            blends.setdefault(mode, []).append(index.path_of(nid))
+    counts = dict(sorted(counts.items()))
+    counts["total"] = len(ids)
+    return {"counts": counts, "max_depth": depth, "hidden": _capped(hidden),
+            "blend_modes": {mode: _capped(p) for mode, p in sorted(blends.items())}}
+
+
 @command("list_layers")
 def cmd_list_layers(params):
     """The layers under ``root`` as a flat list of layer objects, with
-    per-type counts."""
+    per-type counts. F003 K3: ``overview`` adds ``tree_summary`` (as
+    ``overview``: ``summary`` is the MCP tool's one-line text);
+    ``summary_only`` returns only that; ``path`` writes the full listing
+    (every field) to a JSON file and returns its path and the summary;
+    ``limit`` / ``offset`` page the list (``next_offset`` is None at the
+    end). Without them the whole list, as before."""
     handle, doc = registry.resolve_doc(params)
     depth = _depth_param(params)
     fields = params.get("fields")
@@ -60,24 +119,58 @@ def cmd_list_layers(params):
     root_ref = params.get("root")
     if root_ref is None:
         root_ref = refs.ROOT
+    summary_only = _bool_param(params, "summary_only")
+    with_summary = _bool_param(params, "overview") or summary_only
+    limit = _page_param(params, "limit", None, 1, 100_000)
+    offset = _page_param(params, "offset", 0, 0, 10_000_000)
+    out_path = params.get("path")
+    if out_path is not None:
+        if summary_only or limit is not None:
+            raise CommandError("bad_request", "'path' writes the whole listing; don't combine it "
+                               "with summary_only or limit", {"param": "path"})
+        out_path = paths.resolve_allowed_path(out_path, allow_json=True)
+        if os.path.splitext(out_path)[1].lower() != paths.MANIFEST_EXT:
+            raise CommandError("bad_request", f"'path' must be a {paths.MANIFEST_EXT} file",
+                               {"param": "path"})
 
     index, by_id = nodes.tree(doc)
     root = refs.resolve(index, root_ref, allow_root=True, field="root")
+    ids = subtree(index, root, depth)
+    out = {"doc": handle, "root": root}
+    summary = tree_summary(index, by_id, ids, root) if with_summary or out_path else None
+    if summary_only:
+        return {**out, "counts": summary["counts"], "overview": summary}
+    if out_path is not None:
+        listing = {**out, "layers": [nodes.layer_object(by_id[n], index, None, nid=n) for n in ids],
+                   "counts": summary["counts"], "overview": summary}
+        paths.ensure_parent_dir(out_path)
+        manifest.write(out_path, listing)
+        return {**out, "path": out_path, "bytes": os.path.getsize(out_path),
+                "counts": summary["counts"], "overview": summary}
 
+    page = ids[offset:] if limit is None else ids[offset:offset + limit]
     layers, counts = [], {}
-    for nid in subtree(index, root, depth):
-        layers.append(nodes.layer_object(by_id[nid], index, fields, nid=nid))
+    for nid in ids:
         kind = index.get(nid)["type"]
         counts[kind] = counts.get(kind, 0) + 1
+    for nid in page:
+        layers.append(nodes.layer_object(by_id[nid], index, fields, nid=nid))
     counts = dict(sorted(counts.items()))
-    counts["total"] = len(layers)
-    return {"doc": handle, "root": root, "layers": layers, "counts": counts}
+    counts["total"] = len(ids)
+    out.update(layers=layers, counts=counts)
+    if limit is not None or offset:
+        end = offset + len(page)
+        out.update(offset=offset, limit=limit, next_offset=end if end < len(ids) else None)
+    if summary is not None:
+        out["overview"] = summary
+    return out
 
 
 # --- create_layers ---------------------------------------------------------
 
 SPEC_KEYS = ("key", "name", "type", "parent", "above", "visible", "opacity", "blend_mode",
-             "locked", "alpha_locked", "inherit_alpha", "pass_through", "png", "x", "y")
+             "locked", "alpha_locked", "inherit_alpha", "pass_through", "png", "x", "y",
+             "device_origin")
 SPEC_TYPES = {"paint": "paintlayer", "group": "grouplayer"}
 GROUP, PAINT = "grouplayer", "paintlayer"
 MAX_KEY_LEN = 255
@@ -100,6 +193,7 @@ class _Plan:
     size: object = None
     x: int = 0
     y: int = 0
+    origin: object = None  # (x, y) paint-device origin (F003 E1), or None
 
 
 def _dry_run(params):
@@ -137,6 +231,17 @@ def _check_key(value):
         raise _bad(f"'key' {value!r} must not contain '$' or '/' (refer to it as '$<key>')",
                    param="key")
     return value
+
+
+def _check_origin(spec):
+    """``device_origin`` ({x, y} whole numbers) as ``(x, y)``, or None."""
+    value = spec.get("device_origin")
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"x", "y"}:
+        raise _bad("'device_origin' must be an object {x, y} of whole canvas pixels",
+                   param="device_origin")
+    return _check_coord(value, "x"), _check_coord(value, "y")
 
 
 def _check_coord(spec, key):
@@ -206,6 +311,11 @@ class _Planner:
         plan = _Plan(index=i, key=key, name=name, kind=kind, parent=parent, above=above,
                      props=props)
 
+        if "device_origin" in spec:
+            if kind != PAINT:
+                raise _bad("'device_origin' is only valid on paint layers",
+                           param="device_origin")
+            plan.origin = _check_origin(spec)
         if "png" in spec:
             if kind != PAINT:
                 raise _bad("'png' is only valid on paint layers", param="png")
@@ -232,6 +342,8 @@ class _Planner:
                "above": None if plan.above is None else self.ref_text(plan.above)}
         if plan.png is not None:
             out.update(png=plan.png, x=plan.x, y=plan.y, w=plan.size[0], h=plan.size[1])
+        if plan.origin is not None:
+            out["device_origin"] = {"x": plan.origin[0], "y": plan.origin[1]}
         return out
 
 
@@ -322,6 +434,11 @@ def _applier(doc, by_id):
             if not parent.addChildNode(node, above):
                 raise CommandError("krita_error", f"Krita refused to add {plan.name!r} to its parent")
             layerprops.apply(node, plan.props, locked=False)
+            if plan.origin is not None and plan.origin != (0, 0):
+                # On the empty layer this only moves the paint device's
+                # origin (its tile grid); the pixels are written at canvas
+                # coordinates after it (F003 E1).
+                node.move(*plan.origin)
             if data is not None and not node.setPixelData(data, plan.x, plan.y, w, h):
                 raise CommandError("krita_error", f"Krita refused the pixels for {plan.name!r}")
             layerprops.apply_locked(node, plan.props)  # last: a locked layer may refuse writes
@@ -378,47 +495,138 @@ def _manifest_warnings(document, doc):
     return warnings
 
 
+# create_layers(verbose="auto"), the MCP tool's default: list the created
+# layers only up to this many (F003 K3), so a 222-layer rebuild stays small.
+AUTO_LIST_MAX = 20
+
+
+def _new_document_args(document, path, params):
+    """``(width, height, name, profile, resolution)`` for
+    ``create_layers(new_document=true)`` from the manifest's ``document``
+    block (export_layers writes it: width, height, resolution, color_model,
+    color_depth, color_profile, name). ``name`` in ``params`` overrides the
+    block's. Errors: ``bad_request`` (no usable size, not RGBA/U8, a profile
+    that isn't installed), ``too_large`` (over the canvas limits)."""
+    w, h = document.get("width"), document.get("height")
+    if not all(type(v) is int for v in (w, h)):
+        raise CommandError("bad_request",
+                           f"Manifest {path} has no document width and height, so new_document "
+                           "can't size the canvas; create one with new_canvas and pass its doc",
+                           {"param": "new_document"})
+    model, depth = document.get("color_model", COLOR_MODEL), document.get("color_depth", COLOR_DEPTH)
+    if (model, depth) != (COLOR_MODEL, COLOR_DEPTH):
+        raise CommandError("bad_request",
+                           f"Manifest {path} describes a {model}/{depth} document; new_document "
+                           f"makes {COLOR_MODEL}/{COLOR_DEPTH} only",
+                           {"color_model": model, "color_depth": depth})
+    width, height = canvas_size({"width": w, "height": h}, config.current().limits)
+    resolution = document.get("resolution", 72.0)
+    resolution = float_param({"resolution": resolution}, "resolution", 72.0, *RESOLUTION_RANGE)
+    profile = check_profile(document.get("color_profile") or "",
+                            field="document.color_profile (manifest)")
+    name = params.get("name")
+    if name is None:
+        name = document.get("name") or os.path.splitext(os.path.basename(path))[0]
+    if not isinstance(name, str) or not name.strip():
+        raise CommandError("bad_request", "'name' must be a non-empty string", {"param": "name"})
+    return width, height, name[:200], profile, resolution
+
+
 @command("create_layers", timeout=LONG_TIMEOUT, mutating=True)
 def cmd_create_layers(params):
     """Create groups and paint layers from ``specs`` or a ``manifest`` file,
     in list order, all or nothing (D11). With ``dry_run`` only validate and
-    describe."""
-    handle, doc = registry.resolve_doc(params)
+    describe. ``new_document`` (manifest only): first create the document
+    the manifest's ``document`` block describes, with no layer of its own,
+    and build into it; on failure it is closed again (F003 K5)."""
     dry_run = _dry_run(params)
+    verbose = params.get("verbose", True)
+    if verbose not in (True, False, "auto") or type(verbose) not in (bool, str):
+        raise CommandError("bad_request", f"'verbose' must be true, false or 'auto', got "
+                           f"{verbose!r}", {"param": "verbose"})
+    new_document = params.get("new_document", False)
+    if type(new_document) is not bool:
+        raise CommandError("bad_request",
+                           f"'new_document' must be true or false, got {new_document!r}",
+                           {"param": "new_document"})
     specs, given = params.get("specs"), params.get("manifest")
     if (specs is None) == (given is None):
         raise CommandError("bad_request", "pass exactly one of 'specs' and 'manifest'")
+    if new_document and given is None:
+        raise CommandError("bad_request", "'new_document' needs a 'manifest' (its document "
+                           "block gives the canvas size); with specs, use new_canvas first",
+                           {"param": "new_document"})
+    if new_document and params.get("doc") is not None:
+        raise CommandError("bad_request", "pass either 'doc' or 'new_document', not both",
+                           {"param": "new_document"})
+    if not new_document and params.get("name") is not None:
+        raise CommandError("bad_request", "'name' is only valid with new_document",
+                           {"param": "name"})
+    if not new_document:
+        handle, doc = registry.resolve_doc(params)
 
     extra = {}
     field, positions = "specs", None
     if given is not None:
         path, loaded, positions = _load_manifest(given)
         specs, field = loaded.specs, "layers"
-        extra = {"manifest": path, "skipped": loaded.skipped,
-                 "warnings": _manifest_warnings(loaded.document, doc)}
         if not specs:
             raise CommandError("bad_request", f"Manifest {path} has no layers to create "
                                f"(all {len(loaded.skipped)} entries are skipped)",
                                {"skipped": loaded.skipped})
+        extra = {"manifest": path, "skipped": loaded.skipped}
 
-    index, by_id = nodes.tree(doc)
-    planner = _Planner(doc, index)
-    plans = batch.validate_all(specs, planner, field=field, positions=positions)
-    counts = _counts([p.kind for p in plans])
-    if dry_run:
-        return {"doc": handle, "dry_run": True,
-                "would_create": [planner.describe(p) for p in plans], "counts": counts, **extra}
+    if new_document:
+        args = _new_document_args(loaded.document, path, params)
+        handle, doc, _ = create_document(args[0], args[1], args[2], NO_LAYER, args[3], args[4])
+    try:
+        if given is not None:
+            extra["warnings"] = _manifest_warnings(loaded.document, doc)
+        index, by_id = nodes.tree(doc)
+        planner = _Planner(doc, index)
+        plans = batch.validate_all(specs, planner, field=field, positions=positions)
+        counts = _counts([p.kind for p in plans])
+        if dry_run:
+            shown = plans
+            if verbose is False or (verbose == "auto" and len(plans) > AUTO_LIST_MAX):
+                shown = plans[:AUTO_LIST_MAX]
+            out = {"doc": None if new_document else handle, "dry_run": True,
+                   "would_create": [planner.describe(p) for p in shown], "counts": counts,
+                   **extra}
+            if len(shown) < len(plans):
+                out["would_create_listed"] = len(shown)  # the first ones; verbose=true for all
+            if new_document:  # validated against a real document, closed again
+                out["new_document"] = _document_brief(doc)
+                discard(doc)
+                del doc
+            return out
 
-    outcome = batch.run(plans, _applier(doc, by_id), doc, label="create_layers", field=field,
-                        positions=positions)
+        outcome = batch.run(plans, _applier(doc, by_id), doc, label="create_layers", field=field,
+                            positions=positions)
+    except BaseException:
+        if new_document:
+            discard(doc)
+            del doc
+        raise
     doc.refreshProjection()
     doc.waitForDone()
     batch.JOURNALS.get(handle).push("create_layers", outcome.inverses, outcome.nbytes)
+    if new_document:
+        extra["new_document"] = _document_brief(doc)
 
-    fresh = nodes.build_index(doc)
-    created = [{**r, "path": fresh.path_of(r["id"]) if r["id"] in fresh else None}
-               for r in outcome.results]
-    return {"doc": handle, "dry_run": False, "created": created, "counts": counts, **extra}
+    out = {"doc": handle, "dry_run": False, "counts": counts, **extra}
+    if verbose is True or (verbose == "auto" and len(outcome.results) <= AUTO_LIST_MAX):
+        fresh = nodes.build_index(doc)
+        out["created"] = [{**r, "path": fresh.path_of(r["id"]) if r["id"] in fresh else None}
+                          for r in outcome.results]
+    else:
+        out["created_listed"] = False  # list_layers finds them; verbose=true lists them here
+    return out
+
+
+def _document_brief(doc):
+    return {"name": doc.name(), "width": doc.width(), "height": doc.height(),
+            "resolution": doc.resolution(), "color_profile": doc.colorProfile()}
 
 
 def _live(doc, nid):

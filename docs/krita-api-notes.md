@@ -579,6 +579,23 @@ are fast enough that per-pixel Python loops are never justified.
   [verified 2026-11-25, P3.2: `tests/krita/test_export_layers.py`, and 11
   such pixels in the Mao rebuild]. Byte comparisons of renders see it;
   alpha and every visible pixel are unaffected.
+- **The composite depends on each layer's tile grid.** A paint layer's
+  paint device has an origin, `Node.position()`; its 64 px tiles start
+  there. Layers loaded from a `.kra` can have any origin (all 184 in
+  `mao_pro_layered.kra` do, e.g. `(1603, 4423)`); `createNode` gives
+  (0, 0). With byte-identical layer pixels and properties, Krita's
+  composite of the two documents differed in 316 low-alpha pixels by ±1
+  and in the colour of 2,870 alpha-0 pixels. Giving the new layers the
+  same origins made it identical. `Node.move(x, y)` on an **empty** layer
+  only sets the origin: pixels written afterwards with `setPixelData` land
+  at canvas coordinates [verified 2026-11-26, F003 E1:
+  `tests/krita/test_pixel_roundtrip.py`].
+- **`Node.bounds()` covers alpha > 0 only.** A layer holding only
+  coloured alpha-0 pixels reports empty bounds with `hasExtents()` True.
+  Reading `pixelData` past `bounds()` returns the layer's default pixel:
+  (0, 0, 0, 0) for a `createNode` layer, but opaque white for the
+  `Background` layer `createDocument` makes, which reads as opaque
+  everywhere, past the canvas too [verified 2026-11-26, F003 E2].
 - At 5800×8400 [verified 2026-11-25, P3.1]: `pixels.opaque_bounds`
   (row pass by `lstrip`/`rstrip` of zero alpha bytes, column pass by
   OR-ing the rows as big ints) takes 30–90 ms; `count_alpha` 35 ms;

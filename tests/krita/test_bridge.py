@@ -99,12 +99,17 @@ class HandlerAuthTest(BridgeTestBase):
         bridge.AUTH_TOKEN = None
         settings = config.current()  # the runner's: no config file, so defaults
         self.assertEqual(self.request("GET", "/health"), (200, {
-            "status": "ok", "plugin": "kritamcp", "protocol": 2,
+            "status": "ok", "plugin": "kritamcp", "protocol": 3,
             "version": version.PLUGIN_VERSION,
             "krita_version": None,  # cached by createActions, which never runs headless
             "allowed_dirs": [settings.output_dir],
             "config_file": settings.config_file,
+            "config_exists": False,
             "config_loaded": False,
+            "config_key": "allowed_dirs",
+            "config_dirs": [],
+            "allowed_dirs_env": "KRITA_MCP_ALLOWED_DIRS",
+            "config_reload": config.RELOAD_NOTE,
             "limits": config.DEFAULT_LIMITS,
             "lint": config.DEFAULT_LINT,
             "config_errors": [],
@@ -166,7 +171,7 @@ class HandlerAuthTest(BridgeTestBase):
         self.assertEqual(status, 200)
         names = dispatch.actions()
         self.assertEqual(body, {
-            "status": "ok", "protocol": 2, "commands": names,
+            "status": "ok", "protocol": 3, "commands": names,
             "timeouts": {n: dispatch.get(n).timeout for n in names},
             "mutating": [n for n in names if dispatch.get(n).mutating],
         })

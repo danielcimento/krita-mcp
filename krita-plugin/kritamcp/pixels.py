@@ -5,6 +5,14 @@ per pixel, non-premultiplied, which is ``QImage.Format_ARGB32``'s layout on
 little-endian machines. PNG load and save through QImage is bit-exact,
 colors under zero alpha included (spike Q5).
 
+THE ONE PIXEL PATH (F003 K1): every PNG a command reads or writes goes
+through ``load_png_bgra`` / ``save_png`` here, as straight (non-premultiplied)
+``Format_ARGB32``. Nothing converts layer pixels to a premultiplied format on
+the way; the premultiplied working images below are only for compositing
+(``composite_over``), alpha scaling and ``render``'s scaling, and are exact
+or documented where used. ``tests/krita/test_pixel_roundtrip.py`` holds the
+byte-exact round-trip tests.
+
 Buffers here are "BGRA bytes": ``4 * w * h`` bytes, rows top to bottom with
 no padding. Functions accept ``bytes``, ``bytearray``, ``memoryview`` or a
 ``QByteArray`` (what ``pixelData`` returns) and return ``bytes``.
@@ -248,6 +256,61 @@ def count_alpha(data, threshold=1):
     return a.translate(_at_least(threshold)).count(1)
 
 
+def _mask_bounds(mask, w, h):
+    """The tight ``(x, y, w, h)`` around the nonzero bytes of ``mask`` (one
+    byte per pixel, ``w * h``), or None if every byte is zero. See
+    ``opaque_bounds`` for the method."""
+    n = len(mask)
+    lead = n - len(mask.lstrip(b"\0"))
+    if lead == n:
+        return None
+    last = len(mask.rstrip(b"\0")) - 1
+    y0, y1 = lead // w, last // w
+    view = memoryview(mask)
+    acc = 0
+    for y in range(y0, y1 + 1):
+        acc |= int.from_bytes(view[y * w:(y + 1) * w], "big")
+    cols = acc.to_bytes(w, "big")
+    x0 = w - len(cols.lstrip(b"\0"))
+    x1 = len(cols.rstrip(b"\0")) - 1
+    return x0, y0, x1 - x0 + 1, y1 - y0 + 1
+
+
+def nonzero_mask(data, w, h):
+    """One byte per pixel of BGRA ``data``: nonzero where any of the
+    pixel's four bytes is nonzero (colour under alpha 0 counts). Rows are
+    folded as big ints, ``x | x >> 8 | x >> 16``, in strips, so no per-pixel
+    loop and at most about ``_STRIP_PIXELS`` pixels in one int."""
+    data = _buffer(data, w, h)
+    rows = max(1, _STRIP_PIXELS // w)
+    stride = 4 * w
+    parts = []
+    for y in range(0, h, rows):
+        chunk = data[y * stride:min(h, y + rows) * stride]
+        x = int.from_bytes(chunk, "little")
+        x |= x >> 8
+        x |= x >> 16
+        parts.append(x.to_bytes(len(chunk), "little")[0::4])
+    return b"".join(parts)
+
+
+def content_bounds(data, w, h):
+    """The tight ``(x, y, w, h)`` around the pixels with any nonzero byte
+    (alpha > 0, or colour under alpha 0), or None if all are (0, 0, 0, 0).
+    What ``export_layers`` crops to, so a round trip keeps the colour of
+    transparent pixels (F003 E2)."""
+    return _mask_bounds(nonzero_mask(data, w, h), w, h)
+
+
+def alpha0_colour_bounds(data, w, h):
+    """The tight ``(x, y, w, h)`` around the pixels with alpha 0 and some
+    nonzero colour byte, or None."""
+    data = _buffer(data, w, h)
+    hidden = (int.from_bytes(nonzero_mask(data, w, h), "little")
+              & int.from_bytes(data[3::4].translate(_ZERO_FF), "little"))
+    return _mask_bounds(hidden.to_bytes(w * h, "little"), w, h)
+
+
 def opaque_bounds(data, w, h, threshold=1):
     """The tight ``(x, y, w, h)`` around the pixels with alpha >=
     ``threshold`` (1-255), or None if there are none.
@@ -265,20 +328,7 @@ def opaque_bounds(data, w, h, threshold=1):
     mask = data[3::4]
     if threshold > 1:
         mask = mask.translate(_at_least(threshold))
-    n = len(mask)
-    lead = n - len(mask.lstrip(b"\0"))
-    if lead == n:
-        return None
-    last = len(mask.rstrip(b"\0")) - 1
-    y0, y1 = lead // w, last // w
-    view = memoryview(mask)
-    acc = 0
-    for y in range(y0, y1 + 1):
-        acc |= int.from_bytes(view[y * w:(y + 1) * w], "big")
-    cols = acc.to_bytes(w, "big")
-    x0 = w - len(cols.lstrip(b"\0"))
-    x1 = len(cols.rstrip(b"\0")) - 1
-    return x0, y0, x1 - x0 + 1, y1 - y0 + 1
+    return _mask_bounds(mask, w, h)
 
 
 def crop(data, w, h, rect):

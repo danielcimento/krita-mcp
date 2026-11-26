@@ -77,6 +77,22 @@ BLOCK = (20, 20, 10, 10, 255)  # x 20..29, y 20..29
 WINDOW = (0, 0, 64, 64)
 
 
+
+def _specks(specks):
+    """``stray_specks`` without ``bounds``, after checking that ``bounds``
+    (F003 K7) is the box around the samples when they are all the specks."""
+    specks = dict(specks)
+    bounds = specks.pop("bounds")
+    samples = specks["samples"]
+    if not specks["count"]:
+        assert bounds is None, bounds
+    elif len(samples) == specks["count"]:
+        x0, y0 = min(r["x"] for r in samples), min(r["y"] for r in samples)
+        x1 = max(r["x"] + r["w"] for r in samples)
+        y1 = max(r["y"] + r["h"] for r in samples)
+        assert bounds == {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}, (bounds, samples)
+    return specks
+
 class SnapshotStructureTest(unittest.TestCase):
     def test_tree_order_depth_parent_and_properties(self):
         with scratch_document(64, 64) as doc:
@@ -196,7 +212,7 @@ class AlphaStatsTest(unittest.TestCase):
         self.assertEqual(off["alpha"]["opaque_bounds"], {"x": -6, "y": -4, "w": 12, "h": 10})
         # The alpha-1 block is weak, more than 4 px from the strong one: stray.
         self.assertEqual(off["alpha"]["stray_count"], 12)
-        self.assertEqual(off["alpha"]["stray_specks"], {
+        self.assertEqual(_specks(off["alpha"]["stray_specks"]), {
             "count": 1, "pixels": 12, "regions": 0, "truncated": False,
             "samples": [{"x": 2, "y": 3, "w": 4, "h": 3}]})  # canvas coordinates
         for name in ("Empty", "Colour Under Zero"):
@@ -356,11 +372,11 @@ class StraySpecksTest(EnvelopeAssertions, unittest.TestCase):
             glow = named["Glow"]["alpha"]
             # The faint rings minus what lies within 4 px of the core.
             self.assertGreater(glow["stray_count"], 100, method)
-            self.assertEqual(glow["stray_specks"], {"count": 0, "pixels": 0, "regions": 1,
+            self.assertEqual(_specks(glow["stray_specks"]), {"count": 0, "pixels": 0, "regions": 1,
                                                     "samples": [], "truncated": False}, method)
             specks = named["Specks"]["alpha"]
             self.assertEqual(specks["stray_count"], 28, method)
-            self.assertEqual(specks["stray_specks"], {"count": 4, "pixels": 28, "regions": 0,
+            self.assertEqual(_specks(specks["stray_specks"]), {"count": 4, "pixels": 28, "regions": 0,
                                                       "samples": SPECK_SAMPLES,
                                                       "truncated": False}, method)
         self.assertEqual({k: n["alpha"] for k, n in results["grow"].items()},
@@ -372,7 +388,7 @@ class StraySpecksTest(EnvelopeAssertions, unittest.TestCase):
                 self._doc_layers(doc)
                 snap = analysis.collect_snapshot(doc)
         self.assertEqual(snap["settings"]["stray_speck_max_px"], 10)
-        self.assertEqual(by_name(snap)["Specks"]["alpha"]["stray_specks"], {
+        self.assertEqual(_specks(by_name(snap)["Specks"]["alpha"]["stray_specks"]), {
             "count": 3, "pixels": 3, "regions": 1, "truncated": False,
             "samples": [r for r in SPECK_SAMPLES if r["w"] == 1]})
 

@@ -76,10 +76,12 @@ def test_snapshot_files_follow_the_format(name):
             a = n["alpha"]
             assert set(a) == {"pixel_count", "opaque_bounds", "stray_count", "stray_specks"}
             sp = a["stray_specks"]
-            assert set(sp) == {"count", "pixels", "regions", "samples", "truncated"}
+            base = {"count", "pixels", "regions", "samples", "truncated"}
+            assert base <= set(sp) <= base | {"bounds"}  # bounds: F003 K7 collectors
             assert sp["count"] <= sp["pixels"] <= a["stray_count"]
-            assert (a["stray_count"] == 0) <= (sp == {"count": 0, "pixels": 0, "regions": 0,
-                                                      "samples": [], "truncated": False})
+            empty = {"count": 0, "pixels": 0, "regions": 0, "samples": [], "truncated": False}
+            assert (a["stray_count"] == 0) <= ({k: v for k, v in sp.items() if k != "bounds"}
+                                               == empty)
             assert len(sp["samples"]) == min(sp["count"], 5) or sp["truncated"]
             for r in sp["samples"]:
                 assert set(r) == {"x", "y", "w", "h"} and r["w"] >= 1 and r["h"] >= 1
@@ -168,7 +170,8 @@ def test_finding_shape():
     r = lint.run(snap("lint_four_findings"))
     for f in r["findings"]:
         want = {"rule", "severity", "layer_id", "path", "message"}
-        assert set(f) == (want | {"related_ids"} if f["rule"] == "duplicate-name" else want)
+        extra = {"related_ids", "suggested_names"} if f["rule"] == "duplicate-name" else set()
+        assert want <= set(f) <= want | extra
         assert f["severity"] == SEVERITY[f["rule"]]
         assert f["path"] in f["message"]
 
@@ -307,7 +310,58 @@ def test_duplicate_name():
     assert eye["related_ids"] == [s["nodes"][2]["id"], s["nodes"][3]["id"]]
     assert hair["path"] == "Back/Hair"
     assert hair["related_ids"] == [i["Head/Hair"], i["Back/Hair"], i["Hair"]]
-    assert "'Hair' is used by 3 nodes ('Head/Hair', 'Back/Hair', 'Hair')" in hair["message"]
+    assert hair["message"].startswith(
+        "Name 'Hair' is used by 3 paint layers ('Head/Hair', 'Back/Hair', 'Hair'); paint layer "
+        "names must be unique (a group may share one): ")
+    assert "'Hair 1' / 'Hair 2' / 'Hair 3'" in hair["message"]
+    assert "suggested_names" not in hair
+
+
+def _node(nid, name, kind="paintlayer", parent=None, path=None, order=0):
+    return {"id": nid, "name": name, "path": path or name, "type": kind, "parent": parent,
+            "order": order, "visible": True}
+
+
+def _named(nodes):
+    """A snapshot of ``nodes``, ``order`` from the list position."""
+    for i, n in enumerate(nodes):
+        n["order"] = i
+    return {"document": {"width": 10, "height": 10, "color_model": "RGBA", "color_depth": "U8",
+                         "color_profile": "sRGB-elle-V2-srgbtrc.icc"}, "nodes": nodes}
+
+
+def test_duplicate_name_group_may_share_a_layer_name():
+    """F003 K6: the Face group holding the Face layer is not a clash."""
+    s = _named([_node("g1", "Face", "grouplayer"),
+                _node("p1", "Face", parent="g1", path="Face/Face"),
+                _node("g2", "Neck", "grouplayer"),
+                _node("p2", "Neck", parent="g2", path="Neck/Neck")])
+    assert run1(s, "duplicate-name")["findings"] == []
+
+
+def test_duplicate_name_groups_and_layers_each_unique():
+    s = _named([_node("g1", "Wand", "grouplayer"),
+                _node("g2", "Wand", "grouplayer"),
+                _node("p1", "Wand", parent="g2", path="Wand/Wand")])
+    (f,) = run1(s, "duplicate-name")["findings"]
+    assert f["related_ids"] == ["g1", "g2"]
+    assert "used by 2 groups" in f["message"]
+    assert "group names must be unique (a layer may share one)" in f["message"]
+
+
+def test_duplicate_name_suggests_pose_suffix():
+    s = _named([_node("a", "Arm L A", "grouplayer"),
+                _node("h1", "Hand L", parent="a", path="Arm L A/Hand L"),
+                _node("b", "Arm L B", "grouplayer", order=2),
+                _node("x", "Fist", "grouplayer", parent="b", path="Arm L B/Fist"),
+                _node("h2", "Hand L", parent="x", path="Arm L B/Fist/Hand L")])
+    (f,) = run1(s, "duplicate-name")["findings"]
+    assert f["message"] == (
+        "Name 'Hand L' is used by 2 paint layers ('Arm L A/Hand L', 'Arm L B/Fist/Hand L'); "
+        "paint layer names must be unique (a group may share one): rename to 'Hand L A' / "
+        "'Hand L B' (pose suffix, CONVENTIONS § Naming)")
+    assert f["suggested_names"] == [{"id": "h1", "name": "Hand L A"},
+                                    {"id": "h2", "name": "Hand L B"}]
 
 
 def test_duplicate_name_is_case_sensitive():
@@ -402,15 +456,28 @@ def test_stray_alpha_flags_specks_only():
     assert f["Dust"]["message"] == (
         "Paint layer 'Dust' has 6 stray specks, 37 px (groups of up to 16 px with alpha below 16, "
         "more than 2 px from any pixel with alpha 16 or more), e.g. at (9, 9) 3x4, (15, 10) 5x5, "
-        "(20, 12) 2x2; erase them")
+        "(20, 12) 2x2; erase them, or clear them with krita_trim_layers(ids=[...], "
+        "alpha_threshold=16, near_px=2)")
     assert "has 1 stray speck, 1 px (" in f["Speck"]["message"]
-    assert f["Speck"]["message"].endswith("), at (12, 20) 1x1; erase them")
+    assert "), at (12, 20) 1x1; erase them" in f["Speck"]["message"]
     assert "2 stray specks, 5 px" in f["Glow Dust"]["message"]
     assert ", at (8, 22) 2x2, (23, 23) 1x1; erase them" in f["Glow Dust"]["message"]
+    # K7: pixel count and bounds as data (None from a collector without bounds).
+    assert (f["Dust"]["pixels"], f["Dust"]["bounds"]) == (37, None)
+    assert "pixels" not in f["Noise"]
     assert f["Noise"]["message"] == (
         "Paint layer 'Noise' has 40000 stray pixels (alpha below 16, more than 2 px from any pixel "
         "with alpha 16 or more), too fragmented to analyse for specks; look for noise and erase it")
     assert all(x["severity"] == "warning" for x in r["findings"])
+
+
+def test_stray_alpha_reports_speck_bounds():
+    s = snap("stray_alpha")
+    dust = next(x for x in s["nodes"] if x["path"] == "Dust")
+    dust["alpha"]["stray_specks"]["bounds"] = {"x": 9, "y": 9, "w": 30, "h": 12}
+    f = by_path(run1(s, "stray-alpha"))["Dust"]
+    assert f["bounds"] == {"x": 9, "y": 9, "w": 30, "h": 12}
+    assert "(20, 12) 2x2, all within (9, 9) 30x12; erase them" in f["message"]
 
 
 def test_stray_alpha_without_specks_falls_back_to_stray_count():
@@ -433,7 +500,7 @@ def test_stray_alpha_speck_without_samples():
     dust = next(n for n in s["nodes"] if n["name"] == "Dust")
     dust["alpha"]["stray_specks"]["samples"] = []
     msg = by_path(run1(s, "stray-alpha"))["Dust"]["message"]
-    assert msg.endswith("alpha 16 or more); erase them")
+    assert "alpha 16 or more); erase them, or clear them" in msg
 
 
 def test_stray_alpha_default_speck_size_in_message():

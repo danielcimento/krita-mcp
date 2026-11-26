@@ -17,9 +17,9 @@ from ..dispatch import LONG_TIMEOUT, command
 from ..errors import CommandError
 from .documents import doc_name
 from .layers import _strict_item
-from .pixels import _bounds
+from .pixels import _bounds, tile_window
 
-KEYS = ("doc_a", "doc_b", "pixels")
+KEYS = ("doc_a", "doc_b", "pixels", "ignore_alpha0_rgb")
 _FIELDS = ["name", "path", "type", "parent", "visible", "opacity", "blend_mode", "locked",
            "alpha_locked", "inherit_alpha", "pass_through", "has_layer_style"]
 
@@ -72,16 +72,48 @@ def _rect(r):
     return None if r is None else {"x": r[0], "y": r[1], "w": r[2], "h": r[3]}
 
 
-def _pixel_changes(pairs, nodes_a, nodes_b):
-    out = []
+def _stats(raw):
+    """``diffplan.diff_stats`` with its boxes as ``{x, y, w, h}``."""
+    return {**raw, "bounds": _rect(raw["bounds"]),
+            "alpha0_rgb_bounds": _rect(raw["alpha0_rgb_bounds"])}
+
+
+def _changed(stats, ignore_alpha0_rgb):
+    return stats["changed_count"] > 0 or (not ignore_alpha0_rgb and stats["alpha0_rgb_count"] > 0)
+
+
+def _window(node, bounds, canvas):
+    """Where a layer's pixels can differ: its bounds, plus the part of its
+    paint device's tiles inside the canvas, which is where colour under
+    alpha 0 next to it can live (F003 E2). Not past the canvas: there a
+    layer reads as its default pixel, which for the Background layer
+    ``createDocument`` makes is opaque white."""
+    if bounds is None:
+        return None
+    p = node.position()
+    tiles = tile_window(bounds, (p.x(), p.y()))
+    x0, y0 = max(tiles[0], 0), max(tiles[1], 0)
+    x1, y1 = min(tiles[0] + tiles[2], canvas[0]), min(tiles[1] + tiles[3], canvas[1])
+    if x1 <= x0 or y1 <= y0:
+        return bounds
+    return diffplan.union(bounds, (x0, y0, x1 - x0, y1 - y0))
+
+
+def _pixel_changes(pairs, nodes_a, nodes_b, ignore_alpha0_rgb, canvas):
+    """``(changes, alpha0_only)``: the matched paint layers whose pixels
+    differ, with ``diffplan.diff_stats`` (K4); and how many differ only in
+    colour under alpha 0 (left out of ``changes`` when ignored)."""
+    out, alpha0_only = [], 0
     for ra, rb, method in diffplan.pixel_pairs(pairs):
-        rect = diffplan.union(ra["bounds"], rb["bounds"])
-        count, box = diffplan.diff_region(_reader(nodes_a[ra["id"]]), _reader(nodes_b[rb["id"]]),
-                                          rect)
-        if count:
-            out.append({**diffplan.head(ra, rb, method), "changed_count": count,
-                        "bounds": _rect(box)})
-    return out
+        na, nb = nodes_a[ra["id"]], nodes_b[rb["id"]]
+        rect = diffplan.union(_window(na, ra["bounds"], canvas),
+                              _window(nb, rb["bounds"], canvas))
+        stats = _stats(diffplan.diff_stats(_reader(na), _reader(nb), rect))
+        if stats["changed_count"] == 0 and stats["alpha0_rgb_count"] > 0:
+            alpha0_only += 1
+        if _changed(stats, ignore_alpha0_rgb):
+            out.append({**diffplan.head(ra, rb, method), **stats})
+    return out, alpha0_only
 
 
 def _document_changes(doc_a, doc_b):
@@ -107,6 +139,10 @@ def cmd_diff_documents(params):
     if type(with_pixels) is not bool:
         raise CommandError("bad_request", f"'pixels' must be true or false, got {with_pixels!r}",
                            {"param": "pixels"})
+    ignore_alpha0_rgb = params.get("ignore_alpha0_rgb", True)
+    if type(ignore_alpha0_rgb) is not bool:
+        raise CommandError("bad_request", "'ignore_alpha0_rgb' must be true or false, got "
+                           f"{ignore_alpha0_rgb!r}", {"param": "ignore_alpha0_rgb"})
     handle_a, doc_a = _doc(params, "doc_a")
     handle_b, doc_b = _doc(params, "doc_b")
     if handle_a == handle_b:
@@ -122,19 +158,22 @@ def cmd_diff_documents(params):
     found = diffplan.diff(records_a, records_b)
 
     warnings = []
-    pixel_changes = projection_changed = None
+    pixel_changes = projection_changed = projection = alpha0_only = None
     if with_pixels:
         skip = _pixel_skip_reason(doc_a, doc_b)
         if skip is not None:
             warnings.append(skip)
         else:
-            pixel_changes = _pixel_changes(found["pairs"], nodes_a, nodes_b)
-            count, _ = diffplan.diff_region(_reader(doc_a), _reader(doc_b),
-                                            (0, 0, doc_a.width(), doc_a.height()))
-            projection_changed = count > 0
+            pixel_changes, alpha0_only = _pixel_changes(found["pairs"], nodes_a, nodes_b,
+                                                        ignore_alpha0_rgb,
+                                                        (doc_a.width(), doc_a.height()))
+            projection = _stats(diffplan.diff_stats(_reader(doc_a), _reader(doc_b),
+                                                    (0, 0, doc_a.width(), doc_a.height())))
+            projection_changed = _changed(projection, ignore_alpha0_rgb)
 
     counts = {key: len(found[key]) for key in ("added", "removed", "renamed", "moved", "changed")}
     counts["pixel_changes"] = None if pixel_changes is None else len(pixel_changes)
+    counts["alpha0_rgb_only_layers"] = alpha0_only
     counts["matched"] = found["matched"]
     return {
         "doc_a": handle_a, "doc_b": handle_b,
@@ -142,6 +181,7 @@ def cmd_diff_documents(params):
         "added": found["added"], "removed": found["removed"], "renamed": found["renamed"],
         "moved": found["moved"], "changed": found["changed"],
         "pixel_changes": pixel_changes, "projection_changed": projection_changed,
+        "projection": projection, "ignore_alpha0_rgb": ignore_alpha0_rgb,
         "document_changes": _document_changes(doc_a, doc_b),
         "counts": counts, "warnings": warnings,
     }
