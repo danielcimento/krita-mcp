@@ -25,6 +25,7 @@ EXPECTED_REGISTRY = {
     "get_document_info": (30, False),
     "import_png": (300, True),
     "list_documents": (30, False),
+    "lint_snapshot": (300, False),
     "list_brushes": (30, False),
     "list_layers": (30, False),
     "move_layers": (300, True),

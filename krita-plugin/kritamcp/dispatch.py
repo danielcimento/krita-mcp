@@ -96,4 +96,4 @@ def execute(command):
 
 # Importing the command modules fills the registry. At the bottom because
 # they import ``command`` from this module.
-from .commands import documents, history, layers, paint, pixels, render  # noqa: E402,F401
+from .commands import analysis, documents, history, layers, paint, pixels, render  # noqa: E402,F401

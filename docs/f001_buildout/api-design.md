@@ -910,6 +910,54 @@ Returns the new layer and the cut rectangle.
 Findings are sorted by layer stacking order. Document-level findings have
 `layer_id: null`. Findings that involve several layers add `related_ids`.
 
+#### Snapshot (collector)
+
+The rules run over one snapshot, collected in Krita by
+`commands/analysis.py` `collect_snapshot(doc, settings)` (P4.1). The
+debug command `lint_snapshot(doc?)` (300 s, read-only, no MCP tool)
+returns `{"doc", "snapshot"}`.
+
+```json
+{"document": {"width": 64, "height": 64, "color_model": "RGBA", "color_depth": "U8",
+              "color_profile": "sRGB-elle-V2-srgbtrc.icc", "pixel_stats": true},
+ "settings": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4},
+ "nodes": [{"id": "{…}", "name": "Blur", "path": "Blur", "type": "filterlayer",
+            "parent": null, "depth": 1, "order": 0, "visible": true, "opacity": 1.0,
+            "blend_mode": "normal", "inherit_alpha": false, "alpha_locked": false,
+            "locked": false, "pass_through": null, "has_layer_style": false,
+            "bounds": {"x": 0, "y": 0, "w": 64, "h": 64}, "alpha": null}]}
+```
+
+- `nodes`: every node but the root-level selection mask, in global
+  stacking order (depth-first, top to bottom, the Layers docker's order);
+  `order` is the list index, `depth` 1 is top level, masks are nodes with
+  their layer as `parent`. Values as in the layer object.
+- `settings`: the config's `lint` section over the defaults shown;
+  invalid values fall back to the default.
+- `alpha` (paint layers only, else null): `pixel_count` (`alpha > 0`),
+  `opaque_bounds` (tight rectangle around `alpha > 0`, canvas coordinates,
+  may reach past the canvas), `stray_count`. Read with `pixelData` over the
+  layer's `bounds()`, which is exact and unclipped, so off-canvas pixels
+  count. Only for 8-bit RGBA: on another document `document.pixel_stats`
+  is false and every `alpha` is null (a non-RGBA/U8 layer in an RGBA/U8
+  document also gets null).
+- `stray_count` (`alphastats.py`): weak = `0 < alpha < below`, strong =
+  `alpha ≥ below`, both masks by `bytes.translate`. Stray = weak and not
+  in the strong mask dilated by `distance`; counted as
+  `(weak & ~grown).bit_count()` over big ints, no per-pixel loop. The
+  dilation is `Selection.grow(d, d)` on a standalone `Selection`
+  (never the document's), whose kernel is a little fuller than the
+  Euclidean disc: the axis points at distance `d` are covered, and at
+  `d = 4` so are (3, 3) and (4, 2), but not (4, 3)
+  (`alphastats.kernel_half_widths`). If `grow` is missing or fails a
+  self-check, `alphastats.dilate_shift` computes the same kernel with
+  big-int row shifts (rows padded by `d` columns so nothing wraps); the two
+  agree exactly. Layers with no weak pixel, or no strong one, skip the
+  dilation.
+- Cost: the headless Mao rebuild (185 paint layers, 5800×8400) takes
+  about 1.2 s, the slowest layer (the full-canvas guide image) about 0.3 s;
+  the fallback is as fast.
+
 #### Lint rules
 
 These restate the art repo's CONVENTIONS.md as checkable rules.

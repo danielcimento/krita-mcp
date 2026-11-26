@@ -342,7 +342,20 @@ are fast enough that per-pixel Python loops are never justified.
     (sources: `plugins/impex/ora/kis_open_raster_stack_{load,save}_visitor.cpp`,
     `libs/pigment/KoCompositeOpRegistry.h`).
 - `layerStyleToAsl()` returns `''` for a layer without a style
-  [verified]. The non-empty case is [to verify], using the lint fixture.
+  [verified], and for transparency masks, filter masks, filter layers and
+  the selection mask too (no exception) [verified 2026-11-25, P4.1].
+  Headless, `setLayerStyleFromAsl(xml)` with ASL-as-XML (`<asl><node
+  type="Descriptor" classId="null">` with `Scl ` and `masterFXSwitch`)
+  returns `True` and `layerStyleToAsl()` is then non-empty (~325 chars);
+  a drop-shadow descriptor in the same XML was not kept, so making a
+  style with a visible effect is [to verify] (`tests/krita/test_analysis.py`
+  `ASL`).
+- **Filter layers can be made headless** [verified 2026-11-25, P4.1]:
+  `doc.createFilterLayer("Blur", Krita.instance().filter("blur"), sel)`
+  with `sel` a `Selection` from `select(0, 0, w, h, 255)` returns a
+  `FilterLayer` (`type()` `filterlayer`) that `addChildNode` takes.
+  `filter("blur")` and `filter("gaussian blur")` both exist.
+  `createFilterMask(name, filter, sel)` works the same way.
 - Group `projectionPixelData()` **includes** inherit-alpha clipping
   inside the group, and **excludes** the group's own opacity [verified, Q8].
   So flattening a group bakes the clipping, but the group's opacity has to
@@ -460,6 +473,25 @@ are fast enough that per-pixel Python loops are never justified.
   became 69 pixels in a 9×9 box. After `resize(w, h)`,
   `setPixelData` / `pixelData` work on a standalone `Selection` [verified].
   It is usable for "pixels near the part" checks without a Python loop.
+- **`grow` on a standalone `Selection`** [verified 2026-11-25, P4.1,
+  headless]:
+  - `Selection()` never attached to a document: `resize(w, h)`,
+    `setPixelData(mask, 0, 0, w, h)`, `grow(r, r)`, `pixelData` all
+    work; `resize` isn't even needed.
+  - The kernel is exact and binary: a 0/255 mask stays 0/255 (a lone
+    value 100 grows as 100). One pixel grown by r = 1, 2, 3, 4, 5, 8
+    covers 9, 21, 45, 69, 101, 241 pixels. The shape is
+    `KisSelectionFilter::computeBorder`'s: column `i` (`0 < |i| <= r`)
+    reaches `round(sqrt(r² - (|i| - 0.5)²))` rows up and down, column 0
+    reaches `r`. So the axis points at distance `r` are in; at r = 4
+    (3, 3) and (4, 2) are in and (4, 3) is out. `alphastats.kernel_half_widths`
+    reproduces it pixel for pixel (random masks, r up to 8).
+  - **Not clipped** to the selection's size: a pixel at (0, 0) grown by
+    3 reaches (-3, -3), and `x()`/`y()`/`width()`/`height()` become
+    -3, -3, 7, 7. A pixel at the far edge of a 16×16 selection grows past
+    it too. No padding is needed.
+  - Fast: 6000×6000 with sparse content, grow(4, 4) 183 ms;
+    4000×4000 half full, set + grow + read 65 ms.
 
 ## Undo
 
