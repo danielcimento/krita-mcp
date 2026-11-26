@@ -298,7 +298,7 @@ class LintCommandTest(EnvelopeAssertions, unittest.TestCase):
                 strong = self.assertOk(run("lint", doc=handle))
             del layer
         self.assertEqual(pairs(default["findings"]), collections.Counter([("stray-alpha", "Speck")]))
-        self.assertIn("has 1 stray speck, 1 px (", default["findings"][0]["message"])
+        self.assertIn("has 1 stray speck, 1 px, at ", default["findings"][0]["message"])
         self.assertIn("at (10, 0) 1x1", default["findings"][0]["message"])
         self.assertEqual(near["settings"]["stray_alpha_distance"], 8)
         self.assertEqual(pairs(near["findings"]), collections.Counter())

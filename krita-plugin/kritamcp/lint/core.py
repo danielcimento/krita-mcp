@@ -65,8 +65,8 @@ def empty_layer(snapshot):
     for n in checked_nodes(snapshot):
         a = alpha(n)
         if a is not None and a.get("pixel_count") == 0:
-            out.append(finding("empty-layer", n, f"Paint layer '{n.get('path')}' has no pixels; "
-                                                 "paint it or delete it"))
+            out.append(finding("empty-layer", n, f"Paint layer '{n.get('path')}' has no pixels",
+                               fix="paint it or delete it"))
     return out
 
 
@@ -86,7 +86,7 @@ def out_of_canvas(snapshot):
         if over:
             out.append(finding("out-of-canvas", n, (
                 f"Paint layer '{n.get('path')}' has pixels outside the {w}x{h} canvas "
-                f"({', '.join(over)}); move them in or trim them")))
+                f"({', '.join(over)})"), fix="move them in or trim them"))
     return out
 
 
@@ -98,7 +98,12 @@ def stray_alpha(snapshot):
     collector): ``stray_count > 0``."""
     s = settings(snapshot)
     below, dist = s["stray_alpha_below"], s["stray_alpha_distance"]
-    stray = f"alpha below {below}, more than {dist} px from any pixel with alpha {below} or more"
+    # F005 K14: what a stray speck is and how to clear it, once per rule
+    # group; each message keeps only the layer's numbers.
+    fix = (f"stray pixels have alpha below {below} and lie more than {dist} px from any pixel "
+           f"with alpha {below} or more; specks are groups of up to {s['stray_speck_max_px']} px "
+           f"of them. Erase them, or clear them with krita_trim_layers(ids=[...], "
+           f"alpha_threshold={below}, near_px={dist})")
     out = []
     for n in checked_nodes(snapshot):
         a = alpha(n)
@@ -110,11 +115,11 @@ def stray_alpha(snapshot):
             count = a.get("stray_count")
             if count:
                 out.append(finding("stray-alpha", n, (
-                    f"Paint layer '{path}' has {plural(count, 'stray pixel')} ({stray}); erase them")))
+                    f"Paint layer '{path}' has {plural(count, 'stray pixel')}"), fix=fix))
         elif specks.get("truncated"):
             out.append(finding("stray-alpha", n, (
-                f"Paint layer '{path}' has {plural(a.get('stray_count') or 0, 'stray pixel')} ({stray}), "
-                "too fragmented to analyse for specks; look for noise and erase it")))
+                f"Paint layer '{path}' has {plural(a.get('stray_count') or 0, 'stray pixel')}, "
+                "too fragmented to analyse for specks: look for noise"), fix=fix))
         elif specks.get("count"):
             count, shown = specks["count"], (specks.get("samples") or [])[:3]
             where = ", ".join(f"({r['x']}, {r['y']}) {r['w']}x{r['h']}" for r in shown)
@@ -124,10 +129,8 @@ def stray_alpha(snapshot):
             within = (f", all within ({box['x']}, {box['y']}) {box['w']}x{box['h']}"
                       if box and count > len(shown) else "")
             f = finding("stray-alpha", n, (
-                f"Paint layer '{path}' has {plural(count, 'stray speck')}, {specks.get('pixels', 0)} px "
-                f"(groups of up to {s['stray_speck_max_px']} px with {stray}){where}{within}; "
-                f"erase them, or clear them with krita_trim_layers(ids=[...], "
-                f"alpha_threshold={below}, near_px={dist})"))
+                f"Paint layer '{path}' has {plural(count, 'stray speck')}, {specks.get('pixels', 0)} px"
+                f"{where}{within}"), fix=fix)
             # K7: enough to decide on a trim without rendering.
             f["pixels"] = specks.get("pixels", 0)
             f["bounds"] = box

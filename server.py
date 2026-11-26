@@ -10,6 +10,7 @@ Every tool returns a dict: the plugin's payload fields, a one-line
 (docs/f001_buildout/decisions.md D2).
 """
 
+import json
 import os
 import sys
 import time
@@ -26,6 +27,8 @@ from fastmcp.exceptions import ToolError  # noqa: E402
 from pydantic import Field, ValidationError  # noqa: E402
 
 from krita_mcp_server import client  # noqa: E402
+from krita_mcp_server import version as server_version  # noqa: E402
+from krita_mcp_server.pages import LIST_MAX_BYTES, fit_page  # noqa: E402,F401
 from krita_mcp_server.models import LayerChange, LayerSpec, Move, Rect  # noqa: E402
 
 # Configuration (KRITA_URL, KRITA_MCP_TOKEN_FILE, KRITA_MCP_TOKEN) is read in
@@ -54,12 +57,24 @@ def _in(result: dict) -> str:
     return f" in {result['doc']}" if result.get("doc") else ""
 
 
+def _server_text(server: dict) -> str:
+    """"0.5.0 (commit a4fe3ce2, dirty)"."""
+    commit = server.get("server_commit")
+    if not commit:
+        return f"{server.get('server_version')} (no git commit found)"
+    return (f"{server.get('server_version')} (commit {commit[:8]}"
+            + (", dirty" if server.get("server_dirty") else "") + ")")
+
+
 @mcp.tool()
 def krita_health() -> dict:
     """Check if Krita is running and the MCP plugin is active.
 
     Never fails: when Krita can't be reached it returns ``running: false``.
-    ``protocol_ok`` is false when the installed plugin doesn't match this
+    Always reports this MCP server's own ``server_version``,
+    ``server_commit`` (the git commit it runs from, null outside a git
+    checkout) and ``server_dirty`` (uncommitted changes in that checkout);
+    ``version`` and ``plugin`` are the Krita plugin's. ``protocol_ok`` is false when the installed plugin doesn't match this
     server (update the plugin and restart Krita). ``allowed_dirs`` lists the
     directories file tools may use (the first is the output dir).
     To allow another folder, add it to the list under ``config_key``
@@ -70,13 +85,15 @@ def krita_health() -> dict:
     from the next call without restarting Krita (``config_reload``);
     krita_reload_config shows the result. ``config_dirs`` are the file's
     entries as written, ``config_errors`` the problems, such as a skipped
-    directory; ``limits``, ``lint`` and ``live2d`` are the canvas limits,
-    krita_lint's settings and the Live2D conventions (``live2d.enabled``:
-    off unless the config turns them on). ``busy``
+    directory; ``limits``, ``lint``, ``live2d`` and ``paint`` are the
+    canvas limits, krita_lint's settings, the Live2D conventions
+    (``live2d.enabled``: off unless the config turns them on) and the
+    painting tools' visibility check (``paint.check_visibility``). ``busy``
     is the command Krita is running now (``{"action", "elapsed_ms"}``) or
     null, and ``queued`` how many wait behind it.
     """
     start = time.perf_counter()
+    server = server_version.server_info()
     try:
         data = client.get_health(timeout=5.0)
     except ToolError as e:
@@ -85,13 +102,13 @@ def krita_health() -> dict:
                        "Make sure Krita is running with the MCP plugin enabled.")
         else:
             summary = f"Krita at {client.KRITA_URL} did not answer /health properly: {e}"
-        return {"running": False, "error": str(e), "summary": summary}
+        return {"running": False, "error": str(e), **server, "summary": summary}
     elapsed_ms = int(round((time.perf_counter() - start) * 1000))
     protocol_ok = data.get("protocol") == client.PROTOCOL
     if protocol_ok:
         summary = (f"Krita {data.get('krita_version') or '(version unknown)'} is running with "
                    f"plugin {data.get('plugin', 'unknown')} {data.get('version', '')}".rstrip()
-                   + f" (protocol {data.get('protocol')})")
+                   + f" (protocol {data.get('protocol')}); server {_server_text(server)}")
     else:
         mismatch = client.protocol_mismatch_message(data.get("protocol")).split(": ", 1)[1]
         summary = f"PROTOCOL MISMATCH: Krita is running, but tools will fail. {mismatch}"
@@ -113,7 +130,7 @@ def krita_health() -> dict:
         listed = "; ".join(" ".join(str(e).split()) for e in config_errors)  # one line
         summary += (f"; {len(config_errors)} config error{'s' if len(config_errors) != 1 else ''}: "
                     + listed)
-    return {**data, "allowed_dirs": allowed_dirs, "config_errors": config_errors,
+    return {**data, **server, "allowed_dirs": allowed_dirs, "config_errors": config_errors,
             "busy": busy if isinstance(busy, dict) else None,
             "running": True, "protocol_ok": protocol_ok,
             "elapsed_ms": elapsed_ms, "summary": summary}
@@ -125,8 +142,8 @@ def krita_reload_config(timeout_s: Optional[float] = None) -> dict:
     Re-read the plugin's config file (~/.krita-mcp-config.json) now and
     report the result: allowed_dirs (resolved; the first is the output
     dir), config_file, config_exists, config_key ("allowed_dirs"),
-    config_dirs (the file's entries as written), limits, lint and
-    config_errors (e.g. a folder skipped because it doesn't exist). The
+    config_dirs (the file's entries as written), limits, lint, live2d,
+    paint and config_errors (e.g. a folder skipped because it doesn't exist). The
     plugin also re-reads the file by itself when it changes, so this is
     for checking that an edit took effect; Krita needs no restart.
 
@@ -487,12 +504,10 @@ def _type_counts(counts) -> str:
     return ", ".join(parts)
 
 
-# list_layers' default fields and page size (F003 K3): about 190 bytes per
-# layer, so a page plus the summary stays under 8 KB.
-LIST_DEFAULT_FIELDS = ["id", "name", "type", "visible", "blend_mode", "children"]
+# list_layers' default fields and page size (F003 K3; F005 K12: no child
+# ids, the plugin adds child_count): about 140 bytes per layer.
+LIST_DEFAULT_FIELDS = ["id", "name", "type", "visible", "blend_mode"]
 LIST_DEFAULT_LIMIT = 30
-
-
 def _summary_note(summary) -> str:
     """"; 2 hidden, 7 multiply, depth 4" from a list_layers overview."""
     if not isinstance(summary, dict):
@@ -527,7 +542,10 @@ def krita_list_layers(doc: Optional[str] = None, root: Optional[str] = None,
 
     Big trees come in pages so the result stays small: `limit` layers
     (default 30) from `offset`; next_offset is where the next page starts,
-    null after the last. overview describes the whole listing: counts,
+    null after the last. A page that would pass about 8 KB is cut short:
+    trimmed {rows, of, max_bytes, dropped_fields} says so, and next_offset
+    points at the first row left out (only when one row alone is too big
+    are children ids dropped, named in dropped_fields). overview describes the whole listing: counts,
     max_depth, hidden (layers whose own visibility is off: count and up to
     20 paths) and blend_modes (each non-normal mode: count and up to 20
     paths). summary_only=true returns just counts and overview;
@@ -538,7 +556,9 @@ def krita_list_layers(doc: Optional[str] = None, root: Optional[str] = None,
     Each layer object has, by default, id (braced UUID), name, type
     ("paintlayer", "grouplayer", ...), visible (the layer's own flag),
     blend_mode (a Krita id such as "normal", "multiply", "add") and
-    children (child ids, top to bottom). fields chooses others: path (name
+    child_count (always there: how many children it has; pass it as root
+    to list them). fields chooses others: children (child ids, top to
+    bottom), path (name
     path from the document root, "/" in names escaped as "\\/"), parent
     (id, null at the top level), index (position in the parent counted
     from the bottom), opacity (0.0-1.0), locked, alpha_locked,
@@ -558,12 +578,12 @@ def krita_list_layers(doc: Optional[str] = None, root: Optional[str] = None,
               followed by its subtree
         depth: Levels below root to list, at least 1; default unlimited.
                1 = root's direct children only (for a layer root: the layer
-               and its direct children). Layers at the cut-off still list
-               their children ids, so pass one as root to go deeper
+               and its direct children). Layers at the cut-off still show
+               child_count, so pass one with children as root to go deeper
         fields: Layer-object keys to include, e.g. ["path", "bounds"], or
-                ["all"]; id, name and children are always included. Unknown
-                keys fail with bad_request. Default id, name, type, visible,
-                blend_mode, children
+                ["all"]; id, name and child_count are always included.
+                Unknown keys fail with bad_request. Default id, name, type,
+                visible, blend_mode
         summary_only: Return only counts and overview, no layers
         path: Write the full listing to this .json file (absolute, ~, or
               relative to the output dir; inside an allowed directory)
@@ -584,6 +604,7 @@ def krita_list_layers(doc: Optional[str] = None, root: Optional[str] = None,
     else:
         params.update(limit=limit, offset=offset)
     result = client.call("list_layers", params, timeout_s=timeout_s)
+    trimmed = fit_page(result)
     layers = result.get("layers") or []
     counts = result.get("counts") or {}
     what = _type_counts(counts) or "No layers"
@@ -599,6 +620,12 @@ def krita_list_layers(doc: Optional[str] = None, root: Optional[str] = None,
     elif not summary_only and "offset" in result:
         shown_from = result.get("offset", 0)
         summary += f"; listed {shown_from + 1 if layers else shown_from}-{shown_from + len(layers)}"
+        if trimmed:
+            summary += (f" (page cut from {trimmed['of']} to {trimmed['rows']} rows to stay "
+                        "under 8 KB")
+            if trimmed["dropped_fields"]:
+                summary += f"; dropped {', '.join(trimmed['dropped_fields'])}"
+            summary += ")"
         if result.get("next_offset") is not None:
             summary += f" (next page: offset={result['next_offset']})"
     return _done(result, summary)
@@ -736,6 +763,22 @@ def krita_create_layers(specs: Optional[list[LayerSpec]] = None, manifest: Optio
 
 def _count(n, one, many=None) -> str:
     return f"{n} {one if n == 1 else (many or one + 's')}"
+
+
+def _paint_note(result: dict) -> str:
+    """"; changed 60x40 at (10, 20), 100% covered (top cover: 'Neck'):
+    note …" from a painting tool's result (F005 K11)."""
+    rect = result.get("changed")
+    if "changed" not in result:
+        return ""  # a plugin before 0.5.0
+    text = f"; changed {_rect_text(rect)}" if isinstance(rect, dict) else "; nothing changed"
+    pct = result.get("covered_pct")
+    if isinstance(pct, (int, float)) and not isinstance(pct, bool) and pct > 0:
+        text += f", {pct * 100:.0f}% covered by layers above"
+    for note in result.get("notes") or []:
+        if isinstance(note, dict) and note.get("code") != "nothing_changed":
+            text += f"; note: {note.get('message')}"
+    return text
 
 
 def _warnings_note(warnings) -> str:
@@ -1777,7 +1820,7 @@ def krita_lint(doc: Optional[str] = None, rules: Optional[list[str]] = None,
       than 4 px from any stronger pixel; anti-aliased edges and larger
       soft regions (glows) don't count. The finding has pixels (the specks'
       pixel count) and bounds (their box), enough to decide on
-      krita_trim_layers without rendering
+      krita_trim_layers without rendering; the trim call is in fix
 
     Live2D rig conventions (part separation for Cubism; OFF unless the
     config's live2d.enabled is true). Set "default":
@@ -1835,15 +1878,19 @@ def krita_lint(doc: Optional[str] = None, rules: Optional[list[str]] = None,
     pose; default: the last word one capital other than L and R) and
     default_pose (default "A").
 
-    Findings are {rule, severity, layer_id, path, message, related_ids?,
-    suggested_names?, pixels?, bounds?}, sorted by stacking order (top to
-    bottom, as in the Layers docker), document-level findings (layer_id
-    and path null) first, then by rule.
+    Findings are {rule, severity, layer_id, path, message, fix?,
+    related_ids?, suggested_names?, pixels?, bounds?}, sorted by stacking
+    order (top to bottom, as in the Layers docker), document-level
+    findings (layer_id and path null) first, then by rule. message says
+    what is wrong; fix, when a rule's fix is the same for every finding
+    (stray-alpha, empty-layer, out-of-canvas, layer-style, inherit-alpha,
+    reference-hidden), says how to fix it.
 
     Results are grouped by rule (group_by "rule", the default) so a big
     document's lint fits in context: by_rule {rule: {severity, count,
-    items (the first `limit` findings, from `offset`, without the rule
-    and severity their group gives), next_offset}}.
+    fix (once for the rule, when all its findings share it), items (the
+    first `limit` findings, from `offset`, without the rule, severity and
+    fix their group gives), next_offset}}.
     group_by "none" gives the flat findings list instead, paged the same
     way (offset, limit, next_offset). To see every finding of one rule,
     pass rules=["<rule>"] and a larger limit, or page with offset.
@@ -2197,6 +2244,17 @@ def krita_stroke(points: list[list[int]], pressure: float = 1.0,
     One call is one agent undo step (krita_undo restores the old pixels;
     a write too big for the undo journal's caps warns "not_undoable").
 
+    The result says what changed and whether it shows:
+    changed ({x, y, w, h} of the pixels that now differ, null when none
+    did), changed_px, layer_visible (the layer and every group above it
+    visible), covered_pct (the share 0-1 of the changed pixels that the
+    layers drawn after it cover, measured like krita_occlusion_map with
+    its defaults; null when the layer is hidden or nothing changed),
+    top_cover ({id, path} of the layer above covering most of it) and
+    notes ([{code, message}]: nothing_changed, layer_hidden, or
+    change_covered when every changed pixel is covered). The config's
+    paint.check_visibility: false skips covered_pct, top_cover and notes.
+
     Args:
         points: List of [x, y] coordinate pairs, e.g., [[100, 100], [150, 120], [200, 150]]
         pressure: Brush pressure (0.0 to 1.0, affects stroke thickness/opacity)
@@ -2220,7 +2278,7 @@ def krita_stroke(points: list[list[int]], pressure: float = 1.0,
         "pressure": pressure
     }, color=color, doc=doc, layer=layer), timeout_s=timeout_s)
     return _done(result, f"Stroke painted with {result.get('points_count', len(points))} points"
-                         + _in(result) + _warnings_note(result.get("warnings")))
+                         + _in(result) + _paint_note(result) + _warnings_note(result.get("warnings")))
 
 
 @mcp.tool()
@@ -2233,6 +2291,17 @@ def krita_fill(x: int, y: int, radius: int = 50, color: Optional[str] = None,
 
     One call is one agent undo step (krita_undo restores the old pixels;
     a write too big for the undo journal's caps warns "not_undoable").
+
+    The result says what changed and whether it shows:
+    changed ({x, y, w, h} of the pixels that now differ, null when none
+    did), changed_px, layer_visible (the layer and every group above it
+    visible), covered_pct (the share 0-1 of the changed pixels that the
+    layers drawn after it cover, measured like krita_occlusion_map with
+    its defaults; null when the layer is hidden or nothing changed),
+    top_cover ({id, path} of the layer above covering most of it) and
+    notes ([{code, message}]: nothing_changed, layer_hidden, or
+    change_covered when every changed pixel is covered). The config's
+    paint.check_visibility: false skips covered_pct, top_cover and notes.
 
     Args:
         x: X coordinate
@@ -2253,7 +2322,7 @@ def krita_fill(x: int, y: int, radius: int = 50, color: Optional[str] = None,
     result = client.call("fill", _with({"x": x, "y": y, "radius": radius}, color=color, doc=doc,
                                        layer=layer), timeout_s=timeout_s)
     return _done(result, f"Filled circle at ({x}, {y}) with radius {radius}" + _in(result)
-                 + _warnings_note(result.get("warnings")))
+                 + _paint_note(result) + _warnings_note(result.get("warnings")))
 
 
 @mcp.tool()
@@ -2278,6 +2347,17 @@ def krita_draw_shape(
 
     One call is one agent undo step (krita_undo restores the old pixels;
     a write too big for the undo journal's caps warns "not_undoable").
+
+    The result says what changed and whether it shows:
+    changed ({x, y, w, h} of the pixels that now differ, null when none
+    did), changed_px, layer_visible (the layer and every group above it
+    visible), covered_pct (the share 0-1 of the changed pixels that the
+    layers drawn after it cover, measured like krita_occlusion_map with
+    its defaults; null when the layer is hidden or nothing changed),
+    top_cover ({id, path} of the layer above covering most of it) and
+    notes ([{code, message}]: nothing_changed, layer_hidden, or
+    change_covered when every changed pixel is covered). The config's
+    paint.check_visibility: false skips covered_pct, top_cover and notes.
 
     Args:
         shape: Type of shape - "rectangle", "ellipse", or "line"
@@ -2318,7 +2398,7 @@ def krita_draw_shape(
     result = client.call("draw_shape", _with(params, color=color, doc=doc, layer=layer),
                          timeout_s=timeout_s)
     return _done(result, f"Drew {result.get('shape', shape)} at ({x}, {y})" + _in(result)
-                 + _warnings_note(result.get("warnings")))
+                 + _paint_note(result) + _warnings_note(result.get("warnings")))
 
 
 @mcp.tool()
@@ -2508,6 +2588,17 @@ def krita_clear(color: str = "#1a1a2e", doc: Optional[str] = None,
     One call is one agent undo step (krita_undo restores the old pixels;
     a write too big for the undo journal's caps warns "not_undoable").
 
+    The result says what changed and whether it shows:
+    changed ({x, y, w, h} of the pixels that now differ, null when none
+    did), changed_px, layer_visible (the layer and every group above it
+    visible), covered_pct (the share 0-1 of the changed pixels that the
+    layers drawn after it cover, measured like krita_occlusion_map with
+    its defaults; null when the layer is hidden or nothing changed),
+    top_cover ({id, path} of the layer above covering most of it) and
+    notes ([{code, message}]: nothing_changed, layer_hidden, or
+    change_covered when every changed pixel is covered). The config's
+    paint.check_visibility: false skips covered_pct, top_cover and notes.
+
     Args:
         color: Color to fill the layer's canvas area with (default dark
                blue), or "transparent" to erase the layer completely,
@@ -2524,7 +2615,7 @@ def krita_clear(color: str = "#1a1a2e", doc: Optional[str] = None,
     result = client.call("clear", _with({"color": color}, doc=doc, layer=layer),
                          timeout_s=timeout_s)
     return _done(result, f"Layer{_in(result)} cleared to {result.get('color', color)}"
-                 + _warnings_note(result.get("warnings")))
+                 + _paint_note(result) + _warnings_note(result.get("warnings")))
 
 
 @mcp.tool()

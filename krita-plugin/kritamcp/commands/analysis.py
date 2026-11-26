@@ -285,11 +285,13 @@ def _page(items, limit, offset):
 
 
 def group_findings(findings, limit, offset):
-    """``{rule: {severity, count, items, next_offset}}`` in the order rules
-    first appear in ``findings`` (F003 K3): each rule's findings counted,
-    ``items`` the page ``[offset:offset + limit]`` of them. Items leave out
-    ``rule`` and ``severity``, which their group already gives (F004 G11:
-    the smoke test's ``lint(all)`` stays under 8 KB)."""
+    """``{rule: {severity, count, fix?, items, next_offset}}`` in the order
+    rules first appear in ``findings`` (F003 K3): each rule's findings
+    counted, ``items`` the page ``[offset:offset + limit]`` of them. Items
+    leave out ``rule`` and ``severity``, which their group already gives
+    (F004 G11: the smoke test's ``lint(all)`` stays under 8 KB). When every
+    finding of the rule has the same ``fix``, the group gives it once and
+    the items leave it out (F005 K14)."""
     grouped = {}
     for f in findings:
         grouped.setdefault(f["rule"], []).append(f)
@@ -297,10 +299,15 @@ def group_findings(findings, limit, offset):
     for rule_id, items in grouped.items():
         page, paging = _page(items, limit, offset)
         end = offset + len(page)
-        out[rule_id] = {"severity": items[0]["severity"], "count": len(items),
-                        "items": [{k: v for k, v in f.items() if k not in GROUP_KEYS} for f in page],
-                        "next_offset": paging.get("next_offset",
-                                                  end if end < len(items) else None)}
+        fixes = {f.get("fix") for f in items}
+        shared = fixes.pop() if len(fixes) == 1 else None
+        drop = GROUP_KEYS + (("fix",) if shared is not None else ())
+        group = {"severity": items[0]["severity"], "count": len(items)}
+        if shared is not None:
+            group["fix"] = shared
+        group["items"] = [{k: v for k, v in f.items() if k not in drop} for f in page]
+        group["next_offset"] = paging.get("next_offset", end if end < len(items) else None)
+        out[rule_id] = group
     return out
 
 

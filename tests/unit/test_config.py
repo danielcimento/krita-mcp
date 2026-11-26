@@ -443,6 +443,31 @@ def test_describe_reports_lint_and_live2d_as_json(cfg, out, home):
     json.dumps(d)
 
 
+# --- load(): paint (F005) -------------------------------------------------
+
+def test_paint_defaults_and_override(cfg, out, home):
+    assert config.DEFAULT_PAINT == {"check_visibility": True}
+    assert dict(load(cfg, out, home).paint) == {"check_visibility": True}
+    write(cfg, {"paint": {"check_visibility": False}})
+    s = load(cfg, out, home)
+    assert dict(s.paint) == {"check_visibility": False} and s.errors == ()
+    assert config.describe(s)["paint"] == {"check_visibility": False}
+
+
+@pytest.mark.parametrize("given,why", [
+    ({"check_visibility": "no"}, "paint.check_visibility must be true or false, got 'no'; "
+                                 "default True kept"),
+    ({"check_visibility": 0}, "paint.check_visibility must be true or false"),
+    ({"notes": False}, "unknown key paint.notes ignored"),
+    ([], "'paint' must be an object; ignored"),
+])
+def test_paint_bad_values_keep_the_default(cfg, out, home, given, why):
+    write(cfg, {"paint": given})
+    s = load(cfg, out, home)
+    assert dict(s.paint) == config.DEFAULT_PAINT
+    assert len(s.errors) == 1 and why in s.errors[0]
+
+
 # --- load(): defaults from the environment -----------------------------
 
 def test_config_file_env_var_is_used(tmp_path, out, home, monkeypatch):

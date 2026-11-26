@@ -39,8 +39,10 @@ choice by the caller.
 
 Each rule is ``fn(snapshot) -> [finding]``. A finding is ``{rule,
 severity, layer_id, path, message}`` plus ``related_ids`` when several
-nodes are involved; document-level findings have ``layer_id`` and
-``path`` ``None``. ``run`` sets each finding's ``severity`` to the rule's
+nodes are involved, and ``fix`` when the way to fix it is the same text
+for every finding of the rule (F005 K14: ``message`` then says only what
+is wrong, and ``krita_lint`` gives ``fix`` once per rule group);
+document-level findings have ``layer_id`` and ``path`` ``None``. ``run`` sets each finding's ``severity`` to the rule's
 effective severity (``severity_of``).
 
 **Reference groups**: a ``grouplayer`` whose name, trimmed, matches
@@ -313,12 +315,16 @@ def checked_nodes(snapshot):
     return out
 
 
-def finding(rule_id, node, message, related_ids=None):
+def finding(rule_id, node, message, related_ids=None, fix=None):
+    """A finding. ``fix``: how to fix it, when that text doesn't depend on
+    the node (F005 K14); ``message`` then says only what is wrong."""
     f = {"rule": rule_id, "severity": RULES[rule_id].severity,
          "layer_id": None if node is None else node["id"],
          "path": None if node is None else node.get("path"), "message": message}
     if related_ids is not None:
         f["related_ids"] = list(related_ids)
+    if fix is not None:
+        f["fix"] = fix
     return f
 
 

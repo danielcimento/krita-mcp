@@ -1,5 +1,6 @@
 """occlusion_map (api-design § krita_occlusion_map): how much of a paint
-layer the layers drawn after it hide.
+layer the layers drawn after it hide. Also ``change_report``, the painting
+tools' "what changed, and does it show" (F005 K11), on the same render.
 
 ``occlusionplan.plan`` picks the *units* that cover the target (paint
 layers and isolated groups drawn after it, visible, in ``modes``) and the
@@ -19,7 +20,7 @@ and big-int AND / ``bit_count``, no per-pixel loop.
 
 from PyQt5.QtGui import QImage
 
-from .. import nodes, occlusionplan, paths, pixels, refs, registry, renderplan
+from .. import changes, config, nodes, occlusionplan, paths, pixels, refs, registry, renderplan
 from ..dispatch import LONG_TIMEOUT, command
 from ..errors import CommandError
 from .pixels import _bounds, _png_level, _rect
@@ -196,3 +197,116 @@ def cmd_occlusion_map(params):
     if level is not None:
         out["png_level"] = level
     return out
+
+
+# --- the painting tools' change report (F005 K11) ----------------------------
+
+TOP_COVER_MAX_UNITS = 200  # units read for top_cover; the nearest first
+
+
+def _effective_visibility(index, by_id, nid):
+    """``(visible, hidden_by)``: whether ``nid`` and all its ancestors are
+    visible, and the path of the nearest one that isn't (itself first)."""
+    for n in [nid] + index.ancestors(nid):
+        if not by_id[n].visible():
+            return False, index.path_of(n)
+    return True, None
+
+
+def _unit_alpha(node, rect):
+    """One alpha byte per pixel of a unit over ``rect``: a paint layer's own
+    pixels, a group's projection."""
+    if node.type() == occlusionplan.GROUP:
+        data = node.projectionPixelData(*rect)
+    else:
+        data = node.pixelData(*rect)
+    data = pixels.as_bytes(data)
+    return data[3::4] if len(data) == 4 * rect[2] * rect[3] else None
+
+
+def _top_cover(by_id, index, units, rect, mask01, level):
+    """``{id, path}`` of the unit whose own alpha covers the most changed
+    pixels (``mask01`` over ``rect``) at ``level`` or more, the nearest
+    above on a tie; None when none does."""
+    best, best_count = None, 0
+    for nid in units[:TOP_COVER_MAX_UNITS]:
+        alpha = _unit_alpha(by_id[nid], rect)
+        if alpha is None:
+            continue
+        count = changes.and_count(mask01, changes.at_least(alpha, level))
+        if count > best_count:
+            best, best_count = nid, count
+    return None if best is None else {"id": best, "path": index.path_of(best)}
+
+
+def change_report(doc, node, rect, old, new):
+    """What a painting call changed in ``node`` (a paint layer of the live
+    ``doc``) over ``rect`` (``(x, y, w, h)``, where ``old`` and ``new`` are
+    the BGRA bytes before and after) and whether it shows (F005 K11):
+    ``changed`` (the bounds of the pixels that differ, or None),
+    ``changed_px``, ``layer_visible`` (with every ancestor group),
+    ``covered_pct`` (the share of the changed pixels on the canvas that the
+    layers drawn after it cover at ``occlusion_map``'s default threshold,
+    by its method: Normal paint layers and isolated groups, rendered in a
+    clone; None when the layer is hidden, nothing changed or the config's
+    ``paint.check_visibility`` is off), ``top_cover`` and ``notes`` (both
+    only with the check on). Call it after ``doc.refreshProjection()`` and
+    ``doc.waitForDone()``."""
+    x, y, w, h = rect
+    out = {"changed": None, "changed_px": 0}
+    mask = changes.changed_mask(old, new) if len(old) == len(new) == 4 * w * h else None
+    index, by_id = nodes.tree(doc)
+    nid = nodes.node_id(node)
+    visible, hidden_by = _effective_visibility(index, by_id, nid)
+    out["layer_visible"] = visible
+    check = bool((getattr(config.current(), "paint", None) or {}).get("check_visibility", True))
+    if mask is None:  # not 8-bit RGBA: no per-pixel comparison
+        out.update(changed=_rect(*rect), changed_px=None, covered_pct=None)
+        return out
+    local = changes.mask_bounds(mask, w, h)
+    report = {"changed_px": 0, "layer_visible": visible, "hidden_by": hidden_by,
+              "covered_pct": None, "fully_hidden": False, "top_cover": None}
+    if local is not None:
+        out["changed"] = _rect(x + local[0], y + local[1], local[2], local[3])
+        out["changed_px"] = report["changed_px"] = mask.count(1)
+    if check and visible and local is not None:
+        report.update(_coverage(doc, index, by_id, nid, rect, mask,
+                                (x + local[0], y + local[1], local[2], local[3])))
+    out["covered_pct"] = report["covered_pct"]
+    if report["top_cover"] is not None:
+        out["top_cover"] = report["top_cover"]
+    if check:
+        notes = changes.notes(report, index.path_of(nid))
+        if notes:
+            out["notes"] = notes
+    return out
+
+
+def _coverage(doc, index, by_id, nid, rect, mask, changed):
+    """``{covered_pct, fully_hidden, top_cover}`` of the changed pixels
+    (``mask`` over ``rect``) inside the canvas: rendered like
+    ``occlusion_map`` with default modes and threshold, over the changed
+    bounds only, and only when a unit above overlaps them."""
+    on_canvas = changes.intersect(changed, (0, 0, doc.width(), doc.height()))
+    if on_canvas is None:
+        return {"covered_pct": None, "fully_hidden": False, "top_cover": None}
+    cx, cy, cw, ch = on_canvas
+    part = changes.crop(mask, rect[2], (cx - rect[0], cy - rect[1], cw, ch))
+    total = part.count(1)
+    if not total:
+        return {"covered_pct": None, "fully_hidden": False, "top_cover": None}
+    props = _props(by_id)
+    plan = occlusionplan.plan(index, props, nid, occlusionplan.mode_set(occlusionplan.DEFAULT_MODES))
+    units = [u for u in plan.units
+             if (b := _bounds(by_id[u])) is not None and changes.intersect(b, on_canvas)]
+    if not units:
+        return {"covered_pct": 0.0, "fully_hidden": False, "top_cover": None}
+    level = occlusionplan.threshold_level(occlusionplan.DEFAULT_THRESHOLD)
+    shown = occlusionplan.Plan(units, plan.unclip, plan.neutral)
+    visible = {i: p["visible"] for i, p in props.items()}
+    visibility = renderplan.visibility_changes(index, visible, only=units, hide=[nid])
+    coverage = _coverage_render(doc, visibility, shown, props, on_canvas)
+    covered = changes.and_count(part, changes.at_least(coverage, level))
+    full = changes.and_count(part, changes.at_least(coverage, 255))
+    top = _top_cover(by_id, index, units, on_canvas, part, level) if covered else None
+    return {"covered_pct": covered / total, "fully_hidden": full == total, "top_cover": top}

@@ -203,7 +203,8 @@ def test_finding_shape():
     r = lint.run(snap("lint_four_findings"))
     for f in r["findings"]:
         want = {"rule", "severity", "layer_id", "path", "message"}
-        extra = {"related_ids", "suggested_names"} if f["rule"] == "duplicate-name" else set()
+        extra = ({"related_ids", "suggested_names"} if f["rule"] == "duplicate-name"
+                 else {"fix", "pixels", "bounds"})
         assert want <= set(f) <= want | extra
         assert f["severity"] == SEVERITY[f["rule"]]
         assert f["path"] in f["message"]
@@ -293,7 +294,8 @@ def test_layer_style():
 def test_inherit_alpha():
     r = run1(snap("inherit_alpha"), "inherit-alpha")
     assert paths(r) == ["Shade", "Clipped"]
-    assert "krita_merge_layers" in r["findings"][0]["message"]
+    assert r["findings"][0]["message"] == "Layer 'Shade' inherits alpha (clipping)"
+    assert "krita_merge_layers" in r["findings"][0]["fix"]  # F005 K14: the fix on its own
 
 
 # --- blend-mode (D17) --------------------------------------------------
@@ -465,7 +467,8 @@ def test_side_token_collision_counts_non_standard_tokens_as_sided():
 def test_empty_layer():
     r = run1(snap("empty_layer"), "empty-layer")
     assert paths(r) == ["Spare"]  # the empty group and the filter layer are not paint layers
-    assert r["findings"][0]["message"] == "Paint layer 'Spare' has no pixels; paint it or delete it"
+    assert r["findings"][0]["message"] == "Paint layer 'Spare' has no pixels"
+    assert r["findings"][0]["fix"] == "paint it or delete it"
 
 
 def test_out_of_canvas():
@@ -484,26 +487,30 @@ def test_out_of_canvas_exact_fit_is_fine():
     assert paths(run1(s, "out-of-canvas")) == ["Overhang", "Top"]
 
 
+STRAY_FIX = ("stray pixels have alpha below 16 and lie more than 2 px from any pixel with alpha 16 "
+             "or more; specks are groups of up to 16 px of them. Erase them, or clear them with "
+             "krita_trim_layers(ids=[...], alpha_threshold=16, near_px=2)")
+
+
 def test_stray_alpha_flags_specks_only():
     r = run1(snap("stray_alpha"), "stray-alpha")
     # Glow: 900 stray pixels in one region larger than stray_speck_max_px, no speck.
     assert paths(r) == ["Dust", "Speck", "Glow Dust", "Noise"]
     f = by_path(r)
+    # F005 K14: the message keeps the layer's numbers, the fix (with what
+    # a speck is) is the same text for every finding.
     assert f["Dust"]["message"] == (
-        "Paint layer 'Dust' has 6 stray specks, 37 px (groups of up to 16 px with alpha below 16, "
-        "more than 2 px from any pixel with alpha 16 or more), e.g. at (9, 9) 3x4, (15, 10) 5x5, "
-        "(20, 12) 2x2; erase them, or clear them with krita_trim_layers(ids=[...], "
-        "alpha_threshold=16, near_px=2)")
-    assert "has 1 stray speck, 1 px (" in f["Speck"]["message"]
-    assert "), at (12, 20) 1x1; erase them" in f["Speck"]["message"]
-    assert "2 stray specks, 5 px" in f["Glow Dust"]["message"]
-    assert ", at (8, 22) 2x2, (23, 23) 1x1; erase them" in f["Glow Dust"]["message"]
+        "Paint layer 'Dust' has 6 stray specks, 37 px, e.g. at (9, 9) 3x4, (15, 10) 5x5, (20, 12) 2x2")
+    assert f["Speck"]["message"] == "Paint layer 'Speck' has 1 stray speck, 1 px, at (12, 20) 1x1"
+    assert f["Glow Dust"]["message"] == (
+        "Paint layer 'Glow Dust' has 2 stray specks, 5 px, at (8, 22) 2x2, (23, 23) 1x1")
+    assert {x["fix"] for x in r["findings"]} == {STRAY_FIX}
     # K7: pixel count and bounds as data (None from a collector without bounds).
     assert (f["Dust"]["pixels"], f["Dust"]["bounds"]) == (37, None)
     assert "pixels" not in f["Noise"]
     assert f["Noise"]["message"] == (
-        "Paint layer 'Noise' has 40000 stray pixels (alpha below 16, more than 2 px from any pixel "
-        "with alpha 16 or more), too fragmented to analyse for specks; look for noise and erase it")
+        "Paint layer 'Noise' has 40000 stray pixels, too fragmented to analyse for specks: "
+        "look for noise")
     assert all(x["severity"] == "warning" for x in r["findings"])
 
 
@@ -513,7 +520,7 @@ def test_stray_alpha_reports_speck_bounds():
     dust["alpha"]["stray_specks"]["bounds"] = {"x": 9, "y": 9, "w": 30, "h": 12}
     f = by_path(run1(s, "stray-alpha"))["Dust"]
     assert f["bounds"] == {"x": 9, "y": 9, "w": 30, "h": 12}
-    assert "(20, 12) 2x2, all within (9, 9) 30x12; erase them" in f["message"]
+    assert f["message"].endswith("(20, 12) 2x2, all within (9, 9) 30x12")
 
 
 def test_stray_alpha_without_specks_falls_back_to_stray_count():
@@ -525,10 +532,9 @@ def test_stray_alpha_without_specks_falls_back_to_stray_count():
     r = run1(s, "stray-alpha")
     assert paths(r) == ["Dust", "Speck", "Glow", "Glow Dust", "Noise"]
     f = by_path(r)
-    assert f["Dust"]["message"] == (
-        "Paint layer 'Dust' has 37 stray pixels (alpha below 16, more than 2 px from any pixel "
-        "with alpha 16 or more); erase them")
-    assert "has 1 stray pixel (" in f["Speck"]["message"]
+    assert f["Dust"]["message"] == "Paint layer 'Dust' has 37 stray pixels"
+    assert f["Dust"]["fix"] == STRAY_FIX
+    assert f["Speck"]["message"] == "Paint layer 'Speck' has 1 stray pixel"
 
 
 def test_stray_alpha_speck_without_samples():
@@ -536,13 +542,13 @@ def test_stray_alpha_speck_without_samples():
     dust = next(n for n in s["nodes"] if n["name"] == "Dust")
     dust["alpha"]["stray_specks"]["samples"] = []
     msg = by_path(run1(s, "stray-alpha"))["Dust"]["message"]
-    assert "alpha 16 or more); erase them, or clear them" in msg
+    assert msg == "Paint layer 'Dust' has 6 stray specks, 37 px"
 
 
 def test_stray_alpha_default_speck_size_in_message():
     s = snap("stray_alpha")
     del s["settings"]["stray_speck_max_px"]
-    assert "groups of up to 64 px" in by_path(run1(s, "stray-alpha"))["Dust"]["message"]
+    assert "groups of up to 64 px" in by_path(run1(s, "stray-alpha"))["Dust"]["fix"]
 
 
 # --- color-space -------------------------------------------------------
@@ -754,8 +760,8 @@ def test_reference_hidden():
     # [Refs] is hidden; [ Inner ] is inside a reference group (skipped);
     # [ Note ] is a paint layer. A hidden parent doesn't excuse [ Sketch ].
     assert paths(r) == ["[ Guide ]", "Extras/[ Sketch ]"]
-    assert r["findings"][0]["message"] == (
-        "Reference group '[ Guide ]' is visible; hide it (reference material stays hidden)")
+    assert r["findings"][0]["message"] == "Reference group '[ Guide ]' is visible"
+    assert r["findings"][0]["fix"] == "hide it (reference material stays hidden)"
 
 
 def test_mask_suffix():

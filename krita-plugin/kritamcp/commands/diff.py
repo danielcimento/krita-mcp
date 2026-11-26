@@ -40,6 +40,7 @@ def _records(doc):
         node = by_id[nid]
         obj = nodes.layer_object(node, index, _FIELDS, nid=nid)
         obj.pop("children", None)
+        obj.pop("child_count", None)
         obj["bounds"] = _bounds(node)
         records.append(obj)
     return diffplan.with_indices(records), by_id

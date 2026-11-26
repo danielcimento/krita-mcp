@@ -88,7 +88,18 @@ class Caller:
         full = self.FULL.get(self._name(tool), {})
         if not (tool.endswith("list_layers") and (kwargs.get("summary_only") or kwargs.get("path"))):
             kwargs = {**full, **kwargs}
-        return self._tool(tool)(**kwargs)
+        result = self._tool(tool)(**kwargs)
+        if self._name(tool) == "krita_list_layers" and result.get("trimmed") and "limit" in full \
+                and kwargs.get("limit") == full["limit"]:
+            # F005 K12: the server cuts a page over 8 KB; a "give me everything"
+            # call follows next_offset and returns the whole listing.
+            layers = list(result["layers"])
+            while result.get("next_offset") is not None:
+                result = self._tool(tool)(**{**kwargs, "offset": result["next_offset"]})
+                layers += result["layers"]
+            result = {**result, "layers": layers, "next_offset": None}
+            result.pop("trimmed", None)
+        return result
 
     def error(self, code, tool, /, **kwargs):
         with pytest.raises(ToolError) as info:

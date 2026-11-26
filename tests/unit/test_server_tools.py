@@ -8,7 +8,7 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
 import server
-from krita_mcp_server import client
+from krita_mcp_server import client, pages
 
 EXPECTED_TOOLS = {
     "krita_health",
@@ -340,6 +340,43 @@ def test_mcp_client_sees_structured_result_and_is_error(monkeypatch, fake_call):
     assert bad.content[0].text.startswith("bad_request: ")
 
 
+def test_health_reports_the_server_version(monkeypatch):
+    # F005 K15: the server's own version and commit, also when Krita is down.
+    from krita_mcp_server import version
+    monkeypatch.setattr(version, "_cached", ("0123456789abcdef", True))
+    health = {"status": "ok", "plugin": "kritamcp", "protocol": 3, "version": "0.5.0",
+              "krita_version": "5.3.4"}
+    monkeypatch.setattr(client, "get_health", lambda timeout=None: dict(health))
+    result = server.krita_health()
+    assert (result["server_version"], result["server_commit"], result["server_dirty"]) == (
+        version.SERVER_VERSION, "0123456789abcdef", True)
+    assert "; server 0.5.0 (commit 01234567, dirty)" in result["summary"]
+    assert result["version"] == "0.5.0"  # still the plugin's
+
+    def unreachable(timeout=None):
+        raise ToolError(client.UNAVAILABLE)
+    monkeypatch.setattr(client, "get_health", unreachable)
+    monkeypatch.setattr(version, "_cached", (None, None))
+    result = server.krita_health()
+    assert result["running"] is False and result["server_commit"] is None
+    assert result["server_version"] == version.SERVER_VERSION
+
+
+def test_server_version_matches_the_plugin():
+    from kritamcp import version as plugin_version
+    from krita_mcp_server import version
+    assert version.SERVER_VERSION == plugin_version.PLUGIN_VERSION
+
+
+def test_server_commit_is_read_from_git():
+    from krita_mcp_server import version
+    commit, dirty = version.read_commit()
+    if commit is None:  # not a git checkout (an sdist, say)
+        assert dirty is None
+    else:
+        assert len(commit) == 40 and isinstance(dirty, bool)
+
+
 def test_health_unreachable_does_not_raise(monkeypatch):
     def unreachable(timeout=None):
         raise ToolError(client.UNAVAILABLE)
@@ -629,7 +666,7 @@ def test_list_layers_forwards_only_set_params(fake_call):
     server.krita_list_layers(doc="doc-2", root="Head", depth=2, fields=["bounds"])
     assert fake_call.calls[1][1] == {**page, "doc": "doc-2", "root": "Head", "depth": 2,
                                      "fields": ["bounds"]}
-    server.krita_list_layers(fields=[])  # an empty list is sent: only id, name, children
+    server.krita_list_layers(fields=[])  # an empty list is sent: only id, name, child_count
     assert fake_call.calls[2][1] == {**page, "fields": []}
     server.krita_list_layers(fields=["all"], limit=5, offset=10)
     assert fake_call.calls[3][1] == {"overview": True, "limit": 5, "offset": 10}
@@ -676,6 +713,81 @@ def test_list_layers_summary(fake_call):
     assert server.krita_list_layers()["summary"] == (
         "38 groups, 184 paint layers in doc-2; 2 hidden, 7 multiply, depth 4; listed 1-30 "
         "(next page: offset=30)")
+
+
+def test_list_layers_default_fields_are_lean():
+    # F005 K12: no child ids by default; the plugin adds child_count.
+    assert server.LIST_DEFAULT_FIELDS == ["id", "name", "type", "visible", "blend_mode"]
+
+
+def _rows(n, name="x" * 40, **extra):
+    return [{"id": "{%08x-0000-4000-8000-000000000000}" % i, "name": name, "type": "paintlayer",
+             "visible": True, "blend_mode": "normal", "child_count": 0, **extra} for i in range(n)]
+
+
+def test_list_layers_page_guard(fake_call):
+    # F005 K12: a page over the budget is cut, next_offset moves to the first row left out.
+    rows = _rows(100)
+    fake_call.payload = {"doc": "doc-2", "root": "/", "layers": rows,
+                         "counts": {"paintlayer": 300, "total": 300},
+                         "offset": 100, "limit": 100, "next_offset": 200}
+    result = server.krita_list_layers(limit=100, offset=100)
+    kept = result["trimmed"]["rows"]
+    assert 0 < kept < 100 and result["layers"] == rows[:kept]
+    assert result["trimmed"] == {"rows": kept, "of": 100, "max_bytes": pages.LIST_MAX_BYTES,
+                                 "dropped_fields": []}
+    assert result["next_offset"] == 100 + kept
+    assert pages.json_size({k: v for k, v in result.items() if k != "summary"}) \
+        <= pages.LIST_MAX_BYTES
+    assert pages.json_size(result) <= 8 * 1024
+    assert (f"listed 101-{100 + kept} (page cut from 100 to {kept} rows to stay under 8 KB) "
+            f"(next page: offset={100 + kept})") in result["summary"]
+
+
+def test_list_layers_page_guard_leaves_small_pages_alone(fake_call):
+    fake_call.payload = {"doc": "doc-2", "root": "/", "layers": _rows(30),
+                         "counts": {"paintlayer": 30, "total": 30},
+                         "offset": 0, "limit": 30, "next_offset": None}
+    result = server.krita_list_layers()
+    assert "trimmed" not in result and len(result["layers"]) == 30
+    assert "cut" not in result["summary"]
+
+
+def test_list_layers_page_guard_drops_children_only_for_a_huge_row(fake_call):
+    kids = ["{%08x-0000-4000-8000-000000000000}" % i for i in range(400)]
+    rows = _rows(3, children=kids)
+    fake_call.payload = {"doc": "doc-2", "root": "/", "layers": rows,
+                         "counts": {"grouplayer": 3, "total": 3},
+                         "offset": 0, "limit": 30, "next_offset": None}
+    result = server.krita_list_layers(fields=["children"])
+    assert result["trimmed"]["dropped_fields"] == ["children"]
+    assert result["trimmed"]["rows"] == 3 and result["next_offset"] is None
+    assert all("children" not in r and r["child_count"] == 0 for r in result["layers"])
+    assert "dropped children" in result["summary"]
+
+
+# F005 K11: painting tools.
+
+def test_paint_summary_reports_the_change(fake_call):
+    fake_call.payload = {"doc": "doc-3", "shape": "rectangle", "layer": "{1}",
+                         "changed": {"x": 10, "y": 20, "w": 60, "h": 40}, "changed_px": 2400,
+                         "layer_visible": True, "covered_pct": 1.0,
+                         "top_cover": {"id": "{2}", "path": "Neck"},
+                         "notes": [{"code": "change_covered",
+                                    "message": "this change isn't visible in the composite: 100% "
+                                               "covered by layers above (top cover: 'Neck')"}]}
+    summary = server.krita_draw_shape("rectangle", 10, 20)["summary"]
+    assert summary == ("Drew rectangle at (10, 20) in doc-3; changed 60x40 at (10, 20), 100% "
+                       "covered by layers above; note: this change isn't visible in the "
+                       "composite: 100% covered by layers above (top cover: 'Neck')")
+    fake_call.payload = {"doc": "doc-3", "changed": None, "changed_px": 0, "layer_visible": True,
+                         "covered_pct": None,
+                         "notes": [{"code": "nothing_changed", "message": "nothing changed: …"}]}
+    assert server.krita_fill(1, 2)["summary"] == (
+        "Filled circle at (1, 2) with radius 50 in doc-3; nothing changed")
+    fake_call.payload = {"doc": "doc-3", "points_count": 2}  # a plugin before 0.5.0
+    assert server.krita_stroke([[0, 0], [1, 1]])["summary"] == (
+        "Stroke painted with 2 points in doc-3")
 
 
 # P2.3: create_layers.

@@ -8,6 +8,11 @@ when there is one.
 Each painting call (stroke, fill, draw_shape, clear) reads the rectangle it
 writes before writing it and pushes that snapshot onto the document's agent
 journal as a ``RestorePixels`` (D6), so ``krita_undo`` reverts one call.
+
+Each also reports what it changed and whether that shows (F005 K11,
+``occlusion.change_report``): the bounds of the pixels that differ from
+the snapshot, the layer's effective visibility, the share of the change
+the layers above cover, and a note when it won't show.
 """
 
 from krita import Krita, ManagedColor
@@ -21,6 +26,7 @@ from ..dispatch import LONG_TIMEOUT, command
 from ..errors import CommandError
 from ..params import float_param, int_param
 from ._active import get_active_view
+from .occlusion import change_report
 from .pixels import RestorePixels
 
 # Brush state, set by set_brush and used as the stroke defaults.
@@ -81,6 +87,17 @@ def _paint_target(params):
             f"Layer '{node.name()}' is a {kind}, not a paint layer; pass a paint layer as 'layer'",
             {"doc": handle, "layer": nid, "type": kind})
     return handle, doc, node
+
+
+def _report(doc, layer, rect, old, new):
+    """``change_report`` for a write of ``new`` over ``old`` at ``rect``."""
+    doc.waitForDone()  # group projections are read for top_cover
+    return change_report(doc, layer, rect, old, bytes(new))
+
+
+def _merged(extra, report):
+    """The result fields of ``_record`` and ``_report`` together."""
+    return {**report, **extra}
 
 
 def _record(handle, label, layer, rect, old):
@@ -266,7 +283,8 @@ def cmd_stroke(params):
 
     layer.setPixelData(bytes(pixels), min_x, min_y, w, h)
     doc.refreshProjection()
-    extra = _record(handle, "stroke", layer, (min_x, min_y, w, h), old)
+    rect = (min_x, min_y, w, h)
+    extra = _merged(_record(handle, "stroke", layer, rect, old), _report(doc, layer, rect, old, pixels))
 
     return {"color": "#%02x%02x%02x" % (r, g, b), "points_count": len(points), "hardness": hardness,
             "doc": handle, "layer": nodes.node_id(layer), **extra}
@@ -313,7 +331,8 @@ def cmd_fill(params):
 
     layer.setPixelData(bytes(pixels), x1, y1, w, h)
     doc.refreshProjection()
-    extra = _record(handle, "fill", layer, (x1, y1, w, h), old)
+    rect = (x1, y1, w, h)
+    extra = _merged(_record(handle, "fill", layer, rect, old), _report(doc, layer, rect, old, pixels))
 
     return {"color": "#%02x%02x%02x" % (r, g, b), "x": x, "y": y, "radius": radius, "doc": handle, "layer": nodes.node_id(layer),
             **extra}
@@ -331,7 +350,7 @@ def cmd_draw_shape(params):
 
     handle, doc, layer = _paint_target(params)
     r, g, b = _paint_rgb(params)
-    written = None  # (rect, old bytes) of the write, for the journal
+    written = None  # (rect, old bytes, new bytes) of the write, for the journal and report
 
     if shape == "line":
         # Draw line using pixel data
@@ -349,8 +368,8 @@ def cmd_draw_shape(params):
 
         if w > 0 and h > 0:
             old = pixelbuf.as_bytes(layer.pixelData(x1_bound, y1_bound, w, h))
-            written = ((x1_bound, y1_bound, w, h), old)
             pixels = bytearray(old)
+            written = ((x1_bound, y1_bound, w, h), old, pixels)
 
             # Draw line with thickness
             dist = max(abs(x2 - x), abs(y2 - y))
@@ -384,8 +403,8 @@ def cmd_draw_shape(params):
         h = y2 - y1
 
         if w > 0 and h > 0:
-            written = ((x1, y1, w, h), pixelbuf.as_bytes(layer.pixelData(x1, y1, w, h)))
             pixel_data = bytes((b, g, r, 255)) * (w * h)
+            written = ((x1, y1, w, h), pixelbuf.as_bytes(layer.pixelData(x1, y1, w, h)), pixel_data)
             layer.setPixelData(pixel_data, x1, y1, w, h)
     elif shape == "ellipse" and fill:
         # Draw filled ellipse using pixel data
@@ -403,8 +422,8 @@ def cmd_draw_shape(params):
 
         if w > 0 and h > 0:
             old = pixelbuf.as_bytes(layer.pixelData(x1, y1, w, h))
-            written = ((x1, y1, w, h), old)
             pixels = bytearray(old)
+            written = ((x1, y1, w, h), old, pixels)
 
             for py in range(h):
                 for px in range(w):
@@ -423,7 +442,14 @@ def cmd_draw_shape(params):
         raise CommandError("bad_request", f"Shape '{shape}' with current options not supported")
 
     doc.refreshProjection()
-    extra = _record(handle, "draw_shape", layer, *written) if written else {}
+    if written:
+        rect, old, new = written
+        extra = _merged(_record(handle, "draw_shape", layer, rect, old),
+                        _report(doc, layer, rect, old, new))
+    else:  # the shape lies outside the canvas
+        extra = {"changed": None, "changed_px": 0, "layer_visible": None, "covered_pct": None,
+                 "notes": [{"code": "nothing_changed",
+                            "message": "nothing changed: the shape lies outside the canvas"}]}
 
     return {"color": "#%02x%02x%02x" % (r, g, b), "shape": shape, "doc": handle, "layer": nodes.node_id(layer), **extra}
 
@@ -446,17 +472,19 @@ def cmd_clear(params):
         rect = canvas.united(layer.bounds())
         x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
         old = pixelbuf.as_bytes(layer.pixelData(x, y, w, h))
-        layer.setPixelData(bytes(w * h * 4), x, y, w, h)
+        new = bytes(w * h * 4)
+        layer.setPixelData(new, x, y, w, h)
         result_color = "transparent"
     else:
         x, y, w, h = 0, 0, canvas.width(), canvas.height()
         old = pixelbuf.as_bytes(layer.pixelData(x, y, w, h))
-        pixel = bytes((color.blue(), color.green(), color.red(), 255))
-        layer.setPixelData(pixel * (w * h), 0, 0, w, h)
+        new = bytes((color.blue(), color.green(), color.red(), 255)) * (w * h)
+        layer.setPixelData(new, 0, 0, w, h)
         result_color = color.name()
 
     doc.refreshProjection()
-    extra = _record(handle, "clear", layer, (x, y, w, h), old)
+    rect = (x, y, w, h)
+    extra = _merged(_record(handle, "clear", layer, rect, old), _report(doc, layer, rect, old, new))
 
     return {"color": result_color, "doc": handle, "layer": nodes.node_id(layer), **extra}
 

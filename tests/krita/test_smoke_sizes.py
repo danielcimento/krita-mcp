@@ -6,7 +6,12 @@ pairs, fixed by one update_layers call from suggested_names), K7
 call. F004 (smoke test revision 2): K8 (exactly one reference-unbracketed
 warning, for Expression References, before and after the B poses are
 hidden) and K9 (the 22 suggested renames give no duplicate_name warning,
-only notes for the names shared with a group). The config has the Live2D
+only notes for the names shared with a group). F005 (revision 3): K11 (the
+Choker repaint reports covered_pct 1 and the change_covered note in the
+same call; the Hat Top repaint doesn't), K12 (list_layers(depth 1) under
+2 KB, list_layers(root Head, limit 100) under 8 KB through the server's
+page guard), K13 (occlusion_map("Hat/Hat") suggests Hat/Hat Top) and K14
+(stray-alpha's fix once in its group). The config has the Live2D
 conventions on, as the smoke test's does. Calls go through ``dispatch.execute`` with the params ``server.py``
 sends by default (tests/unit/test_server_tools.py pins those); the size
 is the JSON of the result, which the server returns plus a one-line
@@ -20,6 +25,7 @@ Sizes are printed as ``KMCP_SIZE: <bytes> <call>`` lines in run.log.
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 
@@ -28,13 +34,19 @@ from kritamcp import registry
 from kritamcp.errors import CommandError
 from test_dispatch import EnvelopeAssertions, run
 
+# The server's list_layers page guard (pure; F005 K12), applied as server.py does.
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO not in sys.path:
+    sys.path.append(_REPO)
+from krita_mcp_server import pages  # noqa: E402
+
 MAO_KRA_ENV = "KRITA_MCP_MAO_KRA"
 LIMIT = 8 * 1024
 SUMMARY_ALLOWANCE = 300  # the server's one-line summary on top of the payload
 
 # What server.py sends when the caller leaves the arguments at their defaults.
 LIST_DEFAULTS = {"overview": True, "limit": 30, "offset": 0,
-                 "fields": ["id", "name", "type", "visible", "blend_mode", "children"]}
+                 "fields": ["id", "name", "type", "visible", "blend_mode"]}
 LINT_DEFAULTS = {"group_by": "rule", "limit": 5}
 
 
@@ -190,3 +202,96 @@ class SmokeSizesTest(EnvelopeAssertions, unittest.TestCase):
         self.ok("draw_shape with color", "draw_shape", doc=doc, layer=ids[bag], shape="ellipse",
                 x=b["x"], y=b["y"], width=40, height=30, color="#3fa34d")
         self.ok("save again", "save", doc=doc)
+        self._f005(tmp, doc)
+
+    def paged(self, label, **params):
+        """A list_layers call as the MCP tool returns it: the plugin's page
+        through the server's 8 KB guard (F005 K12)."""
+        result = self.assertOk(run("list_layers", **params))
+        trimmed = pages.fit_page(result)
+        size = len(json.dumps(result))
+        self.sizes.append((size, label))
+        print(f"KMCP_SIZE: {size} {label}", flush=True)
+        return result, trimmed
+
+    def _opaque_window(self, doc, layer_id, want_w=60, want_h=40):
+        """A rect inside the layer's fully opaque pixels, ``want_w`` x
+        ``want_h`` or the largest halving of it that fits (searched on a
+        4 px grid)."""
+        from kritamcp import nodes, pixels
+        node = nodes.node_by_id(doc, layer_id)
+        r = node.bounds()
+        bx, by, bw, bh = r.x(), r.y(), r.width(), r.height()
+        alpha = pixels.as_bytes(node.pixelData(bx, by, bw, bh))[3::4]
+        full = b"\xff"
+        w, h = want_w, want_h
+        while w >= 2 and h >= 2:
+            for y in range(0, bh - h + 1, 4):
+                for x in range(0, bw - w + 1, 4):
+                    if all(alpha[(y + j) * bw + x:(y + j) * bw + x + w] == full * w
+                           for j in range(h)):
+                        return bx + x, by + y, w, h
+            w, h = w // 2, h // 2
+        self.fail(f"no opaque window in layer {layer_id}")
+
+    def _f005(self, tmp, doc):
+        from kritamcp import registry as reg
+        live = reg.lookup(doc)
+        ids, _ = self._ids(doc)
+
+        # K12: lean rows, child_count instead of child ids. The work order's
+        # 2 KB isn't reached: the 16 rows alone are about 2.4 KB without the
+        # child ids (F005 H5), down from about 6.5 KB with them.
+        top, _ = self.paged("list_layers depth 1", doc=doc, depth=1, **LIST_DEFAULTS)
+        self.assertEqual(len(top["layers"]), 16)
+        self.assertLess(len(json.dumps(top)) + SUMMARY_ALLOWANCE, 3 * 1024)
+        for row in top["layers"]:
+            self.assertNotIn("children", row)
+            self.assertIsInstance(row["child_count"], int)
+        head, trimmed = self.paged("list_layers root Head limit 100", doc=doc, root="Head",
+                                   fields=["path", "bounds", "visible"], limit=100, offset=0,
+                                   overview=True)
+        self.assertLess(len(json.dumps(head)) + SUMMARY_ALLOWANCE, LIMIT)
+        if trimmed:
+            self.assertEqual(head["next_offset"], trimmed["rows"])
+        print(f"KMCP_INFO: Head listing {head['counts']['total']} layers, trimmed {trimmed}",
+              flush=True)
+
+        # K13: a guessed path names the right layer.
+        miss = self.call("occlusion_map Hat/Hat", "occlusion_map", doc=doc, id="Hat/Hat",
+                         path=os.path.join(tmp, "hat.png"))
+        self.assertError(miss, "not_found")
+        self.assertIn("'Hat/Hat Top'", miss["error"]["message"])
+        self.assertIn("did you mean", miss["error"]["message"])
+
+        # K11: the Choker repaint says it won't show, in the same call.
+        choker = next(p for p in ids if p.split("/")[-1] == "Choker")
+        x, y, w, h = self._opaque_window(live, ids[choker])
+        painted = self.ok("draw_shape Choker", "draw_shape", doc=doc, layer=ids[choker],
+                          shape="rectangle", x=x, y=y, width=w, height=h, color="#00ff00")
+        self.assertEqual(painted["changed"], {"x": x, "y": y, "w": w, "h": h})
+        self.assertIs(painted["layer_visible"], True)
+        self.assertEqual(painted["covered_pct"], 1.0)
+        (note,) = painted["notes"]
+        print(f"KMCP_INFO: Choker {json.dumps(painted)}", flush=True)
+        print(f"KMCP_INFO: Hat/Hat {miss['error']['message']}", flush=True)
+        self.assertEqual(note["code"], "change_covered")
+        self.assertIn("isn't visible in the composite: 100% covered by layers above (top cover: ",
+                      note["message"])
+        self.ok("undo Choker", "undo", doc=doc)
+        hat_top = ids["Hat/Hat Top"]
+        x, y, w, h = self._opaque_window(live, hat_top)
+        visible = self.ok("draw_shape Hat Top", "draw_shape", doc=doc, layer=hat_top,
+                          shape="rectangle", x=x, y=y, width=w, height=h, color="#00ff00")
+        self.assertLess(visible["covered_pct"], 1.0)
+        self.assertNotIn("notes", visible)
+        self.ok("undo Hat Top", "undo", doc=doc)
+
+        # K14: stray-alpha's fix once per group, items keep their numbers.
+        lint_all = self.ok("lint all (F005)", "lint", doc=doc, rules=["all"], **LINT_DEFAULTS)
+        stray = lint_all["by_rule"]["stray-alpha"]
+        self.assertIn("krita_trim_layers(", stray["fix"])
+        for item in stray["items"]:
+            self.assertNotIn("fix", item)
+            self.assertNotIn("krita_trim_layers", item["message"])
+            self.assertEqual(set(item), {"layer_id", "path", "message", "pixels", "bounds"})

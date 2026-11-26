@@ -291,7 +291,12 @@ class PaintTest(PaintStateMixin, EnvelopeAssertions, unittest.TestCase):
             self.assertOk(run("set_color", color="#ff0000"))
             result = self.assertOk(run("fill", doc=ha, layer="Ink", x=8, y=8, radius=3))
             self.assertEqual(result, {"color": "#ff0000", "x": 8, "y": 8, "radius": 3, "doc": ha,
-                                      "layer": nodes.node_id(ink_a)})
+                                      "layer": nodes.node_id(ink_a),
+                                      # F005 K11: the disc of radius 3 at (8, 8), uncovered.
+                                      "changed": {"x": 5, "y": 5, "w": 6, "h": 6},
+                                      "changed_px": result["changed_px"], "layer_visible": True,
+                                      "covered_pct": 0.0})
+            self.assertGreater(result["changed_px"], 20)
             settle(a)
             settle(b)
             self.assertEqual(bytes(ink_a.pixelData(8, 8, 1, 1)), RED)
@@ -399,7 +404,10 @@ class PaintTest(PaintStateMixin, EnvelopeAssertions, unittest.TestCase):
 
             result = self.assertOk(run("clear", doc=handle, layer="Ink", color="#0000ff"))
             self.assertEqual(result, {"color": "#0000ff", "doc": handle,
-                                      "layer": nodes.node_id(ink)})
+                                      "layer": nodes.node_id(ink),
+                                      "changed": {"x": 0, "y": 0, "w": 16, "h": 16},
+                                      "changed_px": 256, "layer_visible": True,
+                                      "covered_pct": 0.0})
             settle(doc)
             self.assertEqual(bytes(ink.pixelData(0, 0, 16, 16)),
                              bytes((255, 0, 0, 255)) * 256)

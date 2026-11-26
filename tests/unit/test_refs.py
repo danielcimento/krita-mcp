@@ -7,7 +7,7 @@ import sys
 import pytest
 
 from kritamcp.errors import CommandError
-from kritamcp.refs import (ROOT, NodeIndex, escape_name, join_path, normalize_uuid,
+from kritamcp.refs import (ROOT, NodeIndex, escape_name, join_path, normalize_uuid, similarity,
                            resolve, resolve_many, split_path)
 
 
@@ -253,7 +253,8 @@ def test_resolve_path(idx, ref, expected):
 def test_path_not_anchored_elsewhere(idx):
     # Paths start at the root: `Eyes/Pupils` is not found under Head.
     e = err(resolve, idx, "Eyes/Pupils")
-    assert e.code == "not_found" and e.message == "No layer at path 'Eyes/Pupils'"
+    assert e.code == "not_found"
+    assert e.message.startswith("No layer at path 'Eyes/Pupils'; did you mean ")  # F005 K13
     assert err(resolve, idx, "/Face").code == "not_found"
     assert err(resolve, idx, "Head/head").code == "not_found"     # case-sensitive
     assert err(resolve, idx, "Head/Hair ").code == "not_found"    # no trimming
@@ -364,3 +365,73 @@ def test_module_is_pure():
             "assert not bad, bad\n")
     plugin = os.path.join(os.path.dirname(__file__), "..", "..", "krita-plugin")
     subprocess.run([sys.executable, "-c", code], check=True, cwd=plugin)
+
+
+# --- "did you mean" (F005 K13) ---------------------------------------------
+
+def hat_index():
+    entries, n = [], 0
+
+    def add(name, parent=None, kind="paintlayer"):
+        nonlocal n
+        n += 1
+        nid = "{%08x-0000-4000-8000-000000000000}" % n
+        entries.append({"id": nid, "name": name, "parent": parent, "type": kind})
+        return nid
+
+    hat = add("Hat", kind="grouplayer")
+    ids = {"Hat": hat}
+    for name in ("Hat Top", "Hat Brim", "Ribbon", "Feather", "Pin", "Hat Shadow Multiply"):
+        ids[name] = add(name, hat)
+    head = add("Head", kind="grouplayer")
+    ids["Head"] = head
+    for name in ("Choker", "Neck"):
+        ids[name] = add(name, head)
+    return NodeIndex(entries), ids
+
+
+def test_not_found_path_suggests_the_group_first():
+    idx, ids = hat_index()
+    e = err(resolve, idx, "Hat/Hat")
+    assert e.code == "not_found"
+    paths_ = [s["path"] for s in e.details["suggestions"]]
+    assert paths_[:3] == ["Hat/Hat Top", "Hat/Hat Brim", "Hat/Hat Shadow Multiply"]
+    assert len(paths_) == 5 and set(paths_) <= {f"Hat/{n}" for n in ids if n not in ("Hat", "Head")}
+    assert e.details["suggestions"][0]["id"] == ids["Hat Top"]
+    assert e.message.startswith("No layer at path 'Hat/Hat'; did you mean 'Hat/Hat Top', "
+                                "'Hat/Hat Brim', ")
+
+
+def test_not_found_name_suggests_similar_names_anywhere():
+    idx, ids = hat_index()
+    for ref in ("Chocker", "choker"):
+        e = err(resolve, idx, ref)
+        assert e.details["suggestions"] == [{"id": ids["Choker"], "path": "Head/Choker"}]
+        assert e.message == f"No layer named '{ref}'; did you mean 'Head/Choker'?"
+
+
+def test_not_found_path_falls_back_to_similar_leaves():
+    idx, ids = hat_index()
+    e = err(resolve, idx, "Hats/Brim")
+    paths_ = [s["path"] for s in e.details["suggestions"]]
+    assert paths_[0] == "Hat" and "Hat/Hat Brim" in paths_  # top level first, then the leaf
+    assert "Head" not in paths_[:1]
+
+
+def test_not_found_without_anything_close():
+    idx, _ = hat_index()
+    e = err(resolve, idx, "zzzz")
+    assert e.message == "No layer named 'zzzz'" and e.details is None
+
+
+def test_uuid_not_found_has_no_suggestions():
+    idx, _ = hat_index()
+    e = err(resolve, idx, "{12345678-0000-4000-8000-000000000000}")
+    assert e.code == "not_found" and not e.details
+
+
+def test_similarity():
+    assert similarity("Hat", "Hat Top") >= 0.8
+    assert similarity("hat", "HAT") == 0.95
+    assert similarity("Neck", "Nek") > similarity("Neck", "Hat")
+    assert similarity("", "x") == 0.0

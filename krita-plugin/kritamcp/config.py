@@ -2,12 +2,13 @@
 
 The module constants below are the fixed settings. The user-editable part
 (allowed roots, limit overrides, journal size, lint settings, the Live2D
-conventions) comes from ``load()``, which
+conventions, the painting tools' checks) comes from ``load()``, which
 reads ``~/.krita-mcp-config.json`` and ``KRITA_MCP_ALLOWED_DIRS``, and from
 ``current()``, which caches that and re-loads when the inputs change.
 Commands read ``current()`` at call time: ``roots`` and ``output_dir`` for
 paths, ``limits`` for the canvas size, ``lint`` and ``live2d`` for the lint
-snapshot, ``live2d.enabled`` for the convention-specific warnings (F004).
+snapshot, ``live2d.enabled`` for the convention-specific warnings (F004),
+``paint`` for the painting tools' visibility report (F005).
 
 Bad user config never raises: every problem goes into ``Settings.errors``,
 which ``/health`` reports.
@@ -77,12 +78,20 @@ DEFAULT_LIVE2D = {"enabled": False, "additive_mode": "either",
                   "max_nesting": 3, "pose_pattern": r"^(?P<stem>.*\S) (?P<pose>[A-KM-QS-Z])$",
                   "default_pose": "A"}
 LIVE2D_ADDITIVE_MODES = ("either", "add", "linear_dodge")
+
+# The painting tools (stroke, fill, draw_shape, clear; F005 K11).
+# check_visibility: after each call, render what covers the changed pixels
+# (occlusion_map's method) and report covered_pct, top_cover and a note
+# when the change won't show. Off: only changed and layer_visible, no
+# notes (for agents that paint covered or hidden areas on purpose, such as
+# the parts of a rig that only show when it moves).
+DEFAULT_PAINT = {"check_visibility": True}
 LIVE2D_MAX_NESTING = 64
 
 # Static sanity bound for coordinates and radii in the painting tools, ten
 # times the default per-side limit. Not affected by the config file.
 COORD = 10 * DEFAULT_LIMITS["max_canvas_dim"]
-KNOWN_KEYS = ("allowed_dirs", "limits", "journal", "lint", "live2d")
+KNOWN_KEYS = ("allowed_dirs", "limits", "journal", "lint", "live2d", "paint")
 # The config-file key that lists extra allowed directories (K2: named in
 # every forbidden_path error and in /health).
 ALLOWED_DIRS_KEY = "allowed_dirs"
@@ -90,8 +99,8 @@ ALLOWED_DIRS_KEY = "allowed_dirs"
 
 @dataclasses.dataclass(frozen=True)
 class Settings:
-    """The resolved user config. ``limits``, ``journal``, ``lint`` and
-    ``live2d`` are read-only (lists in them are tuples)."""
+    """The resolved user config. ``limits``, ``journal``, ``lint``,
+    ``live2d`` and ``paint`` are read-only (lists in them are tuples)."""
 
     roots: tuple            # realpath'd allowed roots; roots[0] is output_dir
     output_dir: str         # realpath'd; may not exist yet
@@ -104,6 +113,7 @@ class Settings:
     lint: types.MappingProxyType = types.MappingProxyType(DEFAULT_LINT)
     file_dirs: tuple = ()   # the config file's allowed_dirs strings, as written
     live2d: types.MappingProxyType = types.MappingProxyType(DEFAULT_LIVE2D)
+    paint: types.MappingProxyType = types.MappingProxyType(DEFAULT_PAINT)
 
 
 def load(config_file=None, env=None, output_dir=None, home=None):
@@ -123,6 +133,7 @@ def load(config_file=None, env=None, output_dir=None, home=None):
     journal = dict(DEFAULT_JOURNAL)
     lint = dict(DEFAULT_LINT)
     live2d = dict(DEFAULT_LIVE2D)
+    paint = dict(DEFAULT_PAINT)
 
     data, loaded = _read_config_file(config_file, errors)
     for key in data:
@@ -136,6 +147,7 @@ def load(config_file=None, env=None, output_dir=None, home=None):
     _merge_ints(data, "journal", journal, config_file, errors)
     legacy = _merge_lint(data, lint, config_file, errors)
     _merge_live2d(data, live2d, legacy, config_file, errors)
+    _merge_bools(data, "paint", paint, config_file, errors)
 
     requested = []
     for d in file_dirs:
@@ -162,7 +174,7 @@ def load(config_file=None, env=None, output_dir=None, home=None):
         errors=tuple(errors), config_file=config_file, config_loaded=loaded,
         requested_roots=tuple(requested), lint=types.MappingProxyType(lint),
         file_dirs=tuple(d for d in file_dirs if isinstance(d, str)),
-        live2d=types.MappingProxyType(live2d),
+        live2d=types.MappingProxyType(live2d), paint=types.MappingProxyType(paint),
     )
 
 
@@ -259,6 +271,24 @@ def _merge_ints(data, section, into, config_file, errors):
             errors.append(f"config file {config_file}: unknown key {section}.{key} ignored")
         elif type(value) is not int or value <= 0:
             errors.append(f"config file {config_file}: {section}.{key} must be a positive integer, "
+                          f"got {value!r}; default {into[key]} kept")
+        else:
+            into[key] = value
+
+
+def _merge_bools(data, section, into, config_file, errors):
+    """Overlay ``data[section]`` onto ``into``: known keys, true or false."""
+    if section not in data:
+        return
+    given = data[section]
+    if not isinstance(given, dict):
+        errors.append(f"config file {config_file}: {section!r} must be an object; ignored")
+        return
+    for key, value in given.items():
+        if key not in into:
+            errors.append(f"config file {config_file}: unknown key {section}.{key} ignored")
+        elif not isinstance(value, bool):
+            errors.append(f"config file {config_file}: {section}.{key} must be true or false, "
                           f"got {value!r}; default {into[key]} kept")
         else:
             into[key] = value
@@ -423,6 +453,7 @@ def describe(settings):
         "limits": dict(settings.limits),
         "lint": plain(settings.lint),  # krita_lint's settings (D14; F004)
         "live2d": plain(settings.live2d),  # the Live2D conventions (F004; off by default)
+        "paint": plain(settings.paint),  # the painting tools' checks (F005)
         "config_errors": list(settings.errors),
     }
 

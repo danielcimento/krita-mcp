@@ -13,9 +13,11 @@ from .errors import CommandError
 LAYER_FIELDS = (
     "id", "name", "path", "type", "parent", "index", "visible", "opacity",
     "blend_mode", "locked", "alpha_locked", "inherit_alpha", "pass_through",
-    "has_layer_style", "bounds", "children",
+    "has_layer_style", "bounds", "child_count", "children",
 )
-ALWAYS_FIELDS = ("id", "name", "children")
+# F005 K12: children (the child ids) is an ordinary field; child_count is
+# always there instead, so a row says whether there is more below it.
+ALWAYS_FIELDS = ("id", "name", "child_count")
 
 
 def node_id(node):
@@ -134,7 +136,7 @@ _GETTERS = {
 def layer_object(node, index, fields=None, *, nid=None):
     """The layer object (api-design § Layer object) for ``node``, which must
     be in ``index``. ``fields``: optional list of keys; ``id``, ``name`` and
-    ``children`` are always included, and only the keys asked for are read
+    ``child_count`` are always included, and only the keys asked for are read
     from Krita. ``nid``: the node's id when the caller already has it."""
     want = check_fields(fields)
     if nid is None:
@@ -149,6 +151,8 @@ def layer_object(node, index, fields=None, *, nid=None):
             out[key] = node.name()
         elif key == "children":
             out[key] = index.children(nid)
+        elif key == "child_count":
+            out[key] = len(index.children(nid))
         else:
             out[key] = _GETTERS[key](node, nid, index)
     return out

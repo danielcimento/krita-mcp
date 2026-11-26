@@ -97,7 +97,7 @@ class NodesTest(unittest.TestCase):
                 "parent": None, "index": 2, "visible": False, "opacity": 0.502,
                 "blend_mode": "multiply", "locked": True, "alpha_locked": False,
                 "inherit_alpha": False, "pass_through": None, "has_layer_style": False,
-                "bounds": None, "children": [],
+                "bounds": None, "child_count": 0, "children": [],
             })
             g1 = nodes.layer_object(n["g1"], index)
             self.assertEqual(g1["type"], "grouplayer")
@@ -123,12 +123,13 @@ class NodesTest(unittest.TestCase):
             self.assertEqual(bg["bounds"], {"x": 0, "y": 0, "w": 20, "h": 10})
             self.assertEqual((bg["index"], bg["parent"]), (0, None))
 
-            # Field subsets: id, name, children always included.
+            # Field subsets: id, name, child_count always included (F005 K12).
             self.assertEqual(nodes.layer_object(n["g1"], index, ["opacity"]),
-                             {"id": ids["g1"], "name": "G1", "opacity": 1.0,
-                              "children": [ids["eye_outer"], ids["g2"]]})
+                             {"id": ids["g1"], "name": "G1", "opacity": 1.0, "child_count": 2})
             self.assertEqual(list(nodes.layer_object(n["top"], index, ["bounds", "id"])),
-                             ["id", "name", "bounds", "children"])
+                             ["id", "name", "bounds", "child_count"])
+            self.assertEqual(nodes.layer_object(n["g1"], index, ["children"])["children"],
+                             [ids["eye_outer"], ids["g2"]])
             for bad in (["nope"], "opacity", [1]):
                 with self.assertRaises(CommandError) as cm:
                     nodes.layer_object(n["top"], index, bad)

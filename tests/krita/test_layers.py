@@ -136,14 +136,17 @@ class ListLayersTest(EnvelopeAssertions, unittest.TestCase):
             self.assertEqual(leaf["counts"], {"paintlayer": 1, "total": 1})
             self.assertEqual(self.ids_of(ls(root="A/B/C/Dup")), [ids["dup_c"]])
 
-            # fields: id, name and children always included, in layer-object order.
+            # fields: id, name and child_count always included, in layer-object
+            # order; children only when asked for (F005 K12).
             slim = ls(fields=["bounds", "type"])
             for layer in slim["layers"]:
-                self.assertEqual(list(layer), ["id", "name", "type", "bounds", "children"])
+                self.assertEqual(list(layer), ["id", "name", "type", "bounds", "child_count"])
             self.assertEqual(slim["layers"][0]["bounds"], by["off"]["bounds"])
             bare = ls(fields=[], depth=1)
-            self.assertEqual(bare["layers"][1],
-                             {"id": ids["a"], "name": "A", "children": [ids["dup_a"], ids["b"]]})
+            self.assertEqual(bare["layers"][1], {"id": ids["a"], "name": "A", "child_count": 2})
+            kids = ls(fields=["children"], depth=1)
+            self.assertEqual(kids["layers"][1], {"id": ids["a"], "name": "A", "child_count": 2,
+                                                 "children": [ids["dup_a"], ids["b"]]})
 
             # Errors.
             err = self.assertError(run("list_layers", doc=handle, root="Dup"), "ambiguous")

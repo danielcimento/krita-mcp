@@ -113,6 +113,7 @@ class HandlerAuthTest(BridgeTestBase):
             "limits": config.DEFAULT_LIMITS,
             "lint": config.plain(config.DEFAULT_LINT),
             "live2d": config.plain(config.DEFAULT_LIVE2D),
+            "paint": config.plain(config.DEFAULT_PAINT),
             "config_errors": [],
             "busy": None,
             "queued": 0,

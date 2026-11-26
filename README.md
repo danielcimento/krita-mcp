@@ -80,7 +80,7 @@ If using a virtual environment:
 
 | Tool | Description |
 |------|-------------|
-| `krita_health` | Whether Krita and the plugin are running; protocol, allowed dirs and how to add one (`config_file`, `config_key`), limits, lint settings, whether the Live2D conventions are on (`live2d`), config errors, the busy command |
+| `krita_health` | Whether Krita and the plugin are running; protocol, the server's own version and commit (`server_version`, `server_commit`, `server_dirty`), allowed dirs and how to add one (`config_file`, `config_key`), limits, lint settings, whether the Live2D conventions are on (`live2d`), the painting checks (`paint`), config errors, the busy command |
 | `krita_reload_config` | Re-read `~/.krita-mcp-config.json` now and report the allowed dirs and config errors (the plugin also re-reads it by itself; no restart) |
 | `krita_list_documents` | Open documents with their `doc` handles, size, path, modified and active flags |
 | `krita_get_document_info` | One document's size, resolution, colour space, layer counts, nesting depth and selection |
@@ -94,7 +94,7 @@ If using a virtual environment:
 
 | Tool | Description |
 |------|-------------|
-| `krita_list_layers` | The tree as a flat list, top to bottom, in pages (`limit` 30, `offset`) with an `overview` (counts, depth, hidden layers, non-normal blend modes); default fields id, name, type, visibility, blend mode, children, others via `fields` (path, parent, opacity, locks, exact bounds, …); `summary_only`, `path` (whole tree to a JSON file), `root`, `depth` |
+| `krita_list_layers` | The tree as a flat list, top to bottom, in pages (`limit` 30, `offset`) with an `overview` (counts, depth, hidden layers, non-normal blend modes); default fields id, name, type, visibility, blend mode, plus `child_count` always; others via `fields` (children, path, parent, opacity, locks, exact bounds, …); a page that would pass 8 KB is cut short (`trimmed`, `next_offset`); `summary_only`, `path` (whole tree to a JSON file), `root`, `depth` |
 | `krita_create_layers` | Groups and paint layers in one all-or-nothing call, from specs (`key` / `"$key"` nesting, properties, `png` pixels, `device_origin`) or a `manifest.json`; `new_document` builds the document the manifest describes in the same call; `dry_run`, `verbose` |
 | `krita_update_layers` | Change name, visibility, opacity, blend mode, locks, clipping, pass-through of many layers at once; `dry_run` |
 | `krita_move_layers` | Reorder and reparent layers (`parent`, `above` / `below` / `index`); groups move with their subtree; `dry_run` |
@@ -126,7 +126,7 @@ If using a virtual environment:
 
 | Tool | Description |
 |------|-------------|
-| `krita_lint` | Check a document's layers: core rules for any document (duplicate names, empty and off-canvas layers, stray-alpha specks; `lint.disable` opts out) and, with `live2d.enabled` in the config, the Live2D rig conventions (node types, layer styles, clipping, blend modes, side tokens, colour space; opt-in `"conventions"` set: nesting depth, name case, blend suffixes, pose visibility, hidden and unbracketed references, mask suffixes); `rules`, `severity_min`, `rules_off` says what the config left out; grouped by rule with the first `limit` findings each (`group_by`, `offset`), sorted by stacking order |
+| `krita_lint` | Check a document's layers: core rules for any document (duplicate names, empty and off-canvas layers, stray-alpha specks; `lint.disable` opts out) and, with `live2d.enabled` in the config, the Live2D rig conventions (node types, layer styles, clipping, blend modes, side tokens, colour space; opt-in `"conventions"` set: nesting depth, name case, blend suffixes, pose visibility, hidden and unbracketed references, mask suffixes); `rules`, `severity_min`, `rules_off` says what the config left out; grouped by rule with the first `limit` findings each (`group_by`, `offset`) and a rule's shared `fix` once per group, sorted by stacking order |
 | `krita_layer_stats` | Per paint layer: bounds, opaque bounds, pixel and opaque counts, an alpha histogram (`buckets`), empty, overhang past the canvas, lint's stray-alpha numbers |
 | `krita_occlusion_map` | How much of a paint layer the layers drawn after it hide (global draw order, visible, `modes` default Normal only): a grayscale PNG of alpha x coverage over its bounds, `covered_pct` at `threshold`, `fully_hidden`, the layers counted; for skipping hidden areas in part separation |
 | `krita_diff_documents` | Compare two open documents: layers added, removed, renamed, moved and changed (matched by id, then name path, then unique name), and with `pixels` which paint layers' pixels differ and how the projections differ (changed pixels, bounds, largest channel difference, and alpha-0-only colour changes, ignored by default: `ignore_alpha0_rgb`) |
@@ -142,6 +142,14 @@ If using a virtual environment:
 | `krita_fill` | Fill a circle at a point; optional `color` |
 | `krita_draw_shape` | Draw a rectangle, ellipse or line; optional `color` |
 | `krita_clear` | Clear a layer to a colour, or `"transparent"` |
+
+Each painting call returns what it changed (`changed` {x, y, w, h},
+`changed_px`), whether the layer shows (`layer_visible`, with every group
+above it), how much of the change the layers above cover (`covered_pct`,
+measured like `krita_occlusion_map`; `top_cover`), and a note when it
+won't show (hidden layer, 100% covered, nothing changed). A layer ref
+that matches nothing fails with `not_found` and up to five nearest layers
+("did you mean 'Hat/Hat Top'?").
 
 **History**
 
@@ -234,7 +242,8 @@ Every key is optional:
   "live2d": {"enabled": true, "additive_mode": "either",
              "allowed_blend_modes": ["normal", "multiply", "add", "linear_dodge"],
              "max_nesting": 3, "pose_pattern": "^(?P<stem>.*\\S) (?P<pose>[A-KM-QS-Z])$",
-             "default_pose": "A"}
+             "default_pose": "A"},
+  "paint": {"check_visibility": true}
 }
 ```
 
@@ -287,6 +296,12 @@ Every key is optional:
   group name) and `default_pose` (the pose kept visible). Which behaviour
   is core and which is a convention:
   [docs/f004_live2d_opt_in/survey.md](docs/f004_live2d_opt_in/survey.md).
+- **Painting checks.** `check_visibility` (default `true`): after each
+  `krita_stroke`, `krita_fill`, `krita_draw_shape` or `krita_clear`,
+  render what covers the changed pixels and report `covered_pct`,
+  `top_cover` and a note when the change won't show. `false` skips that
+  render and the notes (`changed` and `layer_visible` stay), for agents
+  that paint covered or hidden areas on purpose.
 - **Scripted launches.** `KRITA_MCP_ALLOWED_DIRS` (`:`-separated) in
   **Krita's** environment adds more dirs. macOS apps started from the Dock
   or Finder don't see shell variables, so the file is the usual way.
@@ -295,7 +310,7 @@ Every key is optional:
 - **Check it.** `krita_health` (and `krita_reload_config`) return
   `allowed_dirs` (the output dir first), `config_file`, `config_exists`,
   `config_key` (`"allowed_dirs"`), `config_dirs` (the file's entries as
-  written), `limits`, `lint`, `live2d` and `config_errors` (bad keys or values,
+  written), `limits`, `lint`, `live2d`, `paint` and `config_errors` (bad keys or values,
   skipped dirs, a refused file); the health summary lists the errors.
 
 Only the plugin reads this file. The MCP server can't widen the allowed

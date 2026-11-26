@@ -153,15 +153,15 @@ def node_type(snapshot):
 
 @rule("layer-style", "error", pack=LIVE2D)
 def layer_style(snapshot):
-    return [finding("layer-style", n, f"Layer '{n.get('path')}' has a layer style; "
-                                      "bake it into the pixels or remove it")
+    return [finding("layer-style", n, f"Layer '{n.get('path')}' has a layer style",
+                    fix="bake it into the pixels or remove it")
             for n in checked_nodes(snapshot) if n.get("has_layer_style")]
 
 
 @rule("inherit-alpha", "error", pack=LIVE2D)
 def inherit_alpha(snapshot):
-    return [finding("inherit-alpha", n, f"Layer '{n.get('path')}' inherits alpha (clipping); bake it "
-                                        "into the layer it clips to with krita_merge_layers")
+    return [finding("inherit-alpha", n, f"Layer '{n.get('path')}' inherits alpha (clipping)",
+                    fix="bake it into the layer it clips to with krita_merge_layers")
             for n in checked_nodes(snapshot) if n.get("inherit_alpha")]
 
 
@@ -506,9 +506,8 @@ def reference_hidden(snapshot):
     """A reference group (``is_reference_group``) whose own ``visible`` is
     true. Its contents stay skipped."""
     s = settings(snapshot)
-    return [finding("reference-hidden", n, (
-                f"Reference group '{n.get('path')}' is visible; hide it (reference material "
-                "stays hidden)"))
+    return [finding("reference-hidden", n, f"Reference group '{n.get('path')}' is visible",
+                    fix="hide it (reference material stays hidden)")
             for n in checked_nodes(snapshot) if is_reference_group(n, s) and n.get("visible", True)]
 
 

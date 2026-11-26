@@ -8,11 +8,18 @@
 # which a protocol-2 plugin would ignore or refuse.
 # F004 keeps 3: no parameter or result field the server relies on changed
 # shape (lint's new rules_off and the notes lists are optional extras).
+# F005 keeps 3 too: list_layers' child_count, the painting tools' new
+# fields and lint's group fix are additions; a 0.5 server asks for no
+# field an older plugin lacks (F005 H8).
 PROTOCOL = 3
 
 # 0.4.0 (F004): the Live2D conventions are opt-in (config live2d.enabled),
 # so lint's default rule set and set_canvas_size's warnings differ.
-PLUGIN_VERSION = "0.4.0"
+# 0.5.0 (F005): list_layers rows drop children unless asked for, lint
+# messages leave the shared fix to the group, painting tools report what
+# changed and whether it shows. krita_mcp_server/version.py SERVER_VERSION
+# is kept equal.
+PLUGIN_VERSION = "0.5.0"
 
 # Krita's version string, cached by the extension at startup (createActions,
 # main thread) so /health can report it from the HTTP thread without calling

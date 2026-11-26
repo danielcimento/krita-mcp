@@ -377,7 +377,8 @@ class MoveLayersTest(TreeBase):
                 # Pixels, bounds and properties are unchanged; only places differ.
                 b_obj, b_px = without_place(before[nid])
                 a_obj, a_px = without_place(after[nid])
-                b_obj.pop("children"), a_obj.pop("children")
+                for key in ("children", "child_count"):
+                    b_obj.pop(key), a_obj.pop(key)
                 if a_obj["type"] == "grouplayer":  # a group's bounds follow its children
                     b_obj.pop("bounds"), a_obj.pop("bounds")
                 self.assertEqual((a_obj, a_px), (b_obj, b_px), a_obj["name"])

@@ -399,8 +399,8 @@ class StraySpecksTest(EnvelopeAssertions, unittest.TestCase):
         self.assertEqual(result["settings"]["stray_speck_max_px"], 64)
         self.assertEqual([(f["rule"], f["path"]) for f in result["findings"]],
                          [("stray-alpha", "Specks")])
-        self.assertIn("has 4 stray specks, 28 px (groups of up to 64 px",
-                      result["findings"][0]["message"])
+        self.assertIn("has 4 stray specks, 28 px, e.g. at ", result["findings"][0]["message"])
+        self.assertIn("groups of up to 64 px", result["findings"][0]["fix"])  # F005 K14
         self.assertIn("e.g. at (55, 12) 1x1, (8, 40) 1x1, (40, 40) 5x5",
                       result["findings"][0]["message"])
 

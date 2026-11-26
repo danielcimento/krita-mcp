@@ -22,6 +22,7 @@ trimming. A layer whose name starts with ``$`` is reached with a path
 never in the index, so no ref reaches it.
 """
 
+import difflib
 import re
 
 from .errors import CommandError
@@ -253,7 +254,7 @@ def resolve(index, ref, *, keys=None, allow_root=False, field="ref"):
     (name,) = split_path(ref, field=field)
     matches = index.by_name(name)
     if not matches:
-        raise CommandError("not_found", f"No layer named '{ref}'")
+        raise _not_found(index, f"No layer named '{ref}'", suggest(index, name))
     if len(matches) > 1:
         raise CommandError("ambiguous", f"{len(matches)} layers named '{ref}': use an id or a path",
                            {"matches": matches})
@@ -262,21 +263,86 @@ def resolve(index, ref, *, keys=None, allow_root=False, field="ref"):
 
 def _resolve_path(index, ref, field):
     names = split_path(ref, field=field)
-    frontier = [ROOT]
+    frontier, parents, missing = [ROOT], [ROOT], None
     for name in names:
+        parents = frontier
         frontier = [c for p in frontier for c in index.children(p) if index.get(c)["name"] == name]
         if not frontier:
+            missing = name
             break
     if not frontier:
         msg = f"No layer at path '{ref}'"
         if index.by_name(ref):
             msg += f" (a layer is named '{ref}': write '{escape_name(ref)}')"
-        raise CommandError("not_found", msg)
+        raise _not_found(index, msg, suggest(index, names[-1], parents=parents, missing=missing))
     if len(frontier) > 1:
         frontier.sort(key=index.order)
         raise CommandError("ambiguous", f"{len(frontier)} layers at path '{ref}': use an id",
                            {"matches": frontier})
     return frontier[0]
+
+
+# --- "Did you mean" (F005 K13) ----------------------------------------------
+
+MAX_SUGGESTIONS = 5
+SIMILAR_MIN = 0.6  # a layer from elsewhere in the tree is suggested from this similarity up
+
+
+def similarity(a, b):
+    """How alike two names are, 0-1: ``difflib``'s ratio of the casefolded
+    names, raised to 0.8 when one contains the other as a whole word or
+    prefix (``Hat`` and ``Hat Top``) and to 0.95 when they differ only in
+    case."""
+    a, b = a.casefold().strip(), b.casefold().strip()
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 0.95
+    score = difflib.SequenceMatcher(None, a, b).ratio()
+    short, long_ = sorted((a, b), key=len)
+    if long_.startswith(short) or short in long_.split():
+        score = max(score, 0.8)
+    return score
+
+
+def suggest(index, name, *, parents=(), missing=None, limit=MAX_SUGGESTIONS):
+    """Up to ``limit`` ids of the layers nearest to a ref that matched
+    nothing: first the children of ``parents`` (the groups where a path
+    stopped matching; ``ROOT`` for the top level), ranked by how alike their
+    names are to ``missing`` (the path component that matched nothing),
+    then layers anywhere, ranked by how alike their names are to ``name``
+    (the ref's last component), from ``SIMILAR_MIN`` up. In the same group every child counts, so a short
+    group lists what it holds."""
+    parent_set = set(parents)
+    local = []
+    for p in parents:
+        for c in index.children(p):
+            local.append((similarity(missing or name, index.get(c)["name"]), c))
+    local.sort(key=lambda sc: (-sc[0], index.order(sc[1])))
+    out = [c for _, c in local[:limit]]
+    if len(out) < limit:
+        taken = set(out) | parent_set
+        scored = []
+        for nid in index:
+            if nid in taken:
+                continue
+            score = similarity(name, index.get(nid)["name"])
+            if score >= SIMILAR_MIN:
+                scored.append((score, nid))
+        scored.sort(key=lambda sc: (-sc[0], index.order(sc[1])))
+        out += [nid for _, nid in scored[:limit - len(out)]]
+    return out
+
+
+def _not_found(index, message, ids):
+    """``not_found`` with ``message``, plus "; did you mean …?" and
+    ``details.suggestions`` (``[{id, path}]``) when ``ids`` is not empty."""
+    if not ids:
+        return CommandError("not_found", message)
+    listed = [{"id": nid, "path": index.path_of(nid)} for nid in ids]
+    return CommandError("not_found",
+                        f"{message}; did you mean {', '.join(repr(s['path']) for s in listed)}?",
+                        {"suggestions": listed})
 
 
 def resolve_many(index, refs, *, keys=None, allow_root=False, field="ids"):
