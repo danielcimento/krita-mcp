@@ -112,7 +112,7 @@ If using a virtual environment:
 
 | Tool | Description |
 |------|-------------|
-| `krita_lint` | Check a document against the Live2D rig rules (node types, layer styles, clipping, blend modes, duplicate names, side tokens, empty / off-canvas layers, stray alpha, colour space); `rules`, `severity_min`; findings sorted by stacking order |
+| `krita_lint` | Check a document against the Live2D rig rules (node types, layer styles, clipping, blend modes, duplicate names, side tokens, empty / off-canvas layers, stray-alpha specks, colour space); opt-in `"conventions"` set (nesting depth, name case, blend suffixes, pose visibility, hidden references, mask suffixes); `rules`, `severity_min`; findings sorted by stacking order |
 
 **Painting**
 
@@ -210,7 +210,8 @@ Every key is optional:
   "allowed_dirs": ["~/umamo-art", "~/projects/mao"],
   "limits": {"max_canvas_dim": 16384, "max_canvas_pixels": 67108864},
   "journal": {"max_actions": 20, "max_bytes": 1073741824},
-  "lint": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4}
+  "lint": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4,
+           "stray_speck_max_px": 64}
 }
 ```
 
@@ -241,7 +242,9 @@ Every key is optional:
   `"add"` / `"linear_dodge"` to require one spelling of the Add blend
   mode), and the stray-alpha thresholds: pixels with alpha below
   `stray_alpha_below` (1–255) further than `stray_alpha_distance` px
-  (1–64) from any stronger pixel are reported.
+  (1–64) from any stronger pixel are stray, and 8-connected groups of at
+  most `stray_speck_max_px` (1–1,000,000, default 64) stray pixels are
+  reported as specks; larger groups (soft glows) are not.
 - **Scripted launches.** `KRITA_MCP_ALLOWED_DIRS` (`:`-separated) in
   **Krita's** environment adds more dirs. macOS apps started from the Dock
   or Finder don't see shell variables, so the file is the usual way.

@@ -1006,22 +1006,40 @@ def krita_lint(doc: Optional[str] = None, rules: Optional[list[str]] = None,
       non-standard side token such as "Eye_L", "Left Eye", "(L)"
     - empty-layer (warning): a paint layer with no pixels
     - out-of-canvas (warning): a paint layer's pixels reach past the canvas
-    - stray-alpha (warning): faint pixels (alpha below 8) more than 4 px
-      from any stronger pixel; anti-aliased edges don't count
+    - stray-alpha (warning): isolated specks of faint pixels: groups of at
+      most stray_speck_max_px (default 64) px with alpha below 8, more
+      than 4 px from any stronger pixel; anti-aliased edges and larger
+      soft regions (glows) don't count
     - color-space (error): the document is not 8-bit RGBA sRGB (one
       document-level finding)
     The contents of reference groups (a group named in brackets, such as
     "[ Guide ]") are skipped. Pixel rules need an 8-bit RGBA document
     (pixel_stats false otherwise).
 
-    Sets: "default" (the rules above), "conventions" (opt-in naming and
-    structure checks; empty for now), "all" (every rule).
+    Conventions rules (set "conventions", opt-in):
+    - nesting-depth (warning): a paint layer more than 3 groups deep
+    - name-case (info): a paint layer or group name that is not Title Case
+      with single-space-separated words (side tokens, A/B variants,
+      numbers and lowercase minor words such as "of" are allowed)
+    - blend-suffix (warning): a multiply/add paint layer without the
+      " Multiply"/" Add" name suffix, or a suffix that doesn't match the
+      blend mode
+    - pose-visibility (warning): sibling pose groups "<X> A", "<X> B", ...
+      where A is hidden or another one is visible
+    - reference-hidden (warning): a reference group (name in brackets)
+      that is visible
+    - mask-suffix (info): the base layer of a clipped (inherit alpha)
+      layer whose name doesn't end in " Mask"
+
+    Sets: "default" (the default rules), "conventions" (the conventions
+    rules), "all" (every rule).
 
     Settings come from the plugin's config file
     (~/.krita-mcp-config.json), section "lint": additive_mode ("either"
     (default), "add" or "linear_dodge": require one spelling of the Add
-    mode), stray_alpha_below (default 8) and stray_alpha_distance
-    (default 4 px). The result's settings shows the ones used.
+    mode), stray_alpha_below (default 8), stray_alpha_distance
+    (default 4 px) and stray_speck_max_px (default 64). The result's
+    settings shows the ones used.
 
     Findings are {rule, severity, layer_id, path, message, related_ids?},
     sorted by stacking order (top to bottom, as in the Layers docker),

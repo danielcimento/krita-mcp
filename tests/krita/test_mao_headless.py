@@ -304,11 +304,97 @@ class MaoRebuildTest(EnvelopeAssertions, unittest.TestCase):
         return rest
 
 
+# Component-size buckets for the stray-alpha report: (label, largest size).
+SPECK_BUCKETS = (("1", 1), ("2-4", 4), ("5-16", 16), ("17-64", 64), ("65-256", 256),
+                 ("257-1024", 1024))
+
+
+def _smallest(lo, hi, ok):
+    """The smallest ``t`` in ``[lo, hi]`` with ``ok(t)`` (monotone), by
+    bisection."""
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if ok(mid):
+            hi = mid
+        else:
+            lo = mid + 1
+    return lo
+
+
+def stray_size_report(doc, snapshot):
+    """Stray-pixel component sizes over the paint layers of ``doc``, for
+    judging ``stray_speck_max_px``: the components of each layer's stray
+    mask counted (and their pixels summed) per ``SPECK_BUCKETS`` size
+    bucket, from ``alphastats.components`` at each bucket's upper size
+    (cumulative counts, so no size list is needed); per layer the largest
+    speck (at most 64 px) and the largest region, by bisection on the
+    size limit. Returns a dict for the ``KMCP_MAO:`` lines."""
+    from kritamcp import alphastats, nodes, pixels
+    from kritamcp.commands import analysis
+
+    s = snapshot["settings"]
+    below, distance = s["stray_alpha_below"], s["stray_alpha_distance"]
+    _, by_id = nodes.tree(doc)
+    labels = [b[0] for b in SPECK_BUCKETS] + [">1024"]
+    hist = dict.fromkeys(labels, 0)
+    hist_px = dict.fromkeys(labels, 0)
+    flagged_at = dict.fromkeys([t for _, t in SPECK_BUCKETS], 0)
+    largest_specks, largest_regions, truncated = [], [], []
+    for n in snapshot["nodes"]:
+        a = n["alpha"]
+        if not a or not a["stray_count"]:
+            continue
+        b = n["bounds"]
+        w, h = b["w"], b["h"]
+        alpha = pixels.alpha(pixels.as_bytes(by_id[n["id"]].pixelData(b["x"], b["y"], w, h)))
+        weak = alpha.translate(alphastats.weak_table(below))
+        strong = alpha.translate(alphastats.strong_table(below))
+        if strong.count(1) == 0:
+            mask = weak
+        else:
+            mask = alphastats.stray_mask(weak, analysis.grow_dilate(strong, w, h, distance))
+        del alpha, weak, strong
+
+        def comps(t):
+            return alphastats.components(mask, w, h, t)
+
+        prev_n = prev_px = 0
+        last = None
+        for label, t in SPECK_BUCKETS:
+            c = comps(t)
+            if c["truncated"]:
+                break
+            hist[label] += c["specks"] - prev_n
+            hist_px[label] += c["speck_pixels"] - prev_px
+            prev_n, prev_px, last = c["specks"], c["speck_pixels"], c
+            flagged_at[t] += c["specks"] > 0
+        if last is None or last["truncated"]:
+            truncated.append(n["path"])
+            continue
+        hist[">1024"] += last["regions"]
+        hist_px[">1024"] += a["stray_count"] - last["speck_pixels"]
+        at64 = comps(64)
+        if at64["specks"]:
+            size = _smallest(1, 64, lambda t: comps(t)["specks"] == at64["specks"])
+            largest_specks.append((size, n["path"]))
+        if at64["regions"]:
+            size = _smallest(65, a["stray_count"], lambda t: comps(t)["regions"] == 0)
+            largest_regions.append((size, n["path"]))
+    largest_specks.sort(reverse=True)
+    largest_regions.sort(reverse=True)
+    return {"hist": hist, "hist_px": hist_px, "flagged_at": flagged_at,
+            "largest_specks": largest_specks, "largest_regions": largest_regions,
+            "truncated": truncated}
+
+
 @unittest.skipUnless(os.environ.get(MAO_ENV), f"set {MAO_ENV} to the Mao .ora (acceptance § 1)")
 class MaoLintTest(EnvelopeAssertions, unittest.TestCase):
     """Acceptance § Fixtures, secondary check: lint on the rebuilt Mao
     (without new_canvas's Background) gives exactly 17 duplicate-name
-    findings. The per-rule counts are printed as a ``KMCP_MAO:`` line."""
+    findings. The per-rule counts of the ``default`` and ``conventions``
+    sets, the snapshot time and a stray-alpha report (P5.10: layers
+    flagged, specks, the component-size histogram) are printed as
+    ``KMCP_MAO:`` lines; nothing is asserted about stray alpha."""
 
     def test_mao_lint(self):
         ora = os.path.expanduser(os.environ[MAO_ENV])
@@ -319,6 +405,7 @@ class MaoLintTest(EnvelopeAssertions, unittest.TestCase):
 
         tmp = tempfile.mkdtemp(prefix="kmcp-mao-lint-")
         handle = None
+        results = {}
         try:
             with temp_config({"allowed_dirs": [tmp]}):
                 out = os.path.join(tmp, "mao")
@@ -329,8 +416,15 @@ class MaoLintTest(EnvelopeAssertions, unittest.TestCase):
                 self.assertOk(run("create_layers", doc=handle,
                                   manifest=os.path.join(out, "manifest.json")))
                 self.assertOk(run("delete_layers", doc=handle, ids=[canvas["background_layer"]]))
-                envelope = run("lint", doc=handle)
-                result = self.assertOk(envelope)
+                for name in ("default", "conventions"):
+                    envelope = run("lint", doc=handle, rules=[name])
+                    results[name] = (envelope, self.assertOk(envelope))
+                envelope = run("lint_snapshot", doc=handle)
+                snap = self.assertOk(envelope)["snapshot"]
+                _log(f"lint_snapshot elapsed_ms={envelope['elapsed_ms']}")
+                t = time.perf_counter()
+                report = stray_size_report(registry.lookup(handle), snap)
+                report_s = time.perf_counter() - t
         finally:
             if handle is not None:
                 try:
@@ -340,14 +434,35 @@ class MaoLintTest(EnvelopeAssertions, unittest.TestCase):
                     pass
             shutil.rmtree(tmp, ignore_errors=True)
         self.assertFalse(os.path.exists(tmp))
-        per_rule = collections.Counter(f["rule"] for f in result["findings"])
-        _log(f"lint elapsed_ms={envelope['elapsed_ms']} counts={result['counts']} "
-             f"per rule={dict(sorted(per_rule.items()))}")
-        for rule in ("empty-layer", "out-of-canvas", "stray-alpha", "side-token", "node-type",
-                     "blend-mode"):
-            paths = [f["path"] for f in result["findings"] if f["rule"] == rule]
-            if paths:
-                _log(f"lint {rule}: {paths[:8]}{' ...' if len(paths) > 8 else ''}")
+        for name, (envelope, result) in results.items():
+            per_rule = collections.Counter(f["rule"] for f in result["findings"])
+            _log(f"lint {name}: elapsed_ms={envelope['elapsed_ms']} counts={result['counts']} "
+                 f"per rule={dict(sorted(per_rule.items()))}")
+            for rule in sorted(per_rule):
+                if rule == "duplicate-name":
+                    continue
+                paths = [f["path"] for f in result["findings"] if f["rule"] == rule]
+                _log(f"lint {name} {rule}: {paths[:8]}{' ...' if len(paths) > 8 else ''}")
+        result = results["default"][1]
+
+        paint = [n for n in snap["nodes"] if n["alpha"] is not None]
+        any_stray = [n for n in paint if n["alpha"]["stray_count"]]
+        specks = [n for n in paint if n["alpha"]["stray_specks"]["count"]]
+        flagged = [f for f in result["findings"] if f["rule"] == "stray-alpha"]
+        _log(f"stray-alpha: layers with any stray pixel (the rule before P5.10) {len(any_stray)}, "
+             f"flagged now {len(flagged)} (with specks {len(specks)}); specks "
+             f"{sum(n['alpha']['stray_specks']['count'] for n in paint)}, "
+             f"{sum(n['alpha']['stray_specks']['pixels'] for n in paint)} px; regions "
+             f"{sum(n['alpha']['stray_specks']['regions'] for n in paint)}; stray px total "
+             f"{sum(n['alpha']['stray_count'] for n in paint)}")
+        _log(f"stray component sizes (count): {report['hist']}")
+        _log(f"stray component sizes (pixels): {report['hist_px']}")
+        _log(f"layers flagged if stray_speck_max_px were: {report['flagged_at']}")
+        _log(f"largest speck per layer (top 8): {report['largest_specks'][:8]}")
+        _log(f"largest region per layer (top 8): {report['largest_regions'][:8]}")
+        _log(f"largest region per layer (bottom 8): {report['largest_regions'][-8:]}")
+        _log(f"truncated: {report['truncated']}; report took {report_s:.1f} s")
+
         dups = [f for f in result["findings"] if f["rule"] == "duplicate-name"]
         self.assertEqual(len(dups), 17, [f["message"] for f in dups])
         self.assertTrue(all(len(f["related_ids"]) == 2 for f in dups))  # each name used twice

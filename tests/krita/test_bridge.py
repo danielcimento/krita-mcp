@@ -124,7 +124,7 @@ class HandlerAuthTest(BridgeTestBase):
         self.assertEqual(body["allowed_dirs"], [config.current().output_dir])
         self.assertEqual(body["limits"], {"max_canvas_dim": 16384, "max_canvas_pixels": 4096})
         self.assertEqual(body["lint"], {"additive_mode": "add", "stray_alpha_below": 8,
-                                        "stray_alpha_distance": 4})
+                                        "stray_alpha_distance": 4, "stray_speck_max_px": 64})
         errors = body["config_errors"]
         self.assertEqual(len(errors), 3, errors)
         self.assertTrue(any("'colour'" in e for e in errors), errors)

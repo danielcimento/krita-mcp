@@ -975,7 +975,7 @@ returns `{"doc", "snapshot"}`.
   invalid values fall back to the default.
 - `alpha` (paint layers only, else null): `pixel_count` (`alpha > 0`),
   `opaque_bounds` (tight rectangle around `alpha > 0`, canvas coordinates,
-  may reach past the canvas), `stray_count`. Read with `pixelData` over the
+  may reach past the canvas), `stray_count`, `stray_specks`. Read with `pixelData` over the
   layer's `bounds()`, which is exact and unclipped, so off-canvas pixels
   count. Only for 8-bit RGBA: on another document `document.pixel_stats`
   is false and every `alpha` is null (a non-RGBA/U8 layer in an RGBA/U8
@@ -1018,8 +1018,14 @@ returns `{"doc", "snapshot"}`.
   noise plus a solid block takes about 0.05 s; 50 % noise (≈250k runs)
   about 0.1 s.
 - Cost: the headless Mao rebuild (185 paint layers, 5800×8400) takes
-  about 1.2 s, the slowest layer (the full-canvas guide image) about 0.3 s;
-  the fallback is as fast.
+  about 1.4 s with `stray_specks` (1.2 s before P5.10), the slowest layer
+  (the full-canvas guide image) about 0.35 s; the fallback is as fast.
+- Mao, P5.10 (2026-11-25, `test_mao_headless.MaoLintTest`): `stray-alpha`
+  went from 48 layers to 33 (246 specks, 1695 px, in 34 paint layers, one
+  of them inside a reference group; 122 regions hold the other ~1.23M
+  stray px). Stray components by size: 1 px 103, 2–4 75, 5–16 36, 17–64
+  32, 65–256 30, 257–1024 24, over 1024 68. Layers flagged with
+  `stray_speck_max_px` 1, 4, 16, 64, 256, 1024: 21, 29, 33, 34, 37, 37.
 - Lint reads the snapshot through `lint.run(snapshot, rules,
   severity_min)`; a missing `settings` key falls back to the default, an
   unknown `additive_mode` is `bad_request`.

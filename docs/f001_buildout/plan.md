@@ -329,8 +329,8 @@ tools.
 - [ ] **P5.7 `merge_layers`.** Group flatten through the projection, and
   multi-layer merge through a temporary group. Opacity handling per Q8.
 - [ ] **P5.8 `occlusion_map`.** Builds on `render(only=…)` and the alpha helpers.
-- [ ] **P5.9 Lint `conventions` set.** The six extra rules.
-- [ ] **P5.10 `stray-alpha` flags isolated specks only** (decided with the user
+- [x] **P5.9 Lint `conventions` set.** The six extra rules.
+- [x] **P5.10 `stray-alpha` flags isolated specks only** (decided with the user
   2026-11-25). As specified it warns on 48 Mao layers, mostly soft glows that
   fade through alpha 1–7 over more than 4 px. Count connected groups of stray
   pixels and flag only small ones (a configurable size), with

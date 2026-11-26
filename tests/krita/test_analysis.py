@@ -31,7 +31,9 @@ from test_dispatch import EnvelopeAssertions, run
 NODE_KEYS = ["id", "name", "path", "type", "parent", "depth", "order", "visible", "opacity",
              "blend_mode", "inherit_alpha", "alpha_locked", "locked", "pass_through",
              "has_layer_style", "bounds", "alpha"]
-DEFAULTS = {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4}
+DEFAULTS = {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4,
+            "stray_speck_max_px": 64}
+NO_SPECKS = alphastats.empty_specks()
 
 # A layer style as Krita's own ``layerStyleToAsl`` writes it (PSD-XML), with
 # a drop shadow; setLayerStyleFromAsl accepts and keeps it (2026-11-25; a
@@ -138,11 +140,12 @@ class SnapshotStructureTest(unittest.TestCase):
             if n["type"] != "paintlayer":
                 self.assertIsNone(n["alpha"], n["name"])
         self.assertEqual(eye_n["alpha"], {"pixel_count": 16, "opaque_bounds":
-                                          {"x": 10, "y": 10, "w": 4, "h": 4}, "stray_count": 0})
+                                          {"x": 10, "y": 10, "w": 4, "h": 4}, "stray_count": 0,
+                                          "stray_specks": NO_SPECKS})
         self.assertEqual(eye_n["bounds"], {"x": 10, "y": 10, "w": 4, "h": 4})
         self.assertEqual(named["Background"]["alpha"],
                          {"pixel_count": 64 * 64, "opaque_bounds": {"x": 0, "y": 0, "w": 64, "h": 64},
-                          "stray_count": 0})
+                          "stray_count": 0, "stray_specks": NO_SPECKS})
 
     def test_layer_style(self):
         with scratch_document(16, 16) as doc:
@@ -193,10 +196,14 @@ class AlphaStatsTest(unittest.TestCase):
         self.assertEqual(off["alpha"]["opaque_bounds"], {"x": -6, "y": -4, "w": 12, "h": 10})
         # The alpha-1 block is weak, more than 4 px from the strong one: stray.
         self.assertEqual(off["alpha"]["stray_count"], 12)
+        self.assertEqual(off["alpha"]["stray_specks"], {
+            "count": 1, "pixels": 12, "regions": 0, "truncated": False,
+            "samples": [{"x": 2, "y": 3, "w": 4, "h": 3}]})  # canvas coordinates
         for name in ("Empty", "Colour Under Zero"):
             self.assertIsNone(named[name]["bounds"], name)
             self.assertEqual(named[name]["alpha"],
-                             {"pixel_count": 0, "opaque_bounds": None, "stray_count": 0}, name)
+                             {"pixel_count": 0, "opaque_bounds": None, "stray_count": 0,
+                              "stray_specks": NO_SPECKS}, name)
         self.assertEqual(len(timings), 4)  # every paint layer, Background included
 
     def test_opaque_bounds_tighter_than_window(self):
@@ -318,6 +325,70 @@ class StrayAlphaTest(unittest.TestCase):
         self.assertEqual(named["Speck 4 Px"]["alpha"]["stray_count"], 0)
 
 
+# P5.10: only specks (8-connected groups of at most stray_speck_max_px stray
+# pixels) are stray-alpha findings. "Glow": a core with two faint rings
+# fading out over 8 px, so everything past the dilation is one big stray
+# ring. "Specks": three lone alpha-3 pixels and a 5x5 alpha-4 blob, all
+# more than 4 px from the core and from each other.
+GLOW = ([(12, 12, 26, 26, 2), (16, 16, 18, 18, 5), BLOCK], [])
+SPECK_POINTS = [(55, 12, 3), (8, 40, 3), (50, 55, 3)]
+SPECK_BLOB = (40, 40, 5, 5, 4)
+SPECK_LAYER = ([SPECK_BLOB, BLOCK], SPECK_POINTS)
+# Top-most first, then left-most; canvas coordinates.
+SPECK_SAMPLES = [{"x": 55, "y": 12, "w": 1, "h": 1}, {"x": 8, "y": 40, "w": 1, "h": 1},
+                 {"x": 40, "y": 40, "w": 5, "h": 5}, {"x": 50, "y": 55, "w": 1, "h": 1}]
+
+
+class StraySpecksTest(EnvelopeAssertions, unittest.TestCase):
+    def _doc_layers(self, doc):
+        for name, (blocks, points) in (("Glow", GLOW), ("Specks", SPECK_LAYER)):
+            alpha_layer(doc, name, WINDOW, points=points, blocks=blocks)
+        settle(doc)
+
+    def _snapshot(self, settings, method="auto"):
+        with scratch_document(64, 64) as doc:
+            self._doc_layers(doc)
+            return by_name(analysis.collect_snapshot(doc, settings, method=method))
+
+    def test_glow_is_a_region_and_specks_are_specks(self):
+        results = {m: self._snapshot(DEFAULTS, m) for m in ("grow", "shift")}
+        for method, named in results.items():
+            glow = named["Glow"]["alpha"]
+            # The faint rings minus what lies within 4 px of the core.
+            self.assertGreater(glow["stray_count"], 100, method)
+            self.assertEqual(glow["stray_specks"], {"count": 0, "pixels": 0, "regions": 1,
+                                                    "samples": [], "truncated": False}, method)
+            specks = named["Specks"]["alpha"]
+            self.assertEqual(specks["stray_count"], 28, method)
+            self.assertEqual(specks["stray_specks"], {"count": 4, "pixels": 28, "regions": 0,
+                                                      "samples": SPECK_SAMPLES,
+                                                      "truncated": False}, method)
+        self.assertEqual({k: n["alpha"] for k, n in results["grow"].items()},
+                         {k: n["alpha"] for k, n in results["shift"].items()})
+
+    def test_speck_larger_than_max_is_a_region(self):
+        with temp_config({"lint": {"stray_speck_max_px": 10}}):
+            with scratch_document(64, 64) as doc:
+                self._doc_layers(doc)
+                snap = analysis.collect_snapshot(doc)
+        self.assertEqual(snap["settings"]["stray_speck_max_px"], 10)
+        self.assertEqual(by_name(snap)["Specks"]["alpha"]["stray_specks"], {
+            "count": 3, "pixels": 3, "regions": 1, "truncated": False,
+            "samples": [r for r in SPECK_SAMPLES if r["w"] == 1]})
+
+    def test_lint_flags_specks_not_glow(self):
+        with scratch_document(64, 64) as doc:
+            self._doc_layers(doc)
+            result = self.assertOk(run("lint", doc=registry.handle_for(doc), rules=["stray-alpha"]))
+        self.assertEqual(result["settings"]["stray_speck_max_px"], 64)
+        self.assertEqual([(f["rule"], f["path"]) for f in result["findings"]],
+                         [("stray-alpha", "Specks")])
+        self.assertIn("has 4 stray specks, 28 px (groups of up to 64 px",
+                      result["findings"][0]["message"])
+        self.assertIn("e.g. at (55, 12) 1x1, (8, 40) 1x1, (40, 40) 5x5",
+                      result["findings"][0]["message"])
+
+
 class SettingsAndCommandTest(EnvelopeAssertions, unittest.TestCase):
     def test_settings_from_config_lint_section(self):
         self.assertEqual(analysis.lint_settings(),
@@ -327,7 +398,8 @@ class SettingsAndCommandTest(EnvelopeAssertions, unittest.TestCase):
         config.current = lambda: fake
         try:
             self.assertEqual(analysis.lint_settings(), {
-                "additive_mode": "add", "stray_alpha_below": 4, "stray_alpha_distance": 4})
+                "additive_mode": "add", "stray_alpha_below": 4, "stray_alpha_distance": 4,
+                "stray_speck_max_px": 64})
             with scratch_document(64, 64) as doc:
                 alpha_layer(doc, "Faint", WINDOW, blocks=[(5, 5, 2, 2, 3)])
                 settle(doc)
@@ -413,10 +485,14 @@ class MaoSnapshotTimingTest(EnvelopeAssertions, unittest.TestCase):
                 self.assertEqual(ob, n["bounds"], n["path"])
             strays = [(n["path"], n["alpha"]["stray_count"]) for n in paint
                       if n["alpha"]["stray_count"]]
+            specks = [(n["path"], n["alpha"]["stray_specks"]["count"]) for n in paint
+                      if n["alpha"]["stray_specks"]["count"]]
             empty = [n["path"] for n in paint if n["alpha"]["pixel_count"] == 0]
             _log(f"layers with stray alpha: {len(strays)}, total "
                  f"{sum(c for _, c in strays)} pixels; top {sorted(strays, key=lambda s: -s[1])[:5]}; "
                  f"empty: {empty}")
+            _log(f"layers with stray specks: {len(specks)}, total {sum(c for _, c in specks)} "
+                 f"specks; top {sorted(specks, key=lambda s: -s[1])[:5]}")
         finally:
             if handle is not None:
                 try:

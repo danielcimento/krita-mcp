@@ -187,12 +187,21 @@ class LintCommandTest(EnvelopeAssertions, unittest.TestCase):
             self.assertEqual([f["rule"] for f in some["findings"]], ["empty-layer", "out-of-canvas"])
             self.assertEqual(some["rules_run"], ["empty-layer", "out-of-canvas"])  # registry order
 
-            for names in (["all"], ["default", "conventions"], ["default", "node-type"]):
-                got = self.assertOk(run("lint", doc=handle, rules=names))
-                self.assertEqual(got["rules_run"], DEFAULT_RULES, names)  # conventions is empty
-                self.assertEqual(got["findings"], default["findings"], names)
+            got = self.assertOk(run("lint", doc=handle, rules=["default", "node-type"]))
+            self.assertEqual(got["rules_run"], DEFAULT_RULES)
+            self.assertEqual(got["findings"], default["findings"])
+            # Conventions (P5.9): Eye is the clipping base of Eye L, without " Mask".
             conventions = self.assertOk(run("lint", doc=handle, rules=["conventions"]))
-            self.assertEqual((conventions["rules_run"], conventions["findings"]), ([], []))
+            self.assertEqual(conventions["rules_run"], lint.set_members("conventions"))
+            self.assertEqual([(f["rule"], f["path"]) for f in conventions["findings"]],
+                             [("mask-suffix", "Eye")])
+            for names in (["all"], ["default", "conventions"]):
+                got = self.assertOk(run("lint", doc=handle, rules=names))
+                self.assertEqual(got["rules_run"], lint.set_members("all"), names)
+                self.assertEqual([(f["rule"], f["path"]) for f in got["findings"]], [
+                    ("empty-layer", "Spare"), ("inherit-alpha", "Eye L"), ("mask-suffix", "Eye"),
+                    ("side-token", "Eye"), ("out-of-canvas", "Body")], names)
+                self.assertEqual(got["counts"], {"error": 1, "warning": 3, "info": 1}, names)
 
             unknown = self.assertError(run("lint", doc=handle, rules=["node-type", "bogus"]),
                                        "bad_request")
@@ -253,7 +262,8 @@ class LintCommandTest(EnvelopeAssertions, unittest.TestCase):
                 strong = self.assertOk(run("lint", doc=handle))
             del layer
         self.assertEqual(pairs(default["findings"]), collections.Counter([("stray-alpha", "Speck")]))
-        self.assertIn("1 stray pixel ", default["findings"][0]["message"])
+        self.assertIn("has 1 stray speck, 1 px (", default["findings"][0]["message"])
+        self.assertIn("at (10, 0) 1x1", default["findings"][0]["message"])
         self.assertEqual(near["settings"]["stray_alpha_distance"], 8)
         self.assertEqual(pairs(near["findings"]), collections.Counter())
         self.assertEqual(pairs(strong["findings"]), collections.Counter())

@@ -14,7 +14,8 @@ cover pixels past the canvas edge too. They need 8-bit RGBA pixels: on
 any other document (or layer) ``alpha`` is null and ``document.pixel_stats``
 is false; the ``color-space`` rule reports the document either way.
 
-Stray alpha is ``alphastats.stray_count`` with the strong mask dilated by
+Stray alpha (``stray_count`` and ``stray_specks``) is
+``alphastats.stray_stats`` with the strong mask dilated by
 ``Selection.grow`` on a standalone ``Selection`` (never attached to the
 document, so the user's selection and layer tree are untouched), or by
 ``alphastats.dilate_shift`` when ``grow`` is unavailable or fails a
@@ -91,11 +92,12 @@ def _rect(r):
 
 
 def alpha_stats(node, bounds, settings, method="auto"):
-    """``{"pixel_count", "opaque_bounds", "stray_count"}`` for one 8-bit
-    RGBA paint layer, read over ``bounds`` (``{"x", "y", "w", "h"}`` or
-    None for a layer without pixels)."""
+    """``{"pixel_count", "opaque_bounds", "stray_count", "stray_specks"}``
+    for one 8-bit RGBA paint layer, read over ``bounds`` (``{"x", "y",
+    "w", "h"}`` or None for a layer without pixels)."""
     if bounds is None:
-        return {"pixel_count": 0, "opaque_bounds": None, "stray_count": 0}
+        return {"pixel_count": 0, "opaque_bounds": None, "stray_count": 0,
+                "stray_specks": alphastats.empty_specks()}
     x, y, w, h = bounds["x"], bounds["y"], bounds["w"], bounds["h"]
     data = pixels.as_bytes(node.pixelData(x, y, w, h))
     if len(data) != 4 * w * h:
@@ -108,15 +110,19 @@ def alpha_stats(node, bounds, settings, method="auto"):
     alpha = pixels.alpha(data)
     del data
     below, distance = settings["stray_alpha_below"], settings["stray_alpha_distance"]
+    speck_max = settings["stray_speck_max_px"]
     dilate = _dilate_for(method, distance)
     try:
-        stray, _ = alphastats.stray_count(alpha, w, h, below, distance, dilate)
+        stray, specks, _ = alphastats.stray_stats(alpha, w, h, below, distance, speck_max,
+                                                  dilate, (x, y))
     except Exception as e:
         if method != "auto" or dilate is alphastats.dilate_shift:
             raise
         print(f"[KritaMCP] Selection.grow failed on a layer, using the shift fallback: {e!r}")
-        stray, _ = alphastats.stray_count(alpha, w, h, below, distance, alphastats.dilate_shift)
-    return {"pixel_count": count, "opaque_bounds": _rect(ob), "stray_count": stray}
+        stray, specks, _ = alphastats.stray_stats(alpha, w, h, below, distance, speck_max,
+                                                  alphastats.dilate_shift, (x, y))
+    return {"pixel_count": count, "opaque_bounds": _rect(ob), "stray_count": stray,
+            "stray_specks": specks}
 
 
 def _is_rgba8(thing):
