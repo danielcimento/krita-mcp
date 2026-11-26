@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phase 1 done (live acceptance 3, 5 and 6 passed 2026-11-25; 5 minus the export row, 6 in its Phase-1 form). Phase 2 in progress: P2.1–P2.7 done; the live acceptance-1 run left. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phases 1–2 done (Phase 2 exit: live acceptance 1, the Mao rebuild, passed 2026-11-25). Phase 3 next. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -217,6 +217,12 @@ row of test 5, which lands with P3.2). Test 6 ran in its Phase-1 form
   composite, clone closed, original untouched).
 
 *Exit:* acceptance test **1** (Mao rebuild) passes.
+
+*Met 2026-11-25:* `make test-live` with `KRITA_MCP_MAO_ORA` set passed 6,
+skipped 1 (the `export_layers` row of test 5, P3.2): `test_mao_rebuild`,
+the full `test_handles`, and `test_layer_tree`. The headless
+`test_mao_headless` covers the same rebuild without the GUI (create_layers
+≈ 8 s).
 
 ### Phase 3: Pixels (P0)
 
