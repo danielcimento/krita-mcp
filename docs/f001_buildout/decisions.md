@@ -209,6 +209,11 @@ Agents therefore get an undo they control, built on the batch executor
   - delete → keep the detached `Node` alive (libkis wrappers hold a
     reference) and re-insert it at its old parent/position.
   - move → move back.
+  - *(2026-11-25, live run)* A journal entry may hold detached nodes; they
+    must not be freed after their GUI document is gone (suspected crash,
+    krita-api-notes § Crash hazards). `close_document` drops the journal
+    before closing; journals of documents closed by hand are kept for the
+    session with their pixel snapshots released.
   - *(P2.5, 2026-11-25)* Removing a node in Krita detaches its whole
     subtree: a group comes back empty unless its descendants are re-added
     too (Q18 only covered a single paint layer). Delete and move inverses

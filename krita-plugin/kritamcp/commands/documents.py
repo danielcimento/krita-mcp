@@ -11,7 +11,7 @@ import os
 from krita import Krita
 from PyQt5.QtGui import QColor
 
-from .. import blendexport, config, fileio, nodes, registry
+from .. import batch, blendexport, config, fileio, nodes, registry
 from ..dispatch import LONG_TIMEOUT, command
 from ..errors import CommandError
 from ..params import canvas_size, float_param
@@ -367,6 +367,10 @@ def cmd_close_document(params):
         raise CommandError("conflict",
                            f"{handle} has unsaved changes; save it first, or pass discard=true",
                            {"doc": handle, "name": doc_name(doc)})
+    # Drop the journal while the document is still open: its entries may
+    # hold detached nodes, and freeing those after the GUI document is gone
+    # can crash Krita (batch.Journals.forget).
+    batch.JOURNALS.forget(handle, document_closed=False)
     doc.setModified(False)  # close() never prompts then (verified)
     ok = doc.close()
     del doc  # crash hazard: never touch a closed document's wrapper

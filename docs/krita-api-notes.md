@@ -47,6 +47,22 @@ so the HTTP bridge dies with it.
   only around the call, in `try`/`finally`. Left on, it would suppress
   dialogs for the user's own exports.
 
+- **Freeing a detached `Node` after its GUI document closed** (suspected,
+  2026-11-25, live run): the plugin's undo journal keeps deleted layers as
+  detached `Node` wrappers, and a libkis `Node` holds a reference to its
+  image. Krita died on the first command after a document with such an
+  entry was closed and its journal dropped, which frees the image after the
+  document and its view are gone. It doesn't happen headless (no view).
+  Since then `close_document` drops the journal *before* closing, and the
+  journals of documents closed by hand are kept alive for the session
+  (`batch._GRAVEYARD`, pixel snapshots released) instead of being freed.
+- **`exportImage` / `saveAs` / `save` refuse while the image is busy**
+  [verified 2026-11-25, live]: in the GUI, `exportDocumentSync` returns
+  False at once (0 ms) when it can't take the image's barrier lock or the
+  saving mutex, e.g. right after a `.kra` save, or during an autosave.
+  Headless images are never busy. `fileio` waits for the image
+  (`waitForDone`) and retries up to 20 × 0.1 s.
+
 ## Environment
 
 - Bundled Python is **3.13.5**, with **PyQt5 5.15** and **no numpy** [verified].

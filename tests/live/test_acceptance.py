@@ -306,7 +306,12 @@ def test_render(call, scratch, docs_to_close, run_id, output_dir):
         {"name": "L", "parent": "$g", "png": solid("l", (0, 255, 0, 255)), "x": 4, "y": 0},
         {"name": "Top", "png": solid("top", (255, 0, 0, 255)), "x": 0, "y": 0},
     ])
-    before = (call("list_layers", doc=doc)["layers"], call("get_document_info", doc=doc))
+    def state():  # elapsed_ms and summary vary between calls
+        info = call("get_document_info", doc=doc)
+        info = {k: v for k, v in info.items() if k not in ("elapsed_ms", "summary")}
+        return call("list_layers", doc=doc)["layers"], info
+
+    before = state()
 
     def render(name, **params):
         result = call("render", doc=doc, path=os.path.join(work, f"{name}.png"), **params)
@@ -347,7 +352,7 @@ def test_render(call, scratch, docs_to_close, run_id, output_dir):
                region={"x": 30, "y": 0, "w": 4, "h": 4})
 
     # Nothing changed in the document.
-    assert (call("list_layers", doc=doc)["layers"], call("get_document_info", doc=doc)) == before
+    assert state() == before
 
     # get_canvas: the same full render, into the output dir's top level
     # (a unique name, removed afterwards).

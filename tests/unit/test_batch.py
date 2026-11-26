@@ -669,6 +669,33 @@ def test_forget_deletes_spill_files(tmp_path, monkeypatch):
     assert os.listdir(tmp_path) == [] and "doc-1" not in js
 
 
+def test_forget_after_close_keeps_entries_and_releases_pixels(tmp_path, monkeypatch):
+    # A closed document's entries may hold detached Krita nodes; freeing them
+    # after the GUI document is gone can crash Krita, so they're kept alive.
+    monkeypatch.setattr(config, "current", lambda: config.load(config_file="/nonexistent", env={}))
+    monkeypatch.setattr(batch, "_GRAVEYARD", [])
+    js = batch.Journals(spill_dir=str(tmp_path))
+    j = js.get("doc-1")
+    doc = {"p": b"\0" * 64}
+    tool_paint(j, doc, "p", b"\1" * 64)
+    entries = list(j._undo)
+    blobs = [b for e in entries for b in e.blobs()]
+    assert entries and blobs and all(b.in_memory for b in blobs)
+    js.forget("doc-1")  # default: the document has closed
+    assert batch._GRAVEYARD == entries and "doc-1" not in js
+    assert all(b._data is None and b.path is None for b in blobs)  # pixels released
+
+
+def test_forget_before_close_frees_entries(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "current", lambda: config.load(config_file="/nonexistent", env={}))
+    monkeypatch.setattr(batch, "_GRAVEYARD", [])
+    js = batch.Journals(spill_dir=str(tmp_path))
+    doc = {"p": b"\0" * 64}
+    tool_paint(js.get("doc-1"), doc, "p", b"\1" * 64)
+    js.forget("doc-1", document_closed=False)
+    assert batch._GRAVEYARD == [] and "doc-1" not in js
+
+
 def test_journals_read_max_disk_bytes_defensively(monkeypatch):
     class S:
         journal = {"max_actions": 4, "max_bytes": 64}

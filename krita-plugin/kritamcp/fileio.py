@@ -25,6 +25,7 @@ opacity into the alpha).
 
 import contextlib
 import os
+import time
 
 from krita import InfoObject, Krita
 
@@ -72,13 +73,35 @@ def _written(path, before):
     return after is not None and os.path.isfile(path) and after != before
 
 
+# Krita's exportDocumentSync gives up at once (returns False) when it can't
+# take the image's barrier lock or the saving mutex: while the image is still
+# busy (e.g. just after a save) or an autosave runs. Seen in the GUI only:
+# headless images are never busy. So wait for the image to be idle first and
+# retry a few times. [live test_allowlist, 2026-11-25]
+ATTEMPTS = 20
+RETRY_SLEEP_S = 0.1
+
+
+def _with_retries(doc, call):
+    """Run ``call()`` (a Krita save/export returning a bool), waiting for
+    the image to be idle first and retrying while Krita refuses. Callers
+    still check that the file was written (Krita can claim success
+    without writing into a missing directory; retrying won't fix that)."""
+    for _ in range(ATTEMPTS):
+        doc.waitForDone()
+        if call():
+            return True
+        time.sleep(RETRY_SLEEP_S)
+    return False
+
+
 def export_image(doc, path):
     """``doc.exportImage(path)`` (format from the extension). The
     document's own ``fileName()`` and ``modified`` are unchanged. Failure:
     ``krita_error``."""
     before = _stat(path)
     with batch_mode(doc):
-        ok = doc.exportImage(path, InfoObject())
+        ok = _with_retries(doc, lambda: doc.exportImage(path, InfoObject()))
     if not ok or not _written(path, before):
         raise CommandError("krita_error", f"Krita failed to export to {path}")
 
@@ -90,7 +113,7 @@ def save_as(doc, path):
     the document is marked modified again, since it isn't saved anywhere."""
     before = _stat(path)
     with batch_mode(doc):
-        ok = doc.saveAs(path)
+        ok = _with_retries(doc, lambda: doc.saveAs(path))
     if ok and not _written(path, before):
         doc.setModified(True)  # saveAs cleared it, but nothing was saved
         ok = False
@@ -103,7 +126,7 @@ def save_in_place(doc):
     path = doc.fileName()
     before = _stat(path)
     with batch_mode(doc, app_wide=True):
-        ok = doc.save()
+        ok = _with_retries(doc, doc.save)
     if not ok or not _written(path, before):
         raise CommandError("krita_error", f"Krita failed to save {path}")
 

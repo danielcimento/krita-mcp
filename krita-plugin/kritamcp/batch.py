@@ -302,6 +302,11 @@ class Blob:
             raise OSError(f"spill file {self._path} holds {len(data)} bytes, not {self.nbytes}")
         return data
 
+    def release(self):
+        """Drop the bytes and any spill file. The blob is unusable after."""
+        self.discard()
+        self._data = None
+
     def discard(self):
         """Delete the spill file, if any. The blob is unusable afterwards
         if it was spilled."""
@@ -681,10 +686,28 @@ class Journals:
                 spill_dir=self._spill_dir)
         return j
 
-    def forget(self, handle):
+    def forget(self, handle, document_closed=True):
+        """Drop ``handle``'s journal and delete its spill files.
+
+        **Crash hazard.** An entry may hold detached ``Node`` wrappers (a
+        deleted layer kept for undo), and a libkis ``Node`` keeps its image
+        alive. Destroying the last one after the GUI document and its view
+        are gone destroys the image then, which can crash Krita. So with
+        ``document_closed`` (the registry noticed the document closed) the
+        entries are kept in ``_GRAVEYARD`` for the rest of the session
+        instead of being freed; their pixel snapshots are released.
+        ``close_document`` calls this with ``document_closed=False`` *before*
+        closing, while freeing them is still safe.
+        """
         j = self._by_handle.pop(handle, None)
-        if j is not None:
-            j.clear()
+        if j is None:
+            return
+        if document_closed:
+            for entry in j._undo + j._redo:
+                for b in entry.blobs():
+                    b.release()  # pixel snapshots hold no Krita objects
+            _GRAVEYARD.extend(j._undo + j._redo)
+        j.clear()
 
     def __contains__(self, handle):
         return handle in self._by_handle
@@ -692,5 +715,10 @@ class Journals:
     def __len__(self):
         return len(self._by_handle)
 
+
+# Journal entries of documents that closed before their journal was dropped:
+# never freed in this session (see Journals.forget). Bounded by the journal
+# caps per document; only detached nodes stay, snapshots are released.
+_GRAVEYARD = []
 
 JOURNALS = Journals()  # the plugin's; tests make their own
