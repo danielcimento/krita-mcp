@@ -35,6 +35,7 @@ EXPECTED_TOOLS = {
     "krita_delete_layers",
     "krita_import_png",
     "krita_export_layers",
+    "krita_render",
 }
 
 # tool -> (kwargs, plugin action, canned plugin payload)
@@ -50,7 +51,9 @@ CASES = {
     "krita_fill": ({"x": 1, "y": 2, "radius": 3}, "fill", {"x": 1, "y": 2, "radius": 3}),
     "krita_draw_shape": ({"shape": "rectangle", "x": 0, "y": 0}, "draw_shape",
                          {"shape": "rectangle"}),
-    "krita_get_canvas": ({}, "get_canvas", {"path": "/out/canvas.png"}),
+    "krita_get_canvas": ({}, "get_canvas", {"path": "/out/canvas.png", "width": 4, "height": 3,
+                                            "region": {"x": 0, "y": 0, "w": 4, "h": 3},
+                                            "scale": 1.0, "bytes": 90}),
     "krita_undo": ({}, "undo", {}),
     "krita_redo": ({}, "redo", {}),
     "krita_clear": ({}, "clear", {"color": "#1a1a2e"}),
@@ -99,6 +102,9 @@ CASES = {
                              "count": 1, "layers": [{"key": "L0001", "type": "paint",
                                                      "png": "0001_a.png"}],
                              "skipped": [], "warnings": [], "bytes": 300}),
+    "krita_render": ({"path": "a.png"}, "render",
+                     {"doc": "doc-1", "path": "/out/a.png", "width": 4, "height": 3,
+                      "region": {"x": 0, "y": 0, "w": 4, "h": 3}, "scale": 1.0, "bytes": 90}),
     "krita_list_layers": ({}, "list_layers",
                           {"root": "/", "layers": [{"id": "{1}", "name": "a", "children": []}],
                            "counts": {"paintlayer": 1, "total": 1}}),
@@ -301,7 +307,8 @@ DOC_TOOLS = {"krita_save", "krita_get_canvas", "krita_stroke", "krita_fill",
              "krita_draw_shape", "krita_clear", "krita_get_color_at",
              "krita_get_document_info", "krita_close_document", "krita_list_layers",
              "krita_create_layers", "krita_update_layers", "krita_move_layers",
-             "krita_delete_layers", "krita_import_png", "krita_export_layers"}
+             "krita_delete_layers", "krita_import_png", "krita_export_layers",
+             "krita_render"}
 # close_document has no active-document default.
 REQUIRED_DOC_TOOLS = {"krita_close_document"}
 OPTIONAL_DOC_TOOLS = DOC_TOOLS - REQUIRED_DOC_TOOLS
@@ -811,3 +818,96 @@ def test_export_layers_summary(fake_call):
     assert server.krita_export_layers("x")["summary"] == (
         "Exported 2 PNGs for 2 layers and 1 group (1 group projection) in doc-2 to /out/x, "
         "4.0 KB, 1 skipped (1 warning: 1 layer(s) of other types)")
+
+
+# P3.4: render, and get_canvas as its shortcut.
+
+def test_render_params(fake_call):
+    server.krita_render("a.png")
+    assert fake_call.calls[0] == ("render", {"path": "a.png"}, None)
+    server.krita_render("~/r/b.png", region={"x": -2, "y": 3, "w": 10, "h": 20}, scale=0.25,
+                        only=["Head", "{1}"], hide=["Head/Eyes"], background="#ffffff",
+                        png_level=1, doc="doc-2", timeout_s=600)
+    assert fake_call.calls[1] == ("render", {
+        "path": "~/r/b.png", "region": {"x": -2, "y": 3, "w": 10, "h": 20}, "scale": 0.25,
+        "only": ["Head", "{1}"], "hide": ["Head/Eyes"], "background": "#ffffff",
+        "png_level": 1, "doc": "doc-2"}, 600)
+    from krita_mcp_server.models import Rect
+    server.krita_render("c.png", region=Rect(x=0, y=0, w=1, h=1), scale=2, png_level=0,
+                        only=[])
+    assert fake_call.calls[2][1] == {"path": "c.png", "region": {"x": 0, "y": 0, "w": 1, "h": 1},
+                                     "scale": 2, "png_level": 0, "only": []}
+
+
+def test_render_validates_scale_png_level_and_region(fake_call):
+    for bad in (0, -1, 4.5, True):
+        with pytest.raises(ToolError, match="^bad_request: scale"):
+            server.krita_render("a.png", scale=bad)
+    for bad in (10, -1, True):
+        with pytest.raises(ToolError, match="^bad_request: png_level"):
+            server.krita_render("a.png", png_level=bad)
+    for bad in ({"x": 0, "y": 0, "w": 0, "h": 1}, {"x": 0, "y": 0, "w": 1},
+                {"x": 0.5, "y": 0, "w": 1, "h": 1}, {"x": 0, "y": 0, "w": 1, "h": 1, "z": 0}):
+        with pytest.raises(ToolError, match="^bad_request: region"):
+            server.krita_render("a.png", region=bad)
+    assert fake_call.calls == []
+
+
+def test_render_schema_and_typos():
+    tool = _tools()["krita_render"]
+    params = tool.parameters
+    assert set(params["properties"]) == {"path", "region", "scale", "only", "hide", "background",
+                                         "png_level", "doc", "timeout_s"}
+    assert params["required"] == ["path"]
+    scale = params["properties"]["scale"]
+    assert (scale["default"], scale["exclusiveMinimum"], scale["maximum"]) == (1.0, 0, 4)
+    level = params["properties"]["png_level"]["anyOf"][0]
+    assert (level["minimum"], level["maximum"]) == (0, 9)
+    description = " ".join(tool.description.split())
+    for phrase in ("never changed", "scale=0.25", "ancestors", "keep their own visibility",
+                   "only these, minus those", "canvas pixels", "clipped", "8-bit sRGB"):
+        assert phrase in description, phrase
+    for args in ({"path": "a.png", "scale": 0}, {"path": "a.png", "scale": 5},
+                 {"path": "a.png", "png_level": 10}, {"region": {"x": 0, "y": 0, "w": 1, "h": 1}},
+                 {"path": "a.png", "region": {"x": 0, "y": 0, "w": 0, "h": 1}},
+                 {"path": "a.png", "region": {"x": 0, "y": 0, "w": 1, "h": 1, "q": 1}},
+                 {"path": "a.png", "region": {"x": "0", "y": 0, "w": 1, "h": 1}},
+                 {"path": "a.png", "only": "Head"}, {"path": "a.png", "bogus": 1}):
+        assert _call_tool("krita_render", args).is_error, args
+
+
+def test_render_summary(fake_call):
+    fake_call.payload = {"doc": "doc-2", "path": "/out/a.png", "width": 1450, "height": 2100,
+                         "region": {"x": 0, "y": 0, "w": 5800, "h": 8400}, "scale": 0.25,
+                         "bytes": 2048, "only": ["{1}", "{2}"], "hide": ["{3}"],
+                         "background": "#ffffff"}
+    assert server.krita_render("a.png", scale=0.25)["summary"] == (
+        "Rendered doc-2 to /out/a.png: 1450x2100 (scale 0.25 of 5800x8400 at (0, 0), "
+        "only 2 layers, 1 layer hidden, over #ffffff), 2.0 KB")
+    fake_call.payload = {"doc": "doc-2", "path": "/out/a.png", "width": 10, "height": 6,
+                         "region": {"x": 3, "y": 4, "w": 10, "h": 6}, "scale": 1.0, "bytes": 100}
+    assert server.krita_render("a.png")["summary"] == (
+        "Rendered doc-2 to /out/a.png: 10x6 (region 10x6 at (3, 4)), 100 bytes")
+
+
+def test_render_summary_cost_hint(fake_call):
+    full = {"doc": "doc-1", "path": "/out/a.png", "width": 5800, "height": 8400,
+            "region": {"x": 0, "y": 0, "w": 5800, "h": 8400}, "scale": 1.0, "bytes": 11_000_000}
+    fake_call.payload = full
+    for result in (server.krita_render("a.png"), server.krita_get_canvas()):
+        assert "scale=0.25" in result["summary"], result["summary"]
+    fake_call.payload = {**full, "width": 1450, "height": 2100, "scale": 0.25}
+    assert "scale=0.25 for" not in server.krita_render("a.png", scale=0.25)["summary"]
+    fake_call.payload = {**full, "width": 64, "height": 64,
+                         "region": {"x": 0, "y": 0, "w": 64, "h": 64}}
+    assert "slow" not in server.krita_render("a.png")["summary"]
+
+
+def test_get_canvas_summary_and_docstring(fake_call):
+    fake_call.payload = {"doc": "doc-4", "path": "/out/c.png", "width": 4, "height": 3,
+                         "region": {"x": 0, "y": 0, "w": 4, "h": 3}, "scale": 1.0, "bytes": 90}
+    assert server.krita_get_canvas("c")["summary"] == (
+        "Saved the canvas of doc-4 to /out/c.png: 4x3, 90 bytes")
+    assert fake_call.calls[0] == ("get_canvas", {"filename": "c"}, None)
+    description = " ".join(_tools()["krita_get_canvas"].description.split())
+    assert "krita_render" in description and "full canvas" in description

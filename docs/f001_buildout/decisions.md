@@ -372,6 +372,16 @@ Renders without `only` / `hide` skip both and read `projection()`
 directly. The cost of `render` is dominated by PNG encoding (≈1.7 s at
 full Mao size), so agents should pass `scale` < 1 for previews.
 
+*Built with B (P3.4, 2026-11-25).* The headless check passes
+(`tests/krita/test_render.py` `CloneTest`): hiding an opaque layer in a
+clone takes the clone's projection from alpha 255 to 0 while the
+original's stays 255, and after subset renders the original's projection,
+every node's visibility, `modified()` and the number of open documents
+are unchanged. A render whose `only` / `hide` change nothing reads the
+projection directly. Real Mao art encodes slower than the solid fill
+measured in Q11: a full render takes 4.0 s at the default PNG level,
+1.6 s at level 1, and 0.37 s at scale 0.25.
+
 ## D11. Batch semantics
 
 **Decided.**

@@ -717,7 +717,7 @@ mutating):*
   journal is cleared and the result warns `not_undoable` with `nbytes`,
   as `delete_layers` does.
 
-### `krita_render(doc?, path, region?, scale=1.0, only?, hide?, background?)` · P0
+### `krita_render(doc?, path, region?, scale=1.0, only?, hide?, background?, png_level?)` · P0
 
 - `region` is `{x, y, w, h}` in canvas pixels, default the whole canvas. It is clipped to the canvas.
 - `scale` is in (0, 4]. Resampling is smooth, with `Qt.SmoothTransformation`.
@@ -741,6 +741,92 @@ mutating):*
 - Returns `path`, `width`, `height` and `elapsed_ms`.
 - `krita_get_canvas(filename)` stays as a shortcut for
   `render(path=<output dir>/<filename>)`.
+
+As built (P3.4, 2026-11-25; `commands/render.py`, pure parts in
+`renderplan.py`):
+
+- **Order of checks**, all before anything is read or written: `path`,
+  `doc`, `region`, `scale` and the output size, `background`,
+  `png_level`, then `only` / `hide`. Missing parent directories of
+  `path` are created (inside the allowed root) only then.
+- **`path`** goes through `resolve_allowed_path` and must end in `.png`
+  (any case); another allowed image type (`.jpg`, …) is `bad_request`,
+  a type that isn't allowed at all `forbidden_path`. An existing file is
+  replaced (atomically, `save_png`).
+- **`region`**: exactly the keys `x, y, w, h`, whole numbers (not bools)
+  within ±`COORD`; `w`, `h` ≥ 1. It is clipped to the canvas; a region
+  that lies entirely off it is `bad_request`. The result's `region` is the
+  clipped rectangle.
+- **`scale`**: a number, 0 < scale ≤ 4. Each output side is
+  `floor(side * scale + 0.5)` (nearest, halves up), at least 1. The
+  output's pixel count must be ≤ `max_canvas_pixels`, else `too_large`
+  (`details: {limit, max, pixels, w, h}`); the per-side limit isn't
+  applied to renders. When the output size equals the region's (scale 1,
+  or a scale that rounds back to it) nothing is resampled and the PNG holds
+  the projection's bytes exactly, colour under zero alpha included.
+- **Resampling** scales a `Format_RGBA64_Premultiplied` copy. Qt's own
+  path for `Format_ARGB32` premultiplies at 8 bits, which loses colour as
+  alpha drops: halving a test image, colours were off from the exact
+  2×2 average by up to 6.6–7.4 levels at alpha ≥ 32 and 171–182 at alpha
+  1–31; at 16 bits, by 0.5 and 1.3 (alpha within 0.5 either way). It costs
+  about 5–10 ms more at Mao size (48 ms for a 0.25 scale of a 5800×8400
+  image). Premultiplied scaling never bleeds the colour of alpha-0 pixels
+  into visible ones, and resampled output has (0, 0, 0, 0) wherever alpha
+  is 0.
+- **`only` / `hide`**: non-empty lists of refs (`resolve_many`:
+  `not_found` / `ambiguous` with `details.index`; `"/"` and batch keys
+  are `bad_request`); repeats are dropped. The visibility to set
+  (`renderplan.visibility_changes`): each `only` node and its ancestors
+  visible; the siblings of those nodes and of their ancestors hidden,
+  except inside an `only` subtree; nodes below a hidden node left as they
+  are (its parent hides them); then every `hide` node hidden (hide wins).
+  So a hidden child of an `only` group stays hidden, and an `only` layer
+  inside another `only` group doesn't hide that group's other contents.
+  Only the nodes whose visibility differs are changed. If none differs
+  (e.g. `hide` of a hidden layer), the projection is read directly.
+- **The clone (D10 B)**: `doc.clone()`, `setVisible` on its nodes found by
+  UUID (in a helper's frame, so no node wrapper outlives it),
+  `refreshProjection()` + `waitForDone()`, `projection(region)`, then
+  `setModified(False)` + `close()` in `finally`; the clone is never
+  touched after that. The QImage is Krita's own copy and stays valid. The
+  headless suite checks that a clone's projection follows visibility
+  changes made in it, and that after subset renders the original's
+  projection, every node's visibility, `modified()` and the number of open
+  documents are unchanged.
+- **Direct reads** call `waitForDone()` only (pending updates), no
+  `refreshProjection()`: the projection read right after `open_file` of
+  the 222-node Mao `.kra` equalled a refreshed one byte for byte.
+- **`background`**: `null` or `"transparent"` for none; otherwise any
+  colour `QColor` parses (`#rgb`, `#rrggbb`, `#aarrggbb`, SVG names),
+  translucent allowed; anything else is `bad_request`. It is composited
+  under the (scaled) image with `pixels.composite_over` (16-bit; exact
+  where the image is opaque or transparent). Echoed as `#rrggbb`, or
+  `#aarrggbb` when translucent.
+- **Colour spaces**: `Document.projection` is Krita's `convertToQImage`
+  with the default profile, i.e. 8-bit sRGB `Format_ARGB32`
+  (non-premultiplied). For RGBA/U8 in an sRGB profile (`sRGB-elle-V2-srgbtrc`,
+  `sRGB built-in`) that is exactly `Document.pixelData`; every other depth,
+  model and profile (U16, F16, F32, GRAYA, CMYKA, ClayRGB, …) is converted
+  to 8-bit sRGB by Krita. So `render` works on any document; it does not
+  call `require_rgba8`.
+- **Result**: `doc`, `path` (resolved), `width`, `height` (the PNG),
+  `region` (clipped), `scale`, `bytes` (file size), and, when given, `only`
+  / `hide` (resolved ids), `background` (normalized), `png_level`; plus
+  `elapsed_ms` in the envelope. Non-mutating, 300 s default timeout.
+- **Server** (`krita_render`): `region` is a pydantic `Rect`
+  (`extra="forbid"`, strict ints, `w`/`h` ≥ 1); `scale` is checked
+  (0, 4] and `png_level` 0–9 before the call; `scale` is sent only when it
+  isn't 1. The summary gives the size, scale / region, `only` / `hide`
+  counts, background and file size, and for a full-size render of 4 MP or
+  more the cost hint (scale 0.25 or `png_level=1`).
+- **Timings** (Mao, 5800×8400, headless): full render 4.0 s at the default
+  level (11.3 MB), 1.6 s at `png_level=1`, 0.37 s at scale 0.25 (1.3 MB).
+  A refresh of the reopened Mao `.kra` took 0.07 s.
+- **`get_canvas(filename)`**: the base name of `filename` (any directory
+  part dropped) with `.png` appended unless it ends in `.png` (any case),
+  in the output dir; then a full-canvas `render` (same code: projection →
+  QImage → `save_png`, no longer `exportImage`). Result: `doc`, `path`
+  plus `render`'s fields.
 
 ### `krita_trim_layers(doc?, ids, alpha_threshold=1, near_px=null, dry_run?)` · P1
 
@@ -889,7 +975,7 @@ of both bounds). The two documents must be the same size for pixel diffs.
 |---|---|
 | `krita_health` | Adds `protocol`, `version`, `krita_version` (done in P1.3, with `running` and `protocol_ok` added server-side), then `allowed_dirs` (resolved roots, the output dir first), `config_file`, `config_loaded`, `limits` and `config_errors` (done in P1.4; the summary counts the dirs and lists the errors), then `busy` (`{"action", "elapsed_ms"}` or `null`) and `queued` (done in P1.5; the summary adds e.g. "busy: save for 12.3 s, 1 queued") |
 | `krita_new_canvas`, `krita_open_file`, `krita_save` | As above. Done in P1.6: `new_canvas` and `open_file` return `doc` (the new document's handle; the registry keeps the wrapper, so a headless `new_canvas` leaves an open document) and `save` takes `doc`. The rest done in P1.7 |
-| `krita_get_canvas` | Takes `doc` (done in P1.6). Becomes a shortcut for `render` into the output dir |
+| `krita_get_canvas` | Takes `doc` (done in P1.6). A full-canvas `render` into the output dir (done in P3.4; see § `krita_render`): the projection (8-bit sRGB for any document) instead of `exportImage`; the result adds `render`'s fields |
 | `krita_set_color` | Stored plugin-side (D15) and also set on the active view when there is one; works without a view. Returns `color` (normalized `#rrggbb`) and `view_updated`. An invalid color is `bad_request`. Painting uses the stored color, else the view's foreground, else black. **No `doc`**: the color is plugin-global state that applies to every document, which is what lets painting work in a document with no view (D15). Done in P1.6 |
 | `krita_set_brush` | `size` and `opacity` are stored plugin-side (the stroke defaults) and `size` is also set on the view if there is one; a `preset` needs a view (`conflict` without one, and nothing is stored). Returns the stored `preset` (matched name or null), `size`, `opacity` and `view_updated`. No `doc`, like `set_color`. Done in P1.6 |
 | `krita_list_brushes` | Structured results only |

@@ -100,3 +100,17 @@ def test_change_and_move_schemas_forbid_extra():
         schema = model.model_json_schema()
         assert schema["additionalProperties"] is False
         assert schema["required"] == ["id"]
+
+
+def test_rect():
+    from krita_mcp_server.models import Rect
+    assert Rect(x=-3, y=0, w=1, h=2).to_params() == {"x": -3, "y": 0, "w": 1, "h": 2}
+    schema = Rect.model_json_schema()
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == ["x", "y", "w", "h"]
+    for bad in ({"x": 0, "y": 0, "w": 0, "h": 1}, {"x": 0, "y": 0, "w": 1, "h": -1},
+                {"x": 0, "y": 0, "w": 1}, {"x": 0, "y": 0, "w": 1, "h": 1, "z": 2},
+                {"x": 1.0, "y": 0, "w": 1, "h": 1}, {"x": "1", "y": 0, "w": 1, "h": 1},
+                {"x": True, "y": 0, "w": 1, "h": 1}):
+        with pytest.raises(ValidationError):
+            Rect.model_validate(bad)

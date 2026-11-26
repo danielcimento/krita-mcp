@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phases 1–2 done (Phase 2 exit: live acceptance 1, the Mao rebuild, passed 2026-11-25). Phase 3 in progress: P3.1–P3.3 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phases 1–2 done (Phase 2 exit: live acceptance 1, the Mao rebuild, passed 2026-11-25). Phase 3 in progress: P3.1–P3.4 done; the Phase 3 exit (live acceptance 2) is written, not yet run. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -244,12 +244,20 @@ the full `test_handles`, and `test_layer_tree`. The headless
   `test_layer_tree.py::test_export_layers` are written, not yet run.
 - [x] **P3.3 `import_png`.** `replace` / `over` / `clear_outside`, paint-layer
   check, and the changed rectangle in the result.
-- [ ] **P3.4 `render`.** Region, scale, `only` / `hide` resolution
+- [x] **P3.4 `render`.** Region, scale, `only` / `hide` resolution
   (ancestors shown, descendants keep their state), background, and
   `png_level`. Subset renders go through a `clone()` closed in `finally`
   (D10 B). A headless test checks that the clone's projection follows
   visibility changes in the clone.
   `get_canvas` becomes a shortcut for `render`.
+  *Done 2026-11-25* (api-design § `krita_render`, as built). The D10
+  clone check passes headless. Scaling resamples a 16-bit premultiplied
+  copy (8-bit loses colour at low alpha). Any colour space renders (Krita
+  converts the projection to 8-bit sRGB). The headless round trips now
+  compare `render` output: synthetic byte-identical, Mao identical but for
+  the 11 alpha-0 pixels. Mao full render 4.0 s (1.6 s at `png_level=1`,
+  0.37 s at scale 0.25). Live `test_round_trip`, `test_round_trip_mao`
+  and `test_render` are written, not yet run.
 
 *Exit:* acceptance test **2** (round trip, pixel-identical) passes. It
 also runs on a small synthetic document in the normal live suite, so it

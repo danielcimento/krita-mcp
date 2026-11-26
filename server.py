@@ -23,10 +23,10 @@ if _HERE not in sys.path:
 
 from fastmcp import FastMCP  # noqa: E402
 from fastmcp.exceptions import ToolError  # noqa: E402
-from pydantic import Field  # noqa: E402
+from pydantic import Field, ValidationError  # noqa: E402
 
 from krita_mcp_server import client  # noqa: E402
-from krita_mcp_server.models import LayerChange, LayerSpec, Move  # noqa: E402
+from krita_mcp_server.models import LayerChange, LayerSpec, Move, Rect  # noqa: E402
 
 # Configuration (KRITA_URL, KRITA_MCP_TOKEN_FILE, KRITA_MCP_TOKEN) is read in
 # krita_mcp_server/client.py.
@@ -844,6 +844,126 @@ def krita_export_layers(dir: str, ids: Union[Literal["all"], list[str]] = "all",
     return _done(result, summary + _warnings_note(result.get("warnings")))
 
 
+# Full-size renders above this many pixels get the cost hint in the summary.
+_RENDER_HINT_PIXELS = 4_000_000
+
+
+def _render_summary(result: dict, path: str, what: str = "Rendered {doc}",
+                    what_no_doc: str = "Rendered") -> str:
+    """"Rendered doc-2 to <path>: 1450x2100 (scale 0.25 of …), 1.2 MB", plus
+    the cost hint for big full-size renders."""
+    w, h = result.get("width"), result.get("height")
+    summary = what.format(doc=result["doc"]) if result.get("doc") else what_no_doc
+    summary += f" to {result.get('path') or path}"
+    if isinstance(w, int) and isinstance(h, int):
+        summary += f": {w}x{h}"
+    region = result.get("region")
+    scale = result.get("scale", 1.0)
+    details = []
+    if isinstance(region, dict) and (w, h) != (region.get("w"), region.get("h")):
+        details.append(f"scale {scale:g} of {_rect_text(region)}")
+    elif isinstance(region, dict) and (region.get("x"), region.get("y")) != (0, 0):
+        details.append(f"region {_rect_text(region)}")
+    if result.get("only") is not None:
+        details.append(f"only {_count(len(result['only']), 'layer')}")
+    if result.get("hide") is not None:
+        details.append(f"{_count(len(result['hide']), 'layer')} hidden")
+    if result.get("background"):
+        details.append(f"over {result['background']}")
+    if details:
+        summary += " (" + ", ".join(details) + ")"
+    if result.get("bytes") is not None:
+        summary += f", {_size(result['bytes'])}"
+    if (scale == 1 and isinstance(w, int) and isinstance(h, int)
+            and w * h >= _RENDER_HINT_PIXELS):
+        summary += ("; full-size PNG encoding is slow (about 4 s at 5800x8400): pass "
+                    "scale=0.25 for previews, or png_level=1")
+    return summary
+
+
+@mcp.tool()
+def krita_render(path: str, region: Optional[Rect] = None,
+                 scale: Annotated[float, Field(gt=0, le=4)] = 1.0,
+                 only: Optional[list[str]] = None, hide: Optional[list[str]] = None,
+                 background: Optional[str] = None,
+                 png_level: Annotated[Optional[int], Field(ge=0, le=9)] = None,
+                 doc: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
+    """
+    Render a document (what it looks like, all visible layers composited)
+    to a PNG file, optionally a region of it, scaled, with only some layers
+    shown, over a background colour. The user's document is never changed:
+    renders with only/hide are made in a private copy of the document,
+    closed afterwards, so no visibility flag or modified state changes.
+
+    - region: {x, y, w, h} in canvas pixels (origin top-left), default the
+      whole canvas; clipped to the canvas (a region entirely off the canvas
+      fails with "bad_request"). The result's region is the clipped one.
+    - scale: 0 < scale <= 4. The PNG is round(w * scale) x round(h * scale)
+      pixels (each at least 1), resampled smoothly; it may not exceed the
+      canvas pixel limit (max_canvas_pixels, "too_large"). At scale 1 the
+      PNG holds Krita's composited pixels exactly.
+    - only: layer refs to show; everything else is hidden. The ancestors of
+      each listed layer are shown too (even if hidden), and the layers
+      inside a listed group keep their own visibility (a hidden child stays
+      hidden). hide: layer refs to hide. Both together: only these, minus
+      those. Empty lists fail with "bad_request"; unknown refs "not_found",
+      names matching several layers "ambiguous".
+    - background: null for a transparent PNG (default), or a colour
+      ("#rrggbb", "#rgb", "#aarrggbb" or an SVG name) composited
+      underneath.
+    - Any colour space works: Krita converts the image to 8-bit sRGB (for
+      an 8-bit sRGB document, the exact pixels).
+
+    Cost is mostly PNG encoding: a full-size 5800x8400 render takes about
+    4 s (1.7 s with png_level=1), and at scale=0.25 about 0.4 s. Use
+    scale=0.25 (or smaller) for previews.
+
+    Returns {doc, path (resolved), width, height (of the PNG), region (the
+    clipped canvas rectangle rendered), scale, bytes, and only, hide
+    (resolved ids), background, png_level when given}.
+
+    Args:
+        path: PNG file to write (must end in .png): absolute, "~"-prefixed
+              or relative to the output dir, inside an allowed directory;
+              missing parent directories are created, an existing file is
+              replaced
+        region: {x, y, w, h} canvas rectangle to render; default the
+                whole canvas
+        scale: Output scale, greater than 0 and at most 4 (default 1)
+        only: Layer refs (UUIDs, name paths such as "Head/Eyes", or unique
+              names) to show, hiding everything else
+        hide: Layer refs to hide
+        background: Colour under the image, or null for transparent
+        png_level: zlib level 0 (fastest, biggest) to 9 (smallest), or
+                   null for the default (6)
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
+    """
+    if (isinstance(scale, bool) or not isinstance(scale, (int, float))
+            or not 0 < scale <= 4):
+        raise ToolError(f"bad_request: scale must be greater than 0 and at most 4, got {scale!r}")
+    if png_level is not None and (isinstance(png_level, bool) or not isinstance(png_level, int)
+                                  or not 0 <= png_level <= 9):
+        raise ToolError(f"bad_request: png_level must be a whole number from 0 to 9, "
+                        f"got {png_level!r}")
+    region_param = None
+    if region is not None:
+        try:
+            region_param = (region if isinstance(region, Rect)
+                            else Rect.model_validate(region)).to_params()
+        except ValidationError as e:
+            raise ToolError(f"bad_request: region must be {{x, y, w, h}} whole numbers with "
+                            f"w and h at least 1: {e.errors()[0].get('msg', e)}") from None
+    params = _with({"path": path}, region=region_param, scale=None if scale == 1 else scale,
+                   only=None if only is None else list(only),
+                   hide=None if hide is None else list(hide), background=background,
+                   png_level=png_level, doc=doc)
+    result = client.call("render", params, timeout_s=timeout_s)
+    return _done(result, _render_summary(result, path))
+
+
 @mcp.tool()
 def krita_set_color(color: str, timeout_s: Optional[float] = None) -> dict:
     """
@@ -1006,19 +1126,26 @@ def krita_draw_shape(
 def krita_get_canvas(filename: str = "canvas.png", doc: Optional[str] = None,
                      timeout_s: Optional[float] = None) -> dict:
     """
-    Export a document's canvas to a PNG file and return the path.
-    Use this to see your painting progress.
+    Save a document's whole canvas as a PNG in the output directory and
+    return the path; use this to see your painting progress. A shortcut for
+    krita_render(path=<output dir>/<filename>) of the full canvas at scale
+    1: the document is not changed. For a smaller, faster preview, a
+    region, or some layers only, use krita_render (e.g. scale=0.25).
+
+    Returns {doc, path, width, height, region, scale, bytes}.
 
     Args:
-        filename: Output filename (saved to configured output directory)
+        filename: Output file name, saved in the output directory (any
+                  directory part is dropped; ".png" is added if missing)
         doc: Document handle such as "doc-3" (new_canvas and open_file return
              one), or the absolute path of an open document; default the
              active document
-        timeout_s: Seconds to wait for Krita, up to 900; default per command
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
     """
     result = client.call("get_canvas", _with({"filename": filename}, doc=doc),
                          timeout_s=timeout_s)
-    return _done(result, f"Canvas{_in(result)} saved to: {result.get('path', '')}")
+    return _done(result, _render_summary(result, filename, what="Saved the canvas of {doc}",
+                                         what_no_doc="Saved the canvas"))
 
 
 @mcp.tool()

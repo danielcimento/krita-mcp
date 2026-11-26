@@ -1,5 +1,5 @@
 """Acceptance tests 1 (Mao rebuild, P2.4) and 2 (round trip, Mao variant,
-P3.2), headless.
+P3.2; compared through ``render`` since P3.4), headless.
 
 Skipped unless ``KRITA_MCP_MAO_ORA`` names the Mao ``.ora``
 (acceptance.md § Fixtures). kritarunner is started by ``make test-krita``
@@ -210,10 +210,46 @@ class MaoRebuildTest(EnvelopeAssertions, unittest.TestCase):
                          collections.Counter(e["path"] for e in entries))
         self._round_trip(tmp, reopened["doc"], handles)
 
+    def _render(self, handle, path, **params):
+        """Render ``handle`` to ``path``; returns ``(result, elapsed_ms)``."""
+        envelope = run("render", doc=handle, path=path, **params)
+        return self.assertOk(envelope), envelope["elapsed_ms"]
+
     def _round_trip(self, tmp, handle, handles):
-        """Acceptance § 2 (Mao variant), headless: export the rebuilt
-        document, rebuild that export on a third canvas, and compare the
-        two full-canvas projections byte for byte."""
+        """Acceptance § 2 (Mao variant), headless: render the reopened
+        document, export it, rebuild that export on a third canvas, render
+        that, and compare the two renders (colour under zero alpha
+        excepted)."""
+        # Right after open_file: render reads the projection with only
+        # waitForDone(); check that against a refreshed projection.
+        a_png = os.path.join(tmp, "renders", "a.png")
+        a_result, ms = self._render(handle, a_png)
+        _log(f"render scale 1 elapsed_ms={ms} bytes={a_result['bytes']}")
+        small, ms = self._render(handle, os.path.join(tmp, "renders", "a-quarter.png"), scale=0.25)
+        self.assertEqual((small["width"], small["height"]), (WIDTH // 4, HEIGHT // 4))
+        _log(f"render scale 0.25 elapsed_ms={ms} bytes={small['bytes']}")
+        _, ms = self._render(handle, os.path.join(tmp, "renders", "a-level1.png"), png_level=1)
+        _log(f"render scale 1 png_level 1 elapsed_ms={ms}")
+        a = pixels.load_png_bgra(a_png)[0]
+        self.assertEqual(len(a), 4 * WIDTH * HEIGHT)
+        doc = registry.lookup(handle)
+        t = time.perf_counter()
+        doc.refreshProjection()
+        doc.waitForDone()
+        _log(f"refreshProjection + waitForDone {time.perf_counter() - t:.2f} s")
+        fresh = pixels.as_bytes(doc.pixelData(0, 0, WIDTH, HEIGHT))
+        current = a == fresh
+        del doc, fresh
+        _log(f"render right after open_file == refreshed projection: {current}")
+        self.assertTrue(current, "render after open_file read a stale projection")
+        # A subset render goes through a clone (D10 B).
+        top = self.assertOk(run("list_layers", doc=handle, depth=1))["layers"]
+        group = next(l for l in top if l["type"] == "grouplayer" and l["visible"])
+        subset, ms = self._render(handle, os.path.join(tmp, "renders", "a-subset.png"),
+                                  only=[group["id"]], scale=0.25)
+        self.assertEqual(subset["only"], [group["id"]])
+        _log(f"render only=[top-level group] scale 0.25 elapsed_ms={ms}")
+
         export_dir = os.path.join(tmp, "export")
         envelope = run("export_layers", doc=handle, dir=export_dir, png_level=1)
         exported = self.assertOk(envelope)
@@ -239,23 +275,22 @@ class MaoRebuildTest(EnvelopeAssertions, unittest.TestCase):
 
         self.assertEqual(tree(canvas["doc"], drop=canvas["background_layer"]), tree(handle))
 
+        b_png = os.path.join(tmp, "renders", "b.png")
+        _, ms = self._render(canvas["doc"], b_png)
+        _log(f"render of the rebuild, scale 1 elapsed_ms={ms}")
         t = time.perf_counter()
-        for h in (handle, canvas["doc"]):  # open_file doesn't wait for the projection
-            registry.lookup(h).refreshProjection()
-            registry.lookup(h).waitForDone()
-        a = pixels.as_bytes(registry.lookup(handle).pixelData(0, 0, WIDTH, HEIGHT))
-        b = pixels.as_bytes(registry.lookup(canvas["doc"]).pixelData(0, 0, WIDTH, HEIGHT))
+        b = pixels.load_png_bgra(b_png)[0]
         same = a == b
-        _log(f"projection compare {time.perf_counter() - t:.1f} s; byte-identical: {same}")
-        self.assertEqual(len(a), 4 * WIDTH * HEIGHT)
+        _log(f"render compare {time.perf_counter() - t:.1f} s; byte-identical: {same}")
         if not same:
-            _log("projection diff: " + _describe_diff(a, b, WIDTH, HEIGHT))
+            _log("render diff: " + _describe_diff(a, b, WIDTH, HEIGHT))
         # Known difference (P3.2, 2026-11-25): some Mao PNGs (from the .ora)
         # have coloured alpha-0 margins outside the layer's alpha bounds,
         # and Krita's projection keeps such colour at fully transparent
         # pixels (11 pixels in rows 4728-5151; e.g. x=1524, Thumb R's 1-px
         # margin). export_layers crops to alpha > 0, so the rebuild has
-        # (0, 0, 0, 0) there. Every pixel with alpha > 0, and alpha everywhere, must match.
+        # (0, 0, 0, 0) there. Every pixel with alpha > 0, and alpha
+        # everywhere, must match (acceptance § 2).
         self.assertTrue(_same_but_alpha0_colour(a, b, WIDTH, HEIGHT),
                         "the rebuilt Mao renders differently from the exported one")
 

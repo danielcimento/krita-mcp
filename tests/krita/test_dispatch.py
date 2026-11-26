@@ -31,6 +31,7 @@ EXPECTED_REGISTRY = {
     "new_canvas": (300, True),
     "open_file": (300, True),
     "redo": (30, True),
+    "render": (300, False),
     "save": (300, False),
     "set_brush": (30, False),
     "set_color": (30, False),
@@ -177,7 +178,9 @@ class DispatchTest(EnvelopeAssertions, unittest.TestCase):
                 handle = registry.handle_for(doc)
                 result = self.assertOk(run("get_canvas", filename="../kmcp-shot", doc=handle))
             expected = os.path.join(os.path.realpath(out), "kmcp-shot.png")
-            self.assertEqual(result, {"path": expected, "doc": handle})
+            self.assertEqual(result, {"path": expected, "doc": handle, "width": 8, "height": 8,
+                                      "region": {"x": 0, "y": 0, "w": 8, "h": 8}, "scale": 1.0,
+                                      "bytes": os.path.getsize(expected)})
             self.assertTrue(os.path.isfile(expected))
         finally:
             config.CANVAS_OUTPUT_DIR = saved

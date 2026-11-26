@@ -127,6 +127,18 @@ invisible, and the rig renders premultiplied, so they can't show. This is
 the mitigation the plan's risk table named. `crop=false` round-trips them
 byte-identically if they ever matter.
 
+*P3.4 (2026-11-25):* the renders come from `krita_render` (scale 1: the
+projection's bytes exactly). Live, `test_round_trip` builds the small
+document through the tools (`new_canvas` transparent, one `create_layers`
+call with PNGs it writes with Pillow into `<scratch>/round-trip`, each with
+opaque corners so the crop keeps every byte, colour under alpha 0 inside);
+`test_round_trip_mao` rebuilds Mao as test 1 does (shared helper), then
+exports at `png_level=1`, rebuilds and renders at `png_level=1`, all in
+`<scratch>/mao`. Headless, the same procedure runs in
+`tests/krita/test_export_layers.py` (`RoundTripTest`: byte-identical) and
+`tests/krita/test_mao_headless.py` (renders identical but for the 11
+alpha-0 pixels above). Not yet run live.
+
 ### 3. Canvas cap · `test_canvas_cap`
 
 - `krita_new_canvas(5800, 8400)` succeeds and `get_document_info`

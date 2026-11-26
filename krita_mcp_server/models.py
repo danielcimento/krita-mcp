@@ -98,3 +98,18 @@ class Move(BaseModel):
     def to_params(self) -> dict:
         """The fields the caller set (``index=0`` is sent)."""
         return self.model_dump(exclude_none=True)
+
+
+class Rect(BaseModel):
+    """A rectangle in canvas pixels, origin top-left (``krita_render``'s
+    ``region``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    x: StrictInt = Field(description="Left edge in canvas pixels; may be negative")
+    y: StrictInt = Field(description="Top edge in canvas pixels; may be negative")
+    w: StrictInt = Field(ge=1, description="Width in pixels, at least 1")
+    h: StrictInt = Field(ge=1, description="Height in pixels, at least 1")
+
+    def to_params(self) -> dict:
+        return self.model_dump()

@@ -175,8 +175,22 @@ are fast enough that per-pixel Python loops are never justified.
   reads 73, while `xRes()` gives 72.5 [verified, P1.7].
 - `projection(x, y, w, h) -> QImage` gives the composited image of a region
   [verified as BGRA→RGB-correct].
+  - It is a `Format_ARGB32` (non-premultiplied) image with no colour space
+    set: Krita's `convertToQImage` with the default profile, i.e. 8-bit
+    sRGB. For an RGBA/U8 document in an sRGB profile
+    (`sRGB-elle-V2-srgbtrc.icc`, `sRGB built-in`) its bytes equal
+    `Document.pixelData(x, y, w, h)` exactly, colour under zero alpha
+    included. Other depths, models and profiles are converted: U16 / F16 /
+    F32 (default profile `sRGB-elle-V2-g10.icc`, linear: 0x8000 grey reads
+    188), GRAYA, CMYKA and an 8-bit ClayRGB document all return 8-bit
+    sRGB [verified 2026-11-25, kritarunner, P3.4].
+  - A region past the canvas edge returns the size asked for [verified,
+    P3.4]; `render` clips to the canvas first.
 - `refreshProjection()` then `waitForDone()` before reading pixels after a
-  change.
+  change. After `openDocument` the projection is already current: read
+  with only `waitForDone()`, a 20-layer `.kra` and the 222-node Mao `.kra`
+  matched a refreshed projection byte for byte; refreshing Mao took
+  0.07 s [verified 2026-11-25, P3.4].
 - `clone()` copies the whole document, **keeping node UUIDs**. It is
   copy-on-write and nearly free: 1 ms for 256², 4 ms for a 5800×8400
   one-layer document, **10 ms for the 222-node Mao document**
@@ -189,6 +203,13 @@ are fast enough that per-pixel Python loops are never justified.
   the GUI should match [to verify]. `setBlendingMode` on a clone's node
   leaves the original's alone, also on a locked layer, and `exportImage`
   of the clone works.
+- **A clone's projection follows visibility changes made in the clone**
+  (D10): hiding an opaque layer in the clone takes its `projection()` from
+  alpha 255 to 0, with or without `refreshProjection()` (after
+  `waitForDone()`), while the original's projection, visibility and
+  `modified()` stay as they were. The QImage from a clone's `projection()`
+  stays valid after the clone is closed [verified 2026-11-25, P3.4,
+  `tests/krita/test_render.py`].
 - `resizeImage(x, y, w, h)` changes the canvas without scaling.
   `scaleImage` scales content. `crop` crops [stub].
 - `colorModel()` / `colorDepth()` / `colorProfile()` return `"RGBA"`,
@@ -404,6 +425,19 @@ are fast enough that per-pixel Python loops are never justified.
   (row pass by `lstrip`/`rstrip` of zero alpha bytes, column pass by
   OR-ing the rows as big ints) takes 30–90 ms; `count_alpha` 35 ms;
   `composite_over` (16-bit, in 4 MP strips) 0.7 s.
+- **`QImage.scaled(…, Qt.SmoothTransformation)` premultiplies at 8 bits**
+  for `Format_ARGB32` input (the result is `Format_ARGB32_Premultiplied`),
+  so colour is lost as alpha drops: halving a random test image, colours
+  were off from the exact 2×2 average by up to ~7 levels at alpha ≥ 32 and
+  ~170–180 at alpha 1–31. Converting to `Format_ARGB32_Premultiplied`
+  first changes nothing. Scaling a `Format_RGBA64_Premultiplied` (or
+  `Format_RGBA64`) copy stays within 0.5 levels at alpha ≥ 32 and 1.3
+  overall, alpha within 0.5. Neither bleeds alpha-0 colour into visible
+  pixels. At 5800×8400 the smooth scale to 0.25 takes 43 ms (8-bit) /
+  48 ms (16-bit), to 0.5 49 / 59 ms [verified 2026-11-25, P3.4, Qt 5.15.7].
+- Real art encodes much slower than the Q11 solid fill: a full Mao render
+  (11.3 MB PNG) took 4.0 s at the default level and 1.6 s at level 1
+  [verified 2026-11-25, P3.4].
 - `QImage.save(path, "PNG", quality)`: Qt 5.15 sets zlib level
   `(100 - quality) * 9 // 91`; quality -1 sets none (zlib default 6).
   A 2048² image: level 0 16.8 MB in 88 ms, default 50 KB in 157 ms,

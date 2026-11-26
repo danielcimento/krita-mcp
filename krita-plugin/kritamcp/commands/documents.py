@@ -1,5 +1,5 @@
 """Document commands (api-design § Documents): list, info, new canvas, open,
-save/export, close, and the get_canvas snapshot.
+save/export and close. (get_canvas, a render shortcut, is in ``render.py``.)
 
 Every save, export and open goes through ``fileio`` (batch mode, D5).
 Documents come from ``registry`` and are live wrappers valid for this
@@ -375,27 +375,3 @@ def cmd_close_document(params):
     # The registry drops the handle at its next lookup (it is no longer
     # in documents()); later calls with it are not_found.
     return {"doc": handle, "closed": True}
-
-
-# --- snapshot -----------------------------------------------------------
-
-@command("get_canvas", timeout=LONG_TIMEOUT)
-def cmd_get_canvas(params):
-    """Export a document to a PNG in the output dir and return the path.
-    (Becomes a ``render`` shortcut in P3.4.)"""
-    filename = params.get("filename", "canvas.png")
-    if not isinstance(filename, str) or not filename:
-        raise CommandError("bad_request", "Invalid filename")
-
-    handle, doc = registry.resolve_doc(params)
-
-    # Strip any directory components so the export stays in the output dir
-    filename = os.path.basename(filename)
-    if not filename.lower().endswith('.png'):
-        filename += '.png'
-
-    filepath = resolve_allowed_path(os.path.join(config.current().output_dir, filename))
-
-    fileio.export_image(doc, filepath)
-
-    return {"path": filepath, "doc": handle}

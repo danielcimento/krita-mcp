@@ -7,8 +7,9 @@ file; a second temp dir stays outside every root.
 
 The round trip (acceptance § 2, small variant, headless): export a
 synthetic document, rebuild it with create_layers(manifest=…) on a new
-transparent canvas, and compare the two documents' projections byte for
-byte and their layer trees.
+transparent canvas, render both (``render``, PNG files) and compare the
+renders byte for byte, colour under zero alpha included, and the layer
+trees.
 """
 
 import contextlib
@@ -124,6 +125,14 @@ class ExportLayersBase(EnvelopeAssertions, unittest.TestCase):
     def export(self, handle, name="out", **params):
         d = os.path.join(self.root, name)
         return self.assertOk(run("export_layers", doc=handle, dir=d, **params))
+
+    def render(self, handle, name):
+        """``handle``'s full-canvas render (the ``render`` command), as BGRA bytes."""
+        path = os.path.join(self.root, "renders", f"{name}.png")
+        result = self.assertOk(run("render", doc=handle, path=path))
+        data, w, h = pixels.load_png_bgra(result["path"])
+        self.assertEqual((w, h), (result["width"], result["height"]))
+        return data
 
     def check_manifest(self, result):
         """The written manifest equals the result's, and to_specs takes it."""
@@ -514,11 +523,10 @@ class RoundTripTest(ExportLayersBase):
                 created = self.assertOk(run("create_layers", doc=canvas["doc"],
                                             manifest=result["manifest"]))
                 self.assertEqual(created["warnings"], [])
-                doc2 = registry.lookup(canvas["doc"])
+                a = self.render(handle, "a")
+                b = self.render(canvas["doc"], "b")
                 settle(doc)
-                settle(doc2)
-                a = pixels.as_bytes(doc.pixelData(0, 0, W, H))
-                b = pixels.as_bytes(doc2.pixelData(0, 0, W, H))
+                self.assertEqual(a, pixels.as_bytes(doc.pixelData(0, 0, W, H)))  # the projection
                 tree_a = self._tree(handle)
                 tree_b = self._tree(canvas["doc"], drop=canvas["background_layer"])
                 return a, b, tree_a, tree_b, result
@@ -574,17 +582,16 @@ class RoundTripTest(ExportLayersBase):
                 handles.append(other["doc"])
                 self.assertOk(run("create_layers", doc=other["doc"],
                                   manifest=result["manifest"]))
-                doc2 = registry.lookup(other["doc"])
-                settle(doc2)
-                a = pixels.as_bytes(doc.pixelData(0, 0, 16, 12))
-                c = pixels.as_bytes(doc2.pixelData(0, 0, 16, 12))
+                a = self.render(canvas["doc"], f"margin-a-{crop}")
+                c = self.render(other["doc"], f"margin-b-{crop}")
                 results[crop] = (a == c, a[3::4] == c[3::4],
                                  a.count(bytes((30, 28, 130, 0))) > 0)
             finally:
                 for h in handles:
                     run("close_document", doc=h, discard=True)
         # (byte-identical, alpha identical, margin colour in the original's
-        # projection): Krita keeps the colour; only crop=false reproduces it.
+        # render): Krita's projection keeps the colour, and render writes it;
+        # only crop=false reproduces it.
         self.assertEqual(results, {True: (False, True, True), False: (True, True, True)})
 
     def test_masks_and_filter_layers_do_not_round_trip(self):

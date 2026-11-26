@@ -87,7 +87,8 @@ If using a virtual environment:
 | `krita_stroke` | Paint a stroke through a list of [x, y] points |
 | `krita_fill` | Fill a circular area at a point |
 | `krita_draw_shape` | Draw rectangle, ellipse, or line |
-| `krita_get_canvas` | Export canvas to PNG (for AI to see progress) |
+| `krita_get_canvas` | Save the whole canvas as a PNG in the output dir (for AI to see progress); a shortcut for a full-canvas `krita_render` |
+| `krita_render` | Render a document to a PNG without changing it: a `region` (`{x, y, w, h}`, clipped to the canvas), `scale` (0–4, smooth; `scale=0.25` for fast previews), `only` (these layers, their ancestors shown, a listed group's contents keeping their own visibility) and/or `hide` (done in a private copy of the document, so nothing in yours changes), a `background` colour underneath, `png_level`. Any colour space (converted to 8-bit sRGB); at scale 1 an 8-bit sRGB document's composited pixels exactly |
 | `krita_save` | Save in place (no path), save as `.kra` (the document moves there), or export to PNG/JPG/…; returns the resolved path and file size. `.psd` saves write Add layers as Linear Dodge (PSD would turn Add into Normal) and `.ora` saves write Linear Dodge as Add (the standard `svg:plus`): same pixels, done on a copy so the open document keeps its modes; `blend_conversions` lists the layers |
 | `krita_close_document` | Close a document by handle; refuses unsaved changes unless `discard=true` |
 | `krita_list_layers` | The layer tree as a flat list, top to bottom (Layers-docker order): id, name, path, type, parent, children, visibility, opacity, blend mode, locks, bounds (exact, may extend past the canvas). Optional `root` (a subtree), `depth`, `fields`; per-type `counts` |
@@ -120,7 +121,7 @@ is now replaced by per-command timeouts
 ([decisions.md D9](docs/f001_buildout/decisions.md)):
 
 - Each plugin command has a default timeout: 30 s for queries, 300 s for
-  file I/O (`get_canvas`, `save`, `open_file`, `new_canvas`, `clear`).
+  file I/O (`get_canvas`, `render`, `save`, `open_file`, `new_canvas`, `clear`).
 - Every tool except `krita_health` takes an optional `timeout_s` (up to
   900 s) to override it.
 - `server.py` reads the defaults from the plugin's `/info` and waits 15 s
