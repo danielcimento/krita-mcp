@@ -112,9 +112,20 @@ First headless run: passed, `create_layers` 8.0 s, whole test 15.6 s
 4. `krita_render(doc, a.png)` and `krita_render(doc2, b.png)`.
 
 **Pass:** `a.png` and `b.png` decode, with Pillow in the test venv, to
-identical RGBA arrays. `list_layers` of both match on name paths,
-types, visibility, opacity and blend modes. The small variant runs in the
-normal live suite. The Mao variant needs `KRITA_MCP_MAO_ORA`.
+identical RGBA arrays, **counting all fully transparent pixels as equal**
+(colour under alpha 0 is not compared). `list_layers` of both match on
+name paths, types, visibility, opacity and blend modes. The small variant
+runs in the normal live suite, and must also be byte-identical including
+colour under zero alpha. The Mao variant needs `KRITA_MCP_MAO_ORA`.
+
+*Why zero-alpha colour is excluded (decided 2026-11-25, P3.2):* some Mao
+source PNGs carry colour in fully transparent margins outside the layer's
+alpha bounds. Krita's `bounds()` ignores them, `export_layers(crop=true)`
+crops to alpha > 0, so they are dropped: the headless Mao round trip
+differed in 11 pixels, all with alpha 0 in both documents. They are
+invisible, and the rig renders premultiplied, so they can't show. This is
+the mitigation the plan's risk table named. `crop=false` round-trips them
+byte-identically if they ever matter.
 
 ### 3. Canvas cap · `test_canvas_cap`
 
@@ -162,6 +173,12 @@ Teardown restores the config file.
 skips until then). `R` is `<system temp>/kmcp-f001-*/R`, outside the
 output dir and every root, parent included; the relative `x.png` goes
 into the run's scratch dir.
+
+*P3.2 (2026-11-25):* the `krita_export_layers` row is
+`test_allowlist_export_layers` (written, not yet run live): it checks that
+`/tmp/out` is outside every root, expects `forbidden_path` with nothing
+created there, then exports into `R/out` (resolved path, manifest written)
+and gets `conflict` for the now non-empty directory.
 
 ### 6. Handles · `test_handles`
 

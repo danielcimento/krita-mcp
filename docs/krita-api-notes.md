@@ -326,6 +326,21 @@ are fast enough that per-pixel Python loops are never justified.
   inside the group, and **excludes** the group's own opacity [verified, Q8].
   So flattening a group bakes the clipping, but the group's opacity has to
   be carried over to the new layer separately.
+- **A pass-through group has no projection of its own**: its
+  `projectionPixelData()` reads fully transparent (Krita composites its
+  children straight into the parent). A **hidden** group's projection is
+  not kept up to date: a group hidden before it was ever rendered reads
+  empty, one hidden later keeps its old pixels [verified 2026-11-25, P3.2,
+  headless]. `export_layers` reads those from a `clone()` with the group
+  made isolated and visible.
+- `bounds()` ignores colour under zero alpha: a layer holding (10, 20, 30,
+  0) at (2, 3) and one opaque pixel at (7, 8) reports (7, 8, 1, 1), yet
+  `pixelData` still returns the colour at (2, 3) [verified 2026-11-25,
+  P3.2].
+- `createDocument`'s white `Background` layer reads **white past the
+  canvas** too (its default pixel is the fill), while its `bounds()` is the
+  canvas [verified 2026-11-25, P3.2]. Read layers over `bounds()`, not a
+  wider window.
 - Transforms [verified, Q6]:
   - `move(x, y)` sets the layer's **absolute offset** (`position()`), and
     pixels shift with it. Calling `move(10, 10)` twice moves once.
@@ -378,6 +393,13 @@ are fast enough that per-pixel Python loops are never justified.
   P3.1, Qt 5.15.7 / PyQt 5.15.11]. Premultiplying also zeroes the colour
   of alpha-0 pixels, so keep those from the original bytes.
   `pixels.composite_over` does both.
+- **The projection keeps colour under zero alpha.** Where a layer's data
+  has coloured alpha-0 pixels over an empty canvas (a PNG's transparent
+  margin written with `setPixelData`), `doc.pixelData()` returns that
+  colour with alpha 0 there; without them it returns (0, 0, 0, 0)
+  [verified 2026-11-25, P3.2: `tests/krita/test_export_layers.py`, and 11
+  such pixels in the Mao rebuild]. Byte comparisons of renders see it;
+  alpha and every visible pixel are unaffected.
 - At 5800×8400 [verified 2026-11-25, P3.1]: `pixels.opaque_bounds`
   (row pass by `lstrip`/`rstrip` of zero alpha bytes, column pass by
   OR-ing the rows as big ints) takes 30–90 ms; `count_alpha` 35 ms;

@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phases 1–2 done (Phase 2 exit: live acceptance 1, the Mao rebuild, passed 2026-11-25). Phase 3 in progress: P3.1, P3.3 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phases 1–2 done (Phase 2 exit: live acceptance 1, the Mao rebuild, passed 2026-11-25). Phase 3 in progress: P3.1–P3.3 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -231,10 +231,17 @@ the full `test_handles`, and `test_layer_tree`. The headless
   bytes), source-over compositing with `QPainter`, and a guard for
   8-bit RGBA documents. Headless tests (`tests/krita`) cover byte order
   and bit-exact round trip (mirroring Q5).
-- [ ] **P3.2 `export_layers`.** Per-layer PNGs, cropping to opaque bounds,
+- [x] **P3.2 `export_layers`.** Per-layer PNGs, cropping to opaque bounds,
   hidden layers, empty layers recorded with `png: null`, optional group
   projections, and the manifest. Always the `pixelData` → QImage path,
   never `Node.save`, which bakes opacity in and can open a dialog (D5).
+  *Done 2026-11-25* (api-design § `krita_export_layers`, as built). The
+  headless round trip of the synthetic document is byte-identical; the
+  Mao round trip matches in alpha and every visible pixel, but 11 alpha-0
+  pixels lose their colour (crop cuts the source PNGs' coloured
+  transparent margins). Pass-through and hidden group projections come
+  from a clone. Live `test_allowlist_export_layers` and
+  `test_layer_tree.py::test_export_layers` are written, not yet run.
 - [x] **P3.3 `import_png`.** `replace` / `over` / `clear_outside`, paint-layer
   check, and the changed rectangle in the result.
 - [ ] **P3.4 `render`.** Region, scale, `only` / `hide` resolution

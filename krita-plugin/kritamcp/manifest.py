@@ -28,6 +28,7 @@ Rules (api-design.md § Manifest schema, P2.4 note):
 
 import json
 import os
+import re
 import tempfile
 from typing import NamedTuple
 
@@ -231,6 +232,22 @@ def to_specs(manifest, manifest_dir):
             spec.pop("y", None)
         specs.append(spec)
     return Specs(specs, skipped, document)
+
+
+def slug(name, max_len=60):
+    """``name`` as a file-name part: lowercase ASCII letters and digits,
+    runs of anything else as one ``-``, at most ``max_len`` characters,
+    ``"layer"`` when nothing is left. The same as ``tools/ora_to_manifest.py``."""
+    s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    s = s[:max_len].rstrip("-")
+    return s or "layer"
+
+
+def png_name(position, name):
+    """``<position:04d>_<slug(name)>.png``: the PNG file name of the
+    manifest entry at 1-based ``position`` (the number in its key ``L0001``).
+    Unique within one manifest whatever the names."""
+    return f"{position:04d}_{slug(name)}.png"
 
 
 def build(document, layers):

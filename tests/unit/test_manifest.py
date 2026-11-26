@@ -332,3 +332,11 @@ def test_ora_to_manifest_output_loads(tmp_path):
         assert set(s) <= manifest.SPEC_FIELDS
         if "png" in s:
             assert os.path.isfile(s["png"]) and os.path.dirname(s["png"]) == str(out)
+
+
+def test_slug_and_png_name_match_ora_to_manifest():
+    for name in ("Hair Back Shadow Multiply", "Eye/L", "  ", "", "[ Guide Image ]",
+                 "Ünïcödé", "a" * 80 + "-b", "x--y__z", "L0001"):
+        assert manifest.slug(name) == otm.slug(name), name
+    assert manifest.png_name(2, "Hair Back Shadow Multiply") == "0002_hair-back-shadow-multiply.png"
+    assert manifest.png_name(12, "") == "0012_layer.png"

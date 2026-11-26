@@ -18,6 +18,7 @@ EXPECTED_REGISTRY = {
     "create_layers": (300, True),
     "delete_layers": (300, True),
     "draw_shape": (30, True),
+    "export_layers": (300, False),
     "fill": (30, True),
     "get_canvas": (300, False),
     "get_color_at": (30, False),

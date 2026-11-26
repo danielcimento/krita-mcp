@@ -34,6 +34,7 @@ EXPECTED_TOOLS = {
     "krita_move_layers",
     "krita_delete_layers",
     "krita_import_png",
+    "krita_export_layers",
 }
 
 # tool -> (kwargs, plugin action, canned plugin payload)
@@ -93,6 +94,11 @@ CASES = {
                           "mode": "replace", "clear_outside": False,
                           "changed": {"x": 0, "y": 0, "w": 4, "h": 3},
                           "bounds": {"x": 0, "y": 0, "w": 4, "h": 3}, "warnings": []}),
+    "krita_export_layers": ({"dir": "out"}, "export_layers",
+                            {"doc": "doc-1", "dir": "/out/out", "manifest": "/out/out/manifest.json",
+                             "count": 1, "layers": [{"key": "L0001", "type": "paint",
+                                                     "png": "0001_a.png"}],
+                             "skipped": [], "warnings": [], "bytes": 300}),
     "krita_list_layers": ({}, "list_layers",
                           {"root": "/", "layers": [{"id": "{1}", "name": "a", "children": []}],
                            "counts": {"paintlayer": 1, "total": 1}}),
@@ -295,7 +301,7 @@ DOC_TOOLS = {"krita_save", "krita_get_canvas", "krita_stroke", "krita_fill",
              "krita_draw_shape", "krita_clear", "krita_get_color_at",
              "krita_get_document_info", "krita_close_document", "krita_list_layers",
              "krita_create_layers", "krita_update_layers", "krita_move_layers",
-             "krita_delete_layers", "krita_import_png"}
+             "krita_delete_layers", "krita_import_png", "krita_export_layers"}
 # close_document has no active-document default.
 REQUIRED_DOC_TOOLS = {"krita_close_document"}
 OPTIONAL_DOC_TOOLS = DOC_TOOLS - REQUIRED_DOC_TOOLS
@@ -747,3 +753,61 @@ def test_import_png_summary(fake_call):
     assert server.krita_import_png("P", "a.png", mode="over", dry_run=True)["summary"] == (
         "Would import a.png into layer {1} (over), changing 4x4 at (0, 0) in doc-2 "
         "(dry run, nothing changed)")
+
+
+# P3.2: export_layers.
+
+def test_export_layers_params(fake_call):
+    server.krita_export_layers("out")
+    assert fake_call.calls[0] == ("export_layers", {"dir": "out"}, None)
+    server.krita_export_layers("~/x", ids=["Head", "{1}"], crop=False, include_hidden=False,
+                               include_groups=True, overwrite=True, png_level=1, doc="doc-2",
+                               timeout_s=600)
+    assert fake_call.calls[1] == ("export_layers", {
+        "dir": "~/x", "ids": ["Head", "{1}"], "crop": False, "include_hidden": False,
+        "include_groups": True, "overwrite": True, "png_level": 1, "doc": "doc-2"}, 600)
+    server.krita_export_layers("out", ids="all", png_level=0)
+    assert fake_call.calls[2][1] == {"dir": "out", "png_level": 0}
+
+
+def test_export_layers_validates_ids_and_png_level(fake_call):
+    for bad in (10, -1, True):
+        with pytest.raises(ToolError, match="^bad_request: png_level"):
+            server.krita_export_layers("out", png_level=bad)
+    with pytest.raises(ToolError, match="^bad_request: ids"):
+        server.krita_export_layers("out", ids="Head")
+    assert fake_call.calls == []
+
+
+def test_export_layers_schema_and_typos():
+    params = _tools()["krita_export_layers"].parameters
+    assert set(params["properties"]) == {"dir", "ids", "crop", "include_hidden", "include_groups",
+                                         "overwrite", "png_level", "doc", "timeout_s"}
+    assert params["required"] == ["dir"]
+    ids = params["properties"]["ids"]
+    assert ids["default"] == "all"
+    assert {"const": "all", "type": "string"} in ids["anyOf"]
+    level = params["properties"]["png_level"]["anyOf"][0]
+    assert (level["minimum"], level["maximum"]) == (0, 9)
+    description = " ".join(_tools()["krita_export_layers"].description.split())
+    for phrase in ("create order", "png null", '"projection": true', "krita_create_layers",
+                   "png_level=1", "8-bit RGBA"):
+        assert phrase in description, phrase
+    for args in ({"dir": "out", "png_level": 10}, {"dir": "out", "ids": "Head"},
+                 {"dir": "out", "ids": [1]}, {"ids": "all"}, {"dir": "out", "crop": "no"}):
+        assert _call_tool("krita_export_layers", args).is_error, args
+
+
+def test_export_layers_summary(fake_call):
+    fake_call.payload = {
+        "doc": "doc-2", "dir": "/out/x", "manifest": "/out/x/manifest.json", "count": 2,
+        "layers": [{"type": "group"}, {"type": "paint", "png": "a"},
+                   {"type": "paint", "png": None}, {"type": "paint", "projection": True,
+                                                    "png": "b"}],
+        "skipped": [{"id": "{9}", "path": "F", "type": "filterlayer",
+                     "reason": "unsupported_type"}],
+        "warnings": [{"code": "not_exported", "message": "1 layer(s) of other types"}],
+        "bytes": 4096}
+    assert server.krita_export_layers("x")["summary"] == (
+        "Exported 2 PNGs for 2 layers and 1 group (1 group projection) in doc-2 to /out/x, "
+        "4.0 KB, 1 skipped (1 warning: 1 layer(s) of other types)")

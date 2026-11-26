@@ -78,6 +78,13 @@ def to_krita_opacity(value):
     return int(round(value * 255))
 
 
+def from_krita_opacity(value):
+    """Krita's 0–255 → 0.0–1.0, rounded to 4 decimals (``list_layers`` and
+    ``export_layers``). ``to_krita_opacity`` gives ``value`` back for every
+    0–255 value: the rounding error is at most 0.00005, i.e. 0.013 levels."""
+    return round(value / 255, 4)
+
+
 def check(values, node_type=None):
     """Validate the ``PROPS`` keys present in ``values``; return them
     normalized, in ``PROPS`` order. ``node_type``: the layer's Krita type

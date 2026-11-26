@@ -1,4 +1,5 @@
-"""Acceptance test 1 (Mao rebuild), headless (P2.4).
+"""Acceptance tests 1 (Mao rebuild, P2.4) and 2 (round trip, Mao variant,
+P3.2), headless.
 
 Skipped unless ``KRITA_MCP_MAO_ORA`` names the Mao ``.ora``
 (acceptance.md § Fixtures). kritarunner is started by ``make test-krita``
@@ -23,7 +24,7 @@ import unittest
 from PyQt5.QtGui import QImage
 
 from helpers import temp_config
-from kritamcp import registry
+from kritamcp import pixels, registry
 from kritamcp.errors import CommandError
 from test_dispatch import EnvelopeAssertions, run
 
@@ -61,6 +62,57 @@ def opaque_bounds(path):
     if top is None:
         return None
     return left, top, right - left, bottom - top + 1
+
+
+def _describe_diff(a, b, w, h):
+    """Where two BGRA buffers differ: the differing rows and columns, the
+    differing pixel count, how many of those have alpha 0 in both, and a
+    few samples. Row-wise ``bytes`` work; per-pixel loops only over
+    differing pixels of a few rows."""
+    stride = 4 * w
+    rows, cols, count, zero_both, samples = [], [w, -1], 0, 0, []
+    for y in range(h):
+        ra, rb = a[y * stride:(y + 1) * stride], b[y * stride:(y + 1) * stride]
+        if ra == rb:
+            continue
+        rows.append(y)
+        diff = (int.from_bytes(ra, "big") ^ int.from_bytes(rb, "big")).to_bytes(stride, "big")
+        first = (stride - len(diff.lstrip(b"\0"))) // 4
+        last = (len(diff.rstrip(b"\0")) - 1) // 4
+        cols = [min(cols[0], first), max(cols[1], last)]
+        for x in range(first, last + 1):
+            pa, pb = ra[4 * x:4 * x + 4], rb[4 * x:4 * x + 4]
+            if pa != pb:
+                count += 1
+                zero_both += pa[3] == 0 and pb[3] == 0
+                if len(samples) < 8:
+                    samples.append(((x, y), tuple(pa), tuple(pb)))
+        if count > 2_000_000:
+            break
+    if not rows:
+        return "identical"
+    return (f"rows {rows[0]}..{rows[-1]} ({len(rows)} rows), cols {cols[0]}..{cols[1]}, "
+            f"{count} pixels differ, {zero_both} of them alpha 0 in both; samples {samples}")
+
+
+def _zero_alpha0_colour(row):
+    """``row`` (BGRA bytes) with the colour of every alpha-0 pixel zeroed."""
+    keep = row[3::4].translate(bytes([0] + [0xFF] * 255))
+    mask = bytearray(len(row))
+    for c in range(4):
+        mask[c::4] = keep
+    return (int.from_bytes(row, "big") & int.from_bytes(mask, "big")).to_bytes(len(row), "big")
+
+
+def _same_but_alpha0_colour(a, b, w, h):
+    """True if BGRA buffers ``a`` and ``b`` differ at most in the colour
+    bytes of pixels whose alpha is 0 in both. Row-wise ``bytes`` work."""
+    stride = 4 * w
+    for y in range(h):
+        ra, rb = a[y * stride:(y + 1) * stride], b[y * stride:(y + 1) * stride]
+        if ra != rb and _zero_alpha0_colour(ra) != _zero_alpha0_colour(rb):
+            return False
+    return True
 
 
 def _log(msg):
@@ -156,6 +208,56 @@ class MaoRebuildTest(EnvelopeAssertions, unittest.TestCase):
                          collections.Counter({"paintlayer": 184, "grouplayer": 38}))
         self.assertEqual(collections.Counter(l["path"] for l in again),
                          collections.Counter(e["path"] for e in entries))
+        self._round_trip(tmp, reopened["doc"], handles)
+
+    def _round_trip(self, tmp, handle, handles):
+        """Acceptance § 2 (Mao variant), headless: export the rebuilt
+        document, rebuild that export on a third canvas, and compare the
+        two full-canvas projections byte for byte."""
+        export_dir = os.path.join(tmp, "export")
+        envelope = run("export_layers", doc=handle, dir=export_dir, png_level=1)
+        exported = self.assertOk(envelope)
+        _log(f"export_layers elapsed_ms={envelope['elapsed_ms']} count={exported['count']} "
+             f"bytes={exported['bytes']}")
+        self.assertEqual((exported["skipped"], exported["warnings"]), ([], []))
+        self.assertEqual(exported["count"], 184)  # every paint layer has pixels; Background none
+
+        canvas = self.assertOk(run("new_canvas", width=WIDTH, height=HEIGHT,
+                                   background="transparent", name="kmcp-mao-3"))
+        handles.append(canvas["doc"])
+        envelope = run("create_layers", doc=canvas["doc"], manifest=exported["manifest"])
+        rebuilt = self.assertOk(envelope)
+        _log(f"create_layers from export elapsed_ms={envelope['elapsed_ms']}")
+        self.assertEqual(rebuilt["counts"], {"grouplayer": 38, "paintlayer": 185, "total": 223})
+
+        fields = ("path", "type", "visible", "opacity", "blend_mode", "inherit_alpha",
+                  "alpha_locked", "locked", "pass_through", "bounds")
+
+        def tree(h, drop=None):
+            listed = self.assertOk(run("list_layers", doc=h))["layers"]
+            return [tuple(l[k] for k in fields) for l in listed if l["id"] != drop]
+
+        self.assertEqual(tree(canvas["doc"], drop=canvas["background_layer"]), tree(handle))
+
+        t = time.perf_counter()
+        for h in (handle, canvas["doc"]):  # open_file doesn't wait for the projection
+            registry.lookup(h).refreshProjection()
+            registry.lookup(h).waitForDone()
+        a = pixels.as_bytes(registry.lookup(handle).pixelData(0, 0, WIDTH, HEIGHT))
+        b = pixels.as_bytes(registry.lookup(canvas["doc"]).pixelData(0, 0, WIDTH, HEIGHT))
+        same = a == b
+        _log(f"projection compare {time.perf_counter() - t:.1f} s; byte-identical: {same}")
+        self.assertEqual(len(a), 4 * WIDTH * HEIGHT)
+        if not same:
+            _log("projection diff: " + _describe_diff(a, b, WIDTH, HEIGHT))
+        # Known difference (P3.2, 2026-11-25): some Mao PNGs (from the .ora)
+        # have coloured alpha-0 margins outside the layer's alpha bounds,
+        # and Krita's projection keeps such colour at fully transparent
+        # pixels (11 pixels in rows 4728-5151; e.g. x=1524, Thumb R's 1-px
+        # margin). export_layers crops to alpha > 0, so the rebuild has
+        # (0, 0, 0, 0) there. Every pixel with alpha > 0, and alpha everywhere, must match.
+        self.assertTrue(_same_but_alpha0_colour(a, b, WIDTH, HEIGHT),
+                        "the rebuilt Mao renders differently from the exported one")
 
     def _layers(self, handle, background):
         """list_layers of ``handle`` without new_canvas's Background layer

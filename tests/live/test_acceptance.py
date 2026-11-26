@@ -2,7 +2,7 @@
 Krita through server.py's tools. Run with KRITA_MCP_LIVE=1.
 
 Covered so far: 1 (Mao rebuild; also needs KRITA_MCP_MAO_ORA), 3 (canvas
-cap), 5 (allowlist) and 6 (handles).
+cap), 5 (allowlist, export_layers row included) and 6 (handles).
 """
 
 import collections
@@ -231,10 +231,30 @@ def test_allowlist(call, repo_root, config_override, docs_to_close, scratch):
     assert call.health()["allowed_dirs"] == roots_before
 
 
-def test_allowlist_export_layers():
+def test_allowlist_export_layers(call, repo_root, config_override, docs_to_close):
     # acceptance.md § 5, row `krita_export_layers(doc, dir="R/escape/out")`
-    # -> forbidden_path. TODO(P3.2): krita_export_layers doesn't exist yet.
-    pytest.skip("krita_export_layers lands in P3.2")
+    # -> forbidden_path (R/escape -> /tmp; the symlink is resolved).
+    r = repo_root
+    r_real = os.path.realpath(r)
+    escape_out = os.path.realpath(os.path.join(r, "escape", "out"))
+    for root in call.health()["allowed_dirs"]:  # precondition: /tmp/out is outside every root
+        assert not _inside(escape_out, root), root
+    dirs = list(config_override.original.get("allowed_dirs", []))
+    config_override.write({**config_override.original, "allowed_dirs": dirs + [r]})
+    assert r_real in call.health()["allowed_dirs"]
+    doc = call("new_canvas", **SMALL, name="f001-allowlist-export")["doc"]
+    docs_to_close.append(doc)
+
+    existed = os.path.exists(escape_out)
+    call.error("forbidden_path", "export_layers", doc=doc, dir=os.path.join(r, "escape", "out"))
+    assert os.path.exists(escape_out) == existed  # nothing created outside the roots
+
+    # Inside R it works, and the directory must then be empty.
+    out = call("export_layers", doc=doc, dir=os.path.join(r, "out"))
+    assert out["dir"] == os.path.join(r_real, "out")
+    assert os.path.isfile(out["manifest"])
+    call.error("conflict", "export_layers", doc=doc, dir=os.path.join(r, "out"))
+    config_override.restore()
 
 
 # --- 6. Handles ---------------------------------------------------------------

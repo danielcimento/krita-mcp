@@ -110,3 +110,12 @@ def test_apply_without_lock_then_lock():
     node = FakeNode()
     layerprops.apply_locked(node, {"visible": True})
     assert node.calls == []
+
+
+def test_opacity_round_trips_every_krita_value():
+    for v in range(256):
+        o = layerprops.from_krita_opacity(v)
+        assert 0.0 <= o <= 1.0
+        assert layerprops.to_krita_opacity(o) == v, v
+    assert (layerprops.from_krita_opacity(0), layerprops.from_krita_opacity(255)) == (0.0, 1.0)
+    assert layerprops.from_krita_opacity(128) == 0.502

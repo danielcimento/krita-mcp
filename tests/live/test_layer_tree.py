@@ -1,7 +1,11 @@
 """Live smoke test of the layer-tree tools (P2.5), against the GUI Krita
 through server.py's tools: create, list, update, move, delete on a small
-canvas. Run with KRITA_MCP_LIVE=1; the canvas is closed via docs_to_close.
+canvas; and export_layers. Run with KRITA_MCP_LIVE=1; the canvases are
+closed via docs_to_close.
 """
+
+import json
+import os
 
 
 def _tree(call, doc):
@@ -64,3 +68,49 @@ def test_create_list_update_move_delete(call, docs_to_close):
     assert top == ["X", "A", "Background"]
     call.error("bad_request", "delete_layers", doc=doc, ids=["/"])
     call.error("not_found", "delete_layers", doc=doc, ids=["No Such Layer"])
+
+
+def test_export_layers(call, docs_to_close, scratch):
+    """export_layers (P3.2): PNGs and a manifest that create_layers rebuilds."""
+    from PIL import Image
+
+    work, _ = scratch
+    src = os.path.join(work, "export-src.png")
+    image = Image.new("RGBA", (10, 8), (0, 0, 0, 0))
+    for x in range(2, 7):
+        for y in range(1, 5):
+            image.putpixel((x, y), (200, 40, 10, 128 + x))
+    image.save(src)
+
+    doc = call("new_canvas", width=32, height=32, background="transparent",
+               name="f001-export")["doc"]
+    docs_to_close.append(doc)
+    call("create_layers", doc=doc, specs=[
+        {"key": "g", "name": "G", "type": "group", "pass_through": True},
+        {"name": "Ink", "parent": "$g", "png": src, "x": 5, "y": 6, "blend_mode": "multiply",
+         "opacity": 0.5},
+        {"name": "Spare", "parent": "$g"}])
+
+    out = call("export_layers", doc=doc, dir=os.path.join(work, "export"), png_level=1)
+    assert "Exported 1 PNG" in out["summary"]
+    by_path = {e["path"]: e for e in out["layers"]}
+    assert [e["path"] for e in out["layers"]] == ["Background", "G", "G/Ink", "G/Spare"]
+    ink = by_path["G/Ink"]
+    assert (ink["x"], ink["y"], ink["w"], ink["h"]) == (7, 7, 5, 4)  # cropped to alpha > 0
+    assert (ink["blend_mode"], round(ink["opacity"] * 255)) == ("multiply", 128)
+    assert by_path["G"]["pass_through"] is True and by_path["G/Spare"]["png"] is None
+    with Image.open(os.path.join(out["dir"], ink["png"])) as im:
+        assert im.convert("RGBA").tobytes() == image.crop((2, 1, 7, 5)).tobytes()
+    with open(out["manifest"], encoding="utf-8") as f:
+        assert json.load(f)["layers"] == out["layers"]
+    call.error("conflict", "export_layers", doc=doc, dir=out["dir"])
+
+    doc2 = call("new_canvas", width=32, height=32, background="transparent",
+                name="f001-export-2")["doc"]
+    docs_to_close.append(doc2)
+    rebuilt = call("create_layers", doc=doc2, manifest=out["manifest"])
+    assert rebuilt["counts"]["total"] == 4
+    keep = ("path", "type", "visible", "opacity", "blend_mode", "pass_through", "bounds")
+    tree = [{k: l[k] for k in keep} for l in call("list_layers", doc=doc)["layers"]]
+    tree2 = [{k: l[k] for k in keep} for l in call("list_layers", doc=doc2)["layers"]]
+    assert tree2[:-1] == tree  # doc2 also has its own (empty) Background at the bottom

@@ -13,7 +13,7 @@ Every tool returns a dict: the plugin's payload fields, a one-line
 import os
 import sys
 import time
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional, Union
 
 # server.py is the entry point client configs point at; make the
 # krita_mcp_server package next to it importable from any cwd.
@@ -23,6 +23,7 @@ if _HERE not in sys.path:
 
 from fastmcp import FastMCP  # noqa: E402
 from fastmcp.exceptions import ToolError  # noqa: E402
+from pydantic import Field  # noqa: E402
 
 from krita_mcp_server import client  # noqa: E402
 from krita_mcp_server.models import LayerChange, LayerSpec, Move  # noqa: E402
@@ -740,6 +741,107 @@ def krita_import_png(id: str, png: str, x: int = 0, y: int = 0,
     if dry:
         summary += " (dry run, nothing changed)"
     return _done(result, summary)
+
+
+@mcp.tool()
+def krita_export_layers(dir: str, ids: Union[Literal["all"], list[str]] = "all",
+                        crop: bool = True, include_hidden: bool = True,
+                        include_groups: bool = False, overwrite: bool = False,
+                        png_level: Annotated[Optional[int], Field(ge=0, le=9)] = None,
+                        doc: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
+    """
+    Export layers as PNGs plus a manifest.json into a directory, without
+    changing the document. The manifest feeds krita_create_layers
+    (manifest=<dir>/manifest.json) on another canvas to rebuild the same
+    layer tree: same names, nesting, order, visibility, opacity, blend
+    modes, locks, clipping (inherit_alpha), pass-through and pixels. The
+    document must be 8-bit RGBA.
+
+    - One PNG per paint layer, the layer's own pixels bit for bit (its
+      opacity, blend mode and visibility are in the manifest, not baked
+      in). With crop (default) each PNG is cut to the layer's opaque bounds
+      (alpha > 0), which may lie partly off the canvas, and the manifest
+      gives its x, y; with crop=false each PNG is canvas-sized at (0, 0),
+      and pixels past the canvas edge are lost (warning "off_canvas").
+    - Every group gets a manifest entry (no PNG). A paint layer with no
+      pixels gets an entry with png null, so the structure round-trips.
+    - Order: the manifest lists layers in create order (depth-first, each
+      parent before its children, siblings bottom to top), with keys
+      L0001, L0002, ... and stack_index 0, 1, ... in that order (0 draws
+      first); PNG files are named <number>_<name>.png after the key
+      number, unique even when names repeat.
+    - Hidden layers are exported (with visible false) unless
+      include_hidden=false, which leaves them out, a hidden group with its
+      contents (listed in skipped).
+    - include_groups=true also writes each group's projection (the group
+      composited on its own, as if isolated and visible, without its own
+      opacity) as a separate entry marked "projection": true, after the
+      group's contents; krita_create_layers skips those entries.
+    - ids: "all" (default) or a list of layer refs. A listed group brings
+      its whole subtree; the groups around a listed layer are written as
+      group entries (no projection) so the nesting is kept.
+    - Masks, and filter, fill, clone, vector and file layers, are not
+      exported (skipped, with warnings "masks_not_applied" /
+      "not_exported": a rebuild won't render the same). A paint layer
+      with masks is exported without the masks applied.
+    - dir must be inside an allowed directory; it is created if missing
+      and must be empty unless overwrite=true.
+
+    Cost is mostly PNG encoding (about 1.7 s per full-canvas image at
+    5800x8400); png_level=1 is much faster than the default for a few
+    percent more bytes.
+
+    Returns {doc, dir, manifest (path), count (PNGs written), layers (the
+    manifest entries), skipped ([{id, path, type, reason}]), warnings
+    ([{code, message, ...}]), bytes (total written)}.
+
+    Args:
+        dir: Output directory (absolute, "~"-prefixed, or relative to the
+             output dir), inside an allowed directory
+        ids: "all", or a list of layer refs (UUIDs, name paths such as
+             "Head/Eyes", or unique names)
+        crop: Cut each PNG to the layer's opaque bounds (default true)
+        include_hidden: Export hidden layers too (default true)
+        include_groups: Also write group projections (default false)
+        overwrite: Write into a non-empty directory (default false)
+        png_level: zlib level 0 (fastest, biggest) to 9 (smallest), or
+                   null for the default (6)
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
+    """
+    if isinstance(ids, str):
+        if ids != "all":
+            raise ToolError(f'bad_request: ids must be "all" or a list of layer refs, got {ids!r}')
+        ids_param = None
+    else:
+        ids_param = list(ids)
+    if png_level is not None and (isinstance(png_level, bool) or not isinstance(png_level, int)
+                                  or not 0 <= png_level <= 9):
+        raise ToolError(f"bad_request: png_level must be a whole number from 0 to 9, "
+                        f"got {png_level!r}")
+    params = _with({"dir": dir}, ids=ids_param, crop=None if crop else False,
+                   include_hidden=None if include_hidden else False,
+                   include_groups=include_groups or None, overwrite=overwrite or None,
+                   png_level=png_level, doc=doc)
+    result = client.call("export_layers", params, timeout_s=timeout_s)
+    layers = result.get("layers") or []
+    groups = sum(1 for e in layers if e.get("type") == "group")
+    projections = sum(1 for e in layers if e.get("projection"))
+    count = result.get("count", 0)
+    what = (f"{_count(count, 'PNG')} for {_count(len(layers) - groups - projections, 'layer')}"
+            f" and {_count(groups, 'group')}")
+    if projections:
+        what += f" ({_count(projections, 'group projection')})"
+    summary = (f"Exported {what}" + (_in(result) or f" from {doc or 'the active document'}")
+               + f" to {result.get('dir') or dir}")
+    if result.get("bytes") is not None:
+        summary += f", {_size(result['bytes'])}"
+    skipped = result.get("skipped") or []
+    if skipped:
+        summary += f", {len(skipped)} skipped"
+    return _done(result, summary + _warnings_note(result.get("warnings")))
 
 
 @mcp.tool()

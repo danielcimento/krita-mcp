@@ -6,7 +6,7 @@ kept across commands: re-find nodes by id (``node_by_id``) each command.
 
 from PyQt5.QtCore import QUuid
 
-from . import refs
+from . import layerprops, refs
 from .errors import CommandError
 
 # Layer-object keys, in output order (api-design § Layer object).
@@ -120,7 +120,7 @@ _GETTERS = {
                                         else index.parent(nid)),
     "index": lambda node, nid, index: node.index(),
     "visible": lambda node, nid, index: bool(node.visible()),
-    "opacity": lambda node, nid, index: round(node.opacity() / 255, 4),
+    "opacity": lambda node, nid, index: layerprops.from_krita_opacity(node.opacity()),
     "blend_mode": lambda node, nid, index: node.blendingMode(),
     "locked": lambda node, nid, index: bool(node.locked()),
     "alpha_locked": lambda node, nid, index: bool(node.alphaLocked()),

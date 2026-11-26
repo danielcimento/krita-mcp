@@ -501,7 +501,7 @@ document.
 
 ## Pixels
 
-### `krita_export_layers(doc?, ids="all", dir, crop=true, include_hidden=true, include_groups=false, overwrite=false)` · P0
+### `krita_export_layers(doc?, ids="all", dir, crop=true, include_hidden=true, include_groups=false, overwrite=false, png_level=null)` · P0
 
 - Writes one PNG per paint layer. File names are
   `<index:04d>_<slug(name)>.png`, unique even with duplicate names. With
@@ -515,6 +515,109 @@ document.
   still round-trips.
 - Returns `dir`, `manifest` (path), `count`, `skipped` (with reasons) and
   `bytes`.
+
+*As built (P3.2, 2026-11-25; `kritamcp/commands/pixels.py`, 300 s,
+non-mutating):*
+
+- **Validation**, before anything is written: `dir` is required and goes
+  through `resolve_output_dir(dir, overwrite=…)` last (D7: inside a root,
+  created if missing, empty unless `overwrite`; `forbidden_path`,
+  `conflict` for a file or a non-empty directory); the document must be
+  RGBA/U8 (`conflict`, D5); `crop`, `include_hidden`, `include_groups`,
+  `overwrite` are booleans (`null` = default); `png_level` is 0–9 or
+  `null` (`pixels.save_png(level=)`, as `render`); `ids` is `"all"` or a
+  non-empty list of refs (`resolve_many`: `not_found` / `ambiguous` with
+  `details.index`; `"/"` in the list means everything).
+- **Subset rule.** A listed node brings its whole subtree. Every ancestor
+  group of a listed node is written too, as a plain group entry (no
+  projection, none of its other children), so `parent` links and nesting
+  survive and the manifest still rebuilds. Only listed groups and groups
+  inside them get projections.
+- **Order and keys.** One `nodes.tree` walk; entries in create order
+  (depth-first, siblings bottom to top, a parent before its children).
+  The entry at 1-based position `n` has key `L<n:04d>`, PNG
+  `<n:04d>_<slug(name)>.png` (`manifest.slug`, the same as
+  `tools/ora_to_manifest.py`; unique since `n` is) and `stack_index`
+  `n - 1`. So `stack_index` is the entry's position in `layers`, as in
+  `ora_to_manifest`: 0 draws first; a group's entry comes before its
+  contents and its projection entry right after them. `parent` is `"/"` or
+  `"$<key>"`; `path` is escaped like refs (`Eye\/L`).
+- **Entries.** Paint: `key, id, name, path, type: "paint", parent, visible,
+  opacity, blend_mode, inherit_alpha, alpha_locked, locked, png, x, y, w,
+  h, stack_index`. Group: `key, id, name, path, type: "group", parent,
+  visible, opacity, blend_mode, inherit_alpha, locked, pass_through,
+  stack_index`. `opacity` is `round(v / 255, 4)` (`layerprops.from_krita_opacity`,
+  as `list_layers`), and `round(opacity * 255)` gives Krita's value back
+  for all 256 values. `blend_mode` is as stored (no D17 conversion here).
+- **Paint pixels.** `pixelData(bounds)` (exact bounds, unclipped), then
+  `opaque_bounds` (alpha ≥ 1) of that window. With `crop`, the PNG is that
+  rectangle, possibly off the canvas, written at its offset; without, a
+  `pixelData(0, 0, W, H)` canvas-sized PNG at (0, 0), and a layer whose
+  opaque bounds reach past the canvas is listed in warning `off_canvas`
+  (those pixels are lost). No pixel with alpha > 0: `png: null` and no
+  `x/y/w/h` (also with `crop=false`). The PNG holds the layer's own
+  pixels, bit for bit (opacity not baked in, unlike `Node.save`, D5).
+- **Hidden.** By default hidden nodes are exported with `visible: false`.
+  With `include_hidden=false` a hidden node is left out (`skipped`,
+  reason `hidden`) and everything under it too (reason `inside_hidden`).
+- **Group projections** (`include_groups`): a separate entry after the
+  group's contents, `projection: true`, `type: "paint"`, its own key,
+  `parent` the group's parent, and the group's `id`, `name`, `path`,
+  `visible`, `opacity`, `blend_mode`. `create_layers` skips it, and
+  nothing names it as `parent` or `above`. The PNG is the group composited
+  on its own: `projectionPixelData`, which includes clipping inside the
+  group and excludes the group's own opacity. Krita keeps no projection
+  of its own for a **pass-through** group (it reads empty) or a current
+  one for a **hidden** group or anything inside one (empty or stale), so
+  those are read from a `clone()` (D10; closed in `finally`, the user's
+  document untouched) in which they are made isolated and visible (and
+  their ancestors visible): one clone and one refresh per nesting depth,
+  since groups at one depth are disjoint subtrees. A projection with no
+  alpha > 0 has `png: null`. So for a pass-through group the PNG is its
+  isolated composite, not its effect in the document.
+- **Not exported**, listed in `skipped` as `{id, path, type, reason}`:
+  masks (reason `mask`; `transparencymask`, `filtermask`,
+  `transformmask`, `colorizemask`, `selectionmask`) and filter, fill,
+  clone, vector and file layers (reason `unsupported_type`). A paint
+  layer with masks is still exported, its own pixels without the masks
+  applied. Warnings: `masks_not_applied` (exported layers with a visible
+  mask) and `not_exported` (other layer types), both with `paths`: a
+  rebuild will not render the same.
+- **Other warnings.** `not_recreatable` (`layers: [{path, problem}]`): an
+  entry `create_layers` would refuse as it is, a name it rejects
+  (empty, control characters, over 255) or a blend mode not in
+  `blendmodes.py` (Krita stores any string). `too_many_layers`: more than
+  2000 creatable entries (`create_layers`' cap).
+- **Writing.** Each PNG via `pixels.save_png` (temp file + rename);
+  `manifest.json` last via `manifest.write`, with `document: {name,
+  width, height, resolution, color_model, color_depth, color_profile}`.
+  On a failure the PNGs this call created are removed (files it replaced
+  under `overwrite` stay replaced) and no manifest is written.
+- **Result.** `{doc, dir, manifest (path), count (PNGs written), layers
+  (the manifest entries), skipped, warnings, bytes (PNGs + manifest)}`.
+- **Round trip** (acceptance § 2, headless, `tests/krita/test_export_layers.py`):
+  a synthetic document (nested groups, duplicate names, a hidden group, an
+  empty layer, partial alpha, an off-origin layer, one past the canvas,
+  multiply / add / linear_dodge / screen, inherit_alpha, a pass-through
+  group, opacity 128 and 200, locks) exported and rebuilt on a new
+  transparent canvas renders **byte-identical** (`doc.pixelData` of the
+  canvas), with matching trees (paths, types, visibility, opacity, blend
+  modes, locks, clipping, pass-through, bounds); also with `crop=false`
+  plus `include_groups`. A transparency mask or a filter layer makes it
+  differ, as warned.
+- **Colour under zero alpha** is not always carried over. Krita's
+  projection keeps colour at fully transparent pixels from layers whose
+  data has coloured alpha-0 pixels (e.g. a PNG's transparent margin);
+  `crop` cuts to alpha > 0, so the rebuild has (0, 0, 0, 0) there. Every
+  pixel with alpha > 0, and alpha everywhere, still matches. `crop=false`
+  keeps those bytes within the canvas (headless test).
+  **Mao** (`tests/krita/test_mao_headless.py`, 2026-11-25): export (crop,
+  `png_level` 1) of the rebuilt Mao 5.6 s, 184 PNGs, 54.7 MB; Qt's
+  default level 13.2 s, 42.5 MB; with `include_groups` (38 pass-through
+  groups via clones) 10.2 s, 222 PNGs, 88.5 MB. Rebuilding the export:
+  same tree, bounds included; projections differ only in 11 alpha-0
+  pixels' colour (rows 4728–5151, e.g. Thumb R's coloured 1-px margin at
+  x = 1524).
 
 **Manifest schema (`version: 1`).**
 
