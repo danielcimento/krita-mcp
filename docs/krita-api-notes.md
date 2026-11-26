@@ -210,8 +210,23 @@ are fast enough that per-pixel Python loops are never justified.
   `modified()` stay as they were. The QImage from a clone's `projection()`
   stays valid after the clone is closed [verified 2026-11-25, P3.4,
   `tests/krita/test_render.py`].
-- `resizeImage(x, y, w, h)` changes the canvas without scaling.
-  `scaleImage` scales content. `crop` crops [stub].
+- `resizeImage(x, y, w, h)` changes the canvas without scaling. `x, y`
+  is the new canvas's top-left corner in **old** canvas coordinates:
+  `resizeImage(-10, -4, 52, 32)` on a 32x24 document adds 10 columns on
+  the left and 4 rows on the top, and every node's content moves by
+  (+10, +4) (`position()` too). Paint layers, layers in groups,
+  transparency masks and the global selection all move. It **crops
+  nothing**: after a shrink, pixels past the new edge are still in the
+  layers (`pixelData` there returns them, `bounds()` still includes
+  them), so resizing back with the opposite offset restores every layer's
+  pixels and bounds exactly. It returns `None`, works headless (no view,
+  no dialog) and doesn't set `modified()`. A `Background` layer from
+  `createDocument` is white everywhere (its default pixel), so it covers
+  the new area too; its `bounds()` read the new canvas after a resize with
+  an offset, refreshed (after a grow at offset (0, 0), read with only
+  `waitForDone()`, they still read the old canvas) [verified 2026-11-25, kritarunner, P6.1,
+  `tests/krita/test_canvas_diff.py`]. `scaleImage` scales content. `crop`
+  crops [stub].
 - `colorModel()` / `colorDepth()` / `colorProfile()` return `"RGBA"`,
   `"U8"`, `"sRGB-elle-V2-srgbtrc.icc"` [verified].
 

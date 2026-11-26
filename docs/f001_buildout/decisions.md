@@ -300,6 +300,11 @@ Settled in P5.1 (2026-11-25), `kritamcp/batch.py`, `commands/history.py`:
   layer and a `ReinsertNode` per removed layer; its multi-layer merge is
   computed in a `clone()`, so no temporary group ever enters the user's
   document.
+- *(P6.1, 2026-11-25)* `set_canvas_size` records one `ResizeCanvas`:
+  the reverse resize. Krita's `resizeImage` crops no layer (pixels past
+  the new edge are kept), so no pixel snapshot is needed and the undo is
+  exact. Older entries' rectangles stay valid because the stack undoes
+  the resize before them.
 - *(P5.4, 2026-11-25)* **Selections are not in the journal.**
   `krita_select` changes only the document's selection, which the journal
   doesn't track: `krita_undo` doesn't undo it (select again, or

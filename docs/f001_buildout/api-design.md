@@ -207,12 +207,55 @@ would be bad (missing: `bad_request`). The `conflict` has
 false is `krita_error`. Returns `doc` and `closed: true`; later calls
 with the handle are `not_found`.
 
-### `krita_set_canvas_size(doc, width, height, anchor="center")` · P2
+### `krita_set_canvas_size(doc?, width, height, anchor="center", dry_run?)` · P2
 
 `anchor` is one of `top-left`, `top`, `top-right`, `left`, `center`, `right`, `bottom-left`,
 `bottom`, `bottom-right`. Uses `resizeImage(x, y, w, h)` with the offset
 the anchor gives. Content is not scaled. The `summary` warns that a canvas
 resize breaks existing rigs (CONVENTIONS: *Canvas*).
+
+As built (P6.1, 2026-11-25; `commands/canvas.py`, the pure part in
+`canvasplan.py`):
+
+- **Checks**, before anything changes: strict keys (`doc`, `width`,
+  `height`, `anchor`, `dry_run`; an unknown one is `bad_request` with
+  `details.unknown`), `width` and `height` required (`details.param`) and
+  checked by `params.canvas_size` against the config limits (`too_large`
+  with `details.limit`: `max_canvas_dim` or `max_canvas_pixels`),
+  `anchor` (`bad_request`, `details: {param, valid}`), `dry_run`, then
+  `doc`.
+- **Offset**: where the old canvas's top-left corner lands on the new one;
+  every node's content moves by it. Per axis, with `d = new - old`: 0 for
+  a left / top anchor, `d` for right / bottom, `d // 2` (floor) for the
+  centre column / row. So with an odd difference the art sits half a
+  pixel left of (above) the exact centre, growing and shrinking alike:
+  10 -> 13 adds 1 column on the left and 2 on the right, 13 -> 10 removes
+  2 on the left and 1 on the right. Krita's call is
+  `resizeImage(-dx, -dy, width, height)` (the new canvas rectangle in old
+  coordinates, verified).
+- **Nothing is cropped**: pixels a shrink pushes past the edge stay in the
+  layers (verified), so a later grow or the undo brings them back. Masks
+  and the global selection move with the art (verified).
+- **Journal**: one entry, `set_canvas_size`, holding a `ResizeCanvas`
+  inverse: the reverse resize (opposite offset, old size), which restores
+  the size and every layer's bounds and pixels (past the canvas too) and
+  the projection exactly; applying it returns the forward resize (redo,
+  P5.1). It touches no layer ids (`undone.layers` is `[]`). Its check
+  refuses (`conflict`, the entry kept) when the canvas is no longer the
+  size the call left. Older entries stay valid: the journal is a stack, so
+  the resize is undone before them and their rectangles are back in the
+  coordinates they were recorded in. The selection is not journaled, but
+  it moves back with the reverse resize.
+- **Result**: `{doc, width_before, height_before, width, height, offset:
+  {x, y}, anchor, dry_run, changed, warnings}`. `warnings` always holds
+  `{code: "rig_breaking", message}`, also for a dry run and a no-op.
+  The same size is a no-op: `changed: false`, offset (0, 0), no journal
+  entry. With `dry_run` nothing changes and `offset` is the planned one.
+  Mutating, default timeout 300 s. Headless, `modified()` stays as it was
+  (Krita's resize doesn't set it).
+- **Server** (`krita_set_canvas_size`): `width`, `height` ≥ 1, `anchor` a
+  `Literal` of the nine. The summary gives both sizes, the anchor, the
+  offset and "this breaks any existing rig"; other warnings are appended.
 
 ---
 
@@ -1585,6 +1628,68 @@ Returns `added`, `removed`, `renamed`, `moved` (parent or index changed),
 (`{id, changed_count, bounds}` from comparing `pixelData` over the union
 of both bounds). The two documents must be the same size for pixel diffs.
 
+As built (P6.2, 2026-11-25; `commands/diff.py`, the pure part in
+`diffplan.py`):
+
+- **Params**: strict keys `doc_a`, `doc_b` (both required, doc refs as
+  `doc`: a handle or an open document's path; missing is `bad_request`
+  with `details.param`), `pixels` (bool). The same document twice is
+  `bad_request` (`details: {param: "doc_b", doc}`). Non-mutating, default
+  timeout 300 s.
+- **Nodes** are every node of `nodes.walk` (the root-level selection mask
+  left out; masks included), as their layer objects. `index` is
+  recomputed without the selection mask: the position from the bottom
+  among the node's siblings.
+- **Matching**, three passes, each among the nodes still unmatched:
+  `uuid` (the same id in both: `.kra` round trips and `clone()` keep ids,
+  D4), then `path` (the same name path, when exactly one unmatched node in
+  each document has it; a repeated path is skipped), then `name` (the same
+  name, when it is unique in each *whole* document). Every pair entry
+  carries `match`.
+- **Pair entries** start with `{id_a, id_b, path (in b), path_a (only
+  when it differs), match}` and come in `b`'s stacking order; `added` /
+  `removed` are `{id, name, path, type}` in their document's order.
+  - `renamed`: names differ, `name: [a, b]`.
+  - `moved`: parent or index differs; `parent: [id_a, id_b]` (null at the
+    top level), `index: [a, b]`, `parent_changed`. Parents are the same
+    when both are top level or the parent in `a` is matched to the parent
+    in `b` (a rebuilt group with a new id still counts as the same). An
+    add or delete below a sibling shifts its index, so it is listed too.
+  - `changed`: `fields: {prop: [a, b]}` over `type`, `visible`,
+    `opacity`, `blend_mode`, `locked`, `alpha_locked`, `inherit_alpha`,
+    `pass_through`, `has_layer_style` (the layer object's values).
+- **Pixels** (`pixels=true`, both documents 8-bit RGBA and the same size;
+  otherwise `pixel_changes` and `projection_changed` are null and
+  `warnings` has `size_mismatch` or `not_rgba8`, not an error; with
+  `pixels=false` they are null with no warning): every matched pair that
+  is a paint layer in both, with pixels in at least one, is read with
+  `pixelData` over the union of both bounds (outside a layer's data that
+  is its default pixel: transparent, or the fill of a new document's
+  `Background`), in strips of about 4 MP. `pixel_changes` lists
+  `{…pair head, changed_count, bounds}` for those that differ. Pixels with
+  alpha 0 in both count as equal whatever their colour (invisible, and
+  PNG round trips drop it). `projection_changed` compares the two
+  documents' `pixelData` over the canvas the same way.
+- **Pixel technique** (O(rows) Python steps, no per-pixel loop): equal
+  rows (and strips) are skipped with a bytes compare; for a differing row
+  the two rows are XORed as big ints, `x |= x >> 8; x |= x >> 16` folds
+  each pixel's four bytes into its low byte, `[0::4]` keeps one byte per
+  pixel; the OR of both alpha rows marks pixels visible in either; both go
+  through a 0 / 0xFF translate table and are ANDed as big ints;
+  `count(0)`, `lstrip` / `rstrip` give the row's count and first / last
+  pixel.
+- **Result**: `{doc_a, doc_b, name_a, name_b, added, removed, renamed,
+  moved, changed, pixel_changes, projection_changed, document_changes
+  ({width | height | color_model | color_depth | color_profile |
+  resolution: [a, b]} for those that differ), counts: {added, removed,
+  renamed, moved, changed, pixel_changes (null when not compared),
+  matched: {uuid, path, name, total}}, warnings}`.
+- **Server** (`krita_diff_documents`): `pixels` sent only when false. The
+  summary, e.g. "doc-1 -> doc-2: 3 added, 1 removed, 2 changed, 5 layers
+  with pixel changes, projection changed (40 layers matched: 38 by uuid,
+  2 by path)", or "No differences between doc-1 and doc-2 (…)", then the
+  document changes and the warnings.
+
 ---
 
 ## Existing tools after the buildout
@@ -1599,6 +1704,6 @@ of both bounds). The two documents must be the same size for pixel diffs.
 | `krita_list_brushes` | Structured results only |
 | `krita_stroke`, `krita_fill`, `krita_draw_shape`, `krita_clear` | Accept `doc`, `layer`. `layer` defaults to the document's active node; anything but a paint layer (including an active group or mask) is `conflict` with `details: {doc, layer, type}`. Headless there is never an active node, so `layer` is required there (`not_found` otherwise). No view needed. Results include `doc` and `layer` (id). `clear` takes `"transparent"`, which zeroes the layer over the union of its bounds and the canvas; a color fills the canvas rect. Done in P1.6. Since P5.1 each call is one agent journal entry (a `RestorePixels` of the rectangle it writes), so `krita_undo` reverts it; the result gains `warnings: [{code: "not_undoable", nbytes}]` only when the snapshot is over the journal's caps |
 | `krita_get_color_at` | Accepts `doc`, `layer` (sample one layer instead of the composite): a paint layer gives its own pixel, a group its projection, other types `conflict`. `0 <= x < width`, `0 <= y < height` of the document, else `bad_request` naming the size. Results include `doc` and `layer` (id, or null for the composite). Done in P1.6 |
-| `krita_undo(doc?)` / `krita_redo(doc?)` | The agent journal (D6), done in P5.1: one call applies one journal entry, i.e. reverts (re-applies) one agent tool call: `create_layers`, `update_layers`, `move_layers`, `delete_layers`, `duplicate_layer` and `trim_layers` (P5.2, P5.3), `import_png`, `stroke`, `fill`, `draw_shape`, `clear`. Returns `{doc, undone \| redone: {label, layers: [ids touched]}, remaining: {undo, redo}, warnings}`. Empty stack: `conflict` ("nothing to undo in doc-N"). An entry whose layers are gone (deleted by hand, say) is `conflict` with nothing changed, and stays on the stack; a Krita failure midway is rolled forward again and keeps its code (`krita_error`), see D6. A new agent edit clears the redo stack. `warnings` has `not_redoable` / `not_undoable` when the reverse entry is over the caps. Mutating, default timeout 300 s |
+| `krita_undo(doc?)` / `krita_redo(doc?)` | The agent journal (D6), done in P5.1: one call applies one journal entry, i.e. reverts (re-applies) one agent tool call: `create_layers`, `update_layers`, `move_layers`, `delete_layers`, `duplicate_layer` and `trim_layers` (P5.2, P5.3), `set_canvas_size` (P6.1), `import_png`, `stroke`, `fill`, `draw_shape`, `clear`. Returns `{doc, undone \| redone: {label, layers: [ids touched]}, remaining: {undo, redo}, warnings}`. Empty stack: `conflict` ("nothing to undo in doc-N"). An entry whose layers are gone (deleted by hand, say) is `conflict` with nothing changed, and stays on the stack; a Krita failure midway is rolled forward again and keeps its code (`krita_error`), see D6. A new agent edit clears the redo stack. `warnings` has `not_redoable` / `not_undoable` when the reverse entry is over the caps. Mutating, default timeout 300 s |
 | `krita_journal(doc?)` | New in P5.1: the journal's stacks, read-only: `{doc, undo: [{label, layer_count, nbytes, disk_bytes, on_disk}], redo: [same], memory_bytes, disk_bytes, limits: {max_actions, max_bytes, max_disk_bytes}}`, the next entry to apply first |
 | `krita_ui_undo(doc?)` / `krita_ui_redo(doc?)` | New in P5.1: the old `edit_undo` / `edit_redo` action triggers on Krita's own undo stack, aimed at the doc's view: a `doc` that isn't the active document gets its view shown first; a document with no view is `conflict` (always so headless). Returns `{doc, action, activated_view, warnings: [{code: "partial_ui_undo", message}]}`, the D6 caveat that Krita's undo only partly covers agent edits |

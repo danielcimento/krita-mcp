@@ -339,6 +339,74 @@ def krita_close_document(doc: str, discard: bool = False,
                          + (" (unsaved changes, if any, discarded)" if discard else ""))
 
 
+CanvasAnchor = Literal["top-left", "top", "top-right", "left", "center", "right", "bottom-left",
+                       "bottom", "bottom-right"]
+
+
+@mcp.tool()
+def krita_set_canvas_size(width: Annotated[int, Field(ge=1)], height: Annotated[int, Field(ge=1)],
+                          anchor: CanvasAnchor = "center", doc: Optional[str] = None,
+                          dry_run: bool = False, timeout_s: Optional[float] = None) -> dict:
+    """
+    Change the canvas size without scaling anything (Image > Resize Canvas):
+    the art keeps its place relative to itself and is shifted by the offset
+    the anchor gives. WARNING: this breaks any rig already made on the
+    document (mesh coordinates are canvas pixels); fix the canvas size
+    before rigging starts. Every result carries a "rig_breaking" warning.
+
+    anchor is the part of the old canvas that stays put: "top-left" keeps
+    the top-left corner, "center" grows or shrinks evenly on all sides,
+    "bottom" keeps the bottom edge centred, ... With "center" (or "top",
+    "left", ...) and an odd difference the art sits half a pixel left of or
+    above the exact centre (offset = floor(difference / 2)): growing 10 ->
+    13 adds 1 column on the left and 2 on the right, shrinking 13 -> 10
+    removes 2 on the left and 1 on the right. offset {x, y} in the result
+    is where the old canvas's top-left corner lands on the new one (every
+    layer moves by it; negative when the left / top is cropped).
+
+    Shrinking crops nothing from the layers: pixels pushed past the new
+    edge stay in them (invisible, but there for a later grow or undo).
+    Masks and the selection move with the art. Width and height are
+    checked against the canvas limits (too_large). One call is one agent
+    undo step (krita_undo restores the size and every layer exactly).
+
+    Returns {doc, width_before, height_before, width, height, offset {x, y},
+    anchor, dry_run, changed (false when the size is already the same, then
+    nothing is done), warnings}; with dry_run nothing changes and offset is
+    the planned one.
+
+    Args:
+        width: New canvas width in pixels
+        height: New canvas height in pixels
+        anchor: top-left, top, top-right, left, center (default), right,
+                bottom-left, bottom or bottom-right
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        dry_run: Only validate and report the offset
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
+    """
+    params = _with({"width": width, "height": height, "anchor": anchor}, doc=doc,
+                   dry_run=dry_run or None)
+    result = client.call("set_canvas_size", params, timeout_s=timeout_s)
+    where = result.get("doc") or doc or "the active document"
+    before = f"{result.get('width_before')}x{result.get('height_before')}"
+    after = f"{result.get('width', width)}x{result.get('height', height)}"
+    off = result.get("offset") or {}
+    how = f"anchor {result.get('anchor', anchor)}, content moved by ({off.get('x')}, {off.get('y')})"
+    others = [w for w in result.get("warnings") or [] if
+              not (isinstance(w, dict) and w.get("code") == "rig_breaking")]
+    if result.get("dry_run"):
+        summary = (f"Would resize the canvas of {where} from {before} to {after} ({how}); "
+                   "this would break any existing rig (dry run, nothing changed)")
+    elif result.get("changed") is False:
+        summary = f"The canvas of {where} is already {after}: nothing changed"
+    else:
+        summary = (f"Resized the canvas of {where} from {before} to {after} ({how}); "
+                   "this breaks any existing rig (mesh coordinates are canvas pixels)")
+    return _done(result, summary + _warnings_note(others))
+
+
 # --- Layer tree (api-design § Layer tree) ----------------------------------
 
 # Node type -> (singular, plural) for summaries. Others print as the type.
@@ -1721,6 +1789,85 @@ def krita_occlusion_map(id: str, path: str, modes: Optional[list[str]] = None,
     if result.get("off_canvas_px"):
         summary += f" ({result['off_canvas_px']} px past the canvas, uncovered)"
     return _done(result, summary)
+
+
+def _diff_summary(result: dict, doc_a: str, doc_b: str) -> str:
+    a, b = result.get("doc_a") or doc_a, result.get("doc_b") or doc_b
+    counts = result.get("counts") or {}
+    parts = [f"{counts.get(k, 0)} {k}" for k in ("added", "removed", "renamed", "moved", "changed")
+             if counts.get(k)]
+    pixel_changes = counts.get("pixel_changes")
+    if pixel_changes:
+        parts.append(f"{_count(pixel_changes, 'layer')} with pixel changes")
+    if result.get("projection_changed"):
+        parts.append("projection changed")
+    matched = counts.get("matched") or {}
+    how = ", ".join(f"{matched[k]} by {k}" for k in ("uuid", "path", "name") if matched.get(k))
+    note = f" ({_count(matched.get('total', 0), 'layer')} matched{': ' + how if how else ''})"
+    if parts:
+        summary = f"{a} -> {b}: " + ", ".join(parts) + note
+    else:
+        summary = f"No differences between {a} and {b}" + note
+    if result.get("document_changes"):
+        summary += "; document: " + ", ".join(
+            f"{k} {v[0]} -> {v[1]}" for k, v in result["document_changes"].items()
+            if isinstance(v, (list, tuple)) and len(v) == 2)
+    return summary + _warnings_note(result.get("warnings"))
+
+
+@mcp.tool()
+def krita_diff_documents(doc_a: str, doc_b: str, pixels: bool = True,
+                         timeout_s: Optional[float] = None) -> dict:
+    """
+    Compare two open documents: which layers were added, removed, renamed,
+    moved or changed, and (with pixels) which paint layers' pixels differ.
+    Reads only. Use it to check a rebuilt or re-imported document against
+    the original, or what an edit changed (diff a saved copy against the
+    working document).
+
+    Layers are matched in three passes, each among the layers still
+    unmatched: by id (the same UUID in both: a .kra save and reopen keeps
+    ids, a PSD / ORA import or a rebuild from a manifest doesn't), then by
+    name path ("Head/Eye L", when exactly one layer in each document has
+    it), then by name (when the name is unique in each whole document).
+    Each reported pair says how it was matched ("match": "uuid", "path" or
+    "name"). Layers with a repeated path and a repeated name can't be
+    matched and show up as removed + added.
+
+    - added / removed: [{id, name, path, type}] only in doc_b / only in doc_a
+    - renamed: [{id_a, id_b, path (in doc_b), path_a (when it differs),
+      match, name: [a, b]}]
+    - moved: parent or index changed (index counts from the bottom within
+      the parent, so adding or deleting a layer below a sibling moves it
+      too): [{..., parent: [id_a, id_b] (null at the top level),
+      index: [a, b], parent_changed}]
+    - changed: property deltas, [{..., fields: {name: [a, b]}}] over type,
+      visible, opacity, blend_mode, locked, alpha_locked, inherit_alpha,
+      pass_through, has_layer_style
+    - pixel_changes (with pixels): [{..., changed_count, bounds {x, y, w,
+      h}}] for matched paint layers whose pixels differ over the union of
+      both layers' bounds; pixels transparent in both count as equal. Null
+      when not compared: pixels=false, documents of different sizes, or
+      not 8-bit RGBA (a warning says which)
+    - projection_changed: whether the composited images differ (null when
+      pixels were not compared)
+    - document_changes: {width | height | color_model | color_depth |
+      color_profile | resolution: [a, b]} for the ones that differ
+    - counts: per category, plus matched {uuid, path, name, total}
+
+    Args:
+        doc_a: The first (older) document: handle such as "doc-3", or the
+               absolute path of an open document
+        doc_b: The second (newer) document, a different one
+        pixels: Compare paint layers' pixels and the projections too
+                (default true; false for a quick structural diff)
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
+    """
+    params = {"doc_a": doc_a, "doc_b": doc_b}
+    if not pixels:
+        params["pixels"] = False
+    result = client.call("diff_documents", params, timeout_s=timeout_s)
+    return _done(result, _diff_summary(result, doc_a, doc_b))
 
 
 @mcp.tool()

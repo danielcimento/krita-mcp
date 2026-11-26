@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phases 1–4 done (all P0; acceptance 1–6 pass live, 2026-11-25). Phase 5 (P1) built: P5.1–P5.10; its live tests are written, not yet run. Phase 6 next. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phases 1–4 done (all P0; acceptance 1–6 pass live, 2026-11-25). Phases 5–6 (P1, P2) built: P5.1–P5.10, P6.1–P6.2; their live tests are written, not yet run. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -339,8 +339,8 @@ tools.
 
 ### Phase 6: P2
 
-- **P6.1 `set_canvas_size`**, with the rig-breaking warning.
-- **P6.2 `diff_documents`.** UUID, then path, then name matching,
+- [x] **P6.1 `set_canvas_size`**, with the rig-breaking warning.
+- [x] **P6.2 `diff_documents`.** UUID, then path, then name matching,
   property deltas, and pixel deltas over the union of bounds.
 
 ## Definition of done for each tool

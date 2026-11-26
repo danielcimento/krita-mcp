@@ -87,6 +87,7 @@ If using a virtual environment:
 | `krita_open_file` | Open a `.kra`, `.ora`, `.png`, …; returns its `doc` handle (an already open file keeps its handle) |
 | `krita_save` | Save in place, save as `.kra` (the document moves there), or export to PNG/JPG/PSD/ORA; Add / Linear Dodge layers are converted for `.psd` / `.ora` on a copy (`blend_conversions`) |
 | `krita_close_document` | Close a document by handle; refuses unsaved changes unless `discard=true` |
+| `krita_set_canvas_size` | Change the canvas size without scaling, about an `anchor` (`center`, `top-left`, …); pixels pushed past the edge are kept in the layers; always warns that it breaks existing rigs; `dry_run`, one undo step |
 
 **Layer tree**
 
@@ -127,6 +128,7 @@ If using a virtual environment:
 | `krita_lint` | Check a document against the Live2D rig rules (node types, layer styles, clipping, blend modes, duplicate names, side tokens, empty / off-canvas layers, stray-alpha specks, colour space); opt-in `"conventions"` set (nesting depth, name case, blend suffixes, pose visibility, hidden references, mask suffixes); `rules`, `severity_min`; findings sorted by stacking order |
 | `krita_layer_stats` | Per paint layer: bounds, opaque bounds, pixel and opaque counts, an alpha histogram (`buckets`), empty, overhang past the canvas, lint's stray-alpha numbers |
 | `krita_occlusion_map` | How much of a paint layer the layers drawn after it hide (global draw order, visible, `modes` default Normal only): a grayscale PNG of alpha x coverage over its bounds, `covered_pct` at `threshold`, `fully_hidden`, the layers counted; for skipping hidden areas in part separation |
+| `krita_diff_documents` | Compare two open documents: layers added, removed, renamed, moved and changed (matched by id, then name path, then unique name), and with `pixels` which paint layers' pixels differ (count and bounds) and whether the projections differ |
 
 **Painting**
 
@@ -151,7 +153,7 @@ If using a virtual environment:
 **Two kinds of undo.** `krita_undo` / `krita_redo` use the plugin's agent
 journal: one call reverts (or re-applies) one whole agent tool call, a
 `create_layers` batch, an update, a move, a delete, a duplicate, a trim,
-an `import_png`, a stroke or a clear, with the same layer ids, properties, order and pixels.
+an `import_png`, a canvas resize, a stroke or a clear, with the same layer ids, properties, order and pixels.
 The journal keeps the last 20 calls per document (`journal` in the config
 file), holds pixel snapshots in memory up to `max_bytes` and in temporary
 files beyond that, and is dropped when the document closes. It only knows

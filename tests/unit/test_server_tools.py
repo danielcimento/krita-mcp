@@ -49,6 +49,8 @@ EXPECTED_TOOLS = {
     "krita_transform_layer",
     "krita_merge_layers",
     "krita_occlusion_map",
+    "krita_set_canvas_size",
+    "krita_diff_documents",
 }
 
 # tool -> (kwargs, plugin action, canned plugin payload)
@@ -195,6 +197,21 @@ CASES = {
                              "covered_pct": 0.5, "fully_hidden": False,
                              "above": {"count": 2, "ids": ["{2}", "{3}"]},
                              "modes": ["normal"], "threshold": 0.5, "bytes": 90}),
+    "krita_set_canvas_size": ({"width": 40, "height": 30}, "set_canvas_size",
+                              {"doc": "doc-1", "width_before": 32, "height_before": 24,
+                               "width": 40, "height": 30, "offset": {"x": 4, "y": 3},
+                               "anchor": "center", "dry_run": False, "changed": True,
+                               "warnings": [{"code": "rig_breaking",
+                                             "message": "breaks existing rigs"}]}),
+    "krita_diff_documents": ({"doc_a": "doc-1", "doc_b": "doc-2"}, "diff_documents",
+                             {"doc_a": "doc-1", "doc_b": "doc-2", "added": [], "removed": [],
+                              "renamed": [], "moved": [], "changed": [], "pixel_changes": [],
+                              "projection_changed": False, "document_changes": {},
+                              "counts": {"added": 0, "removed": 0, "renamed": 0, "moved": 0,
+                                         "changed": 0, "pixel_changes": 0,
+                                         "matched": {"uuid": 3, "path": 0, "name": 0,
+                                                     "total": 3}},
+                              "warnings": []}),
     "krita_list_layers": ({}, "list_layers",
                           {"root": "/", "layers": [{"id": "{1}", "name": "a", "children": []}],
                            "counts": {"paintlayer": 1, "total": 1}}),
@@ -402,7 +419,7 @@ DOC_TOOLS = {"krita_save", "krita_get_canvas", "krita_stroke", "krita_fill",
              "krita_ui_undo", "krita_ui_redo", "krita_duplicate_layer",
              "krita_set_active_layer", "krita_trim_layers", "krita_layer_stats",
              "krita_select", "krita_selection_to_layer", "krita_transform_layer",
-             "krita_merge_layers", "krita_occlusion_map"}
+             "krita_merge_layers", "krita_occlusion_map", "krita_set_canvas_size"}
 # close_document has no active-document default.
 REQUIRED_DOC_TOOLS = {"krita_close_document"}
 OPTIONAL_DOC_TOOLS = DOC_TOOLS - REQUIRED_DOC_TOOLS
@@ -1417,3 +1434,82 @@ def test_occlusion_map_schema_and_typos(fake_call):
         with pytest.raises(ToolError, match="bad_request"):
             server.krita_occlusion_map("T", "o.png", **kwargs)
     assert fake_call.calls == []
+
+
+# --- P6.1, P6.2: set_canvas_size, diff_documents -----------------------------
+
+def test_set_canvas_size_params_and_summaries(fake_call):
+    fake_call.payload = CASES["krita_set_canvas_size"][2]
+    result = server.krita_set_canvas_size(40, 30)
+    assert fake_call.calls[0] == ("set_canvas_size",
+                                  {"width": 40, "height": 30, "anchor": "center"}, None)
+    assert result["summary"] == (
+        "Resized the canvas of doc-1 from 32x24 to 40x30 (anchor center, content moved by "
+        "(4, 3)); this breaks any existing rig (mesh coordinates are canvas pixels)")
+    server.krita_set_canvas_size(10, 12, anchor="bottom-right", doc="doc-2", dry_run=True,
+                                 timeout_s=7)
+    assert fake_call.calls[1] == ("set_canvas_size", {
+        "width": 10, "height": 12, "anchor": "bottom-right", "doc": "doc-2", "dry_run": True}, 7)
+    fake_call.payload = {**CASES["krita_set_canvas_size"][2], "dry_run": True}
+    assert server.krita_set_canvas_size(40, 30)["summary"].endswith(
+        "this would break any existing rig (dry run, nothing changed)")
+    fake_call.payload = {**CASES["krita_set_canvas_size"][2], "changed": False,
+                         "width": 32, "height": 24, "offset": {"x": 0, "y": 0}}
+    assert server.krita_set_canvas_size(32, 24)["summary"] == (
+        "The canvas of doc-1 is already 32x24: nothing changed")
+    fake_call.payload = {**CASES["krita_set_canvas_size"][2], "warnings": [
+        {"code": "rig_breaking", "message": "rigs"},
+        {"code": "not_undoable", "message": "journal cleared"}]}
+    assert server.krita_set_canvas_size(40, 30)["summary"].endswith(
+        "(1 warning: journal cleared)")
+
+
+def test_set_canvas_size_schema_and_typos():
+    tools = _tools()
+    params = tools["krita_set_canvas_size"].parameters
+    assert set(params["properties"]) == {"width", "height", "anchor", "doc", "dry_run",
+                                         "timeout_s"}
+    assert sorted(params["required"]) == ["height", "width"]
+    text = " ".join(tools["krita_set_canvas_size"].description.split())
+    assert "breaks any rig" in text and "floor(difference / 2)" in text
+    assert "pixels pushed past the new edge stay" in text
+    for args in ({"width": 4, "height": 4, "anchor": "middle"}, {"width": 0, "height": 4},
+                 {"width": 4}, {"width": 4, "height": 4, "scale": True}):
+        assert _call_tool("krita_set_canvas_size", args).is_error, args
+
+
+def test_diff_documents_params_and_summaries(fake_call):
+    fake_call.payload = CASES["krita_diff_documents"][2]
+    result = server.krita_diff_documents("doc-1", "doc-2")
+    assert fake_call.calls[0] == ("diff_documents", {"doc_a": "doc-1", "doc_b": "doc-2"}, None)
+    assert result["summary"] == ("No differences between doc-1 and doc-2 "
+                                 "(3 layers matched: 3 by uuid)")
+    server.krita_diff_documents("doc-1", "/x/b.kra", pixels=False, timeout_s=5)
+    assert fake_call.calls[1] == ("diff_documents",
+                                  {"doc_a": "doc-1", "doc_b": "/x/b.kra", "pixels": False}, 5)
+    fake_call.payload = {**CASES["krita_diff_documents"][2], "projection_changed": True,
+                         "counts": {"added": 3, "removed": 1, "renamed": 0, "moved": 0,
+                                    "changed": 2, "pixel_changes": 5,
+                                    "matched": {"uuid": 0, "path": 7, "name": 1, "total": 8}}}
+    assert server.krita_diff_documents("doc-1", "doc-2")["summary"] == (
+        "doc-1 -> doc-2: 3 added, 1 removed, 2 changed, 5 layers with pixel changes, projection "
+        "changed (8 layers matched: 7 by path, 1 by name)")
+    fake_call.payload = {**CASES["krita_diff_documents"][2], "pixel_changes": None,
+                         "projection_changed": None,
+                         "document_changes": {"width": [32, 40]},
+                         "warnings": [{"code": "size_mismatch", "message": "pixels not compared"}]}
+    assert server.krita_diff_documents("doc-1", "doc-2")["summary"] == (
+        "No differences between doc-1 and doc-2 (3 layers matched: 3 by uuid); document: "
+        "width 32 -> 40 (1 warning: pixels not compared)")
+
+
+def test_diff_documents_schema_and_typos():
+    tools = _tools()
+    params = tools["krita_diff_documents"].parameters
+    assert set(params["properties"]) == {"doc_a", "doc_b", "pixels", "timeout_s"}
+    assert sorted(params["required"]) == ["doc_a", "doc_b"]
+    text = " ".join(tools["krita_diff_documents"].description.split())
+    assert "by id" in text and "unique in each whole document" in text
+    assert "transparent in both count as equal" in text
+    for args in ({"doc_a": "doc-1"}, {"doc_a": "doc-1", "doc_b": "doc-2", "doc": "doc-3"}):
+        assert _call_tool("krita_diff_documents", args).is_error, args
