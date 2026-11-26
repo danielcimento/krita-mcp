@@ -389,6 +389,16 @@ are fast enough that per-pixel Python loops are never justified.
   inside the group, and **excludes** the group's own opacity [verified, Q8].
   So flattening a group bakes the clipping, but the group's opacity has to
   be carried over to the new layer separately.
+  *[verified 2026-11-25, P5.7, headless, `tests/krita/test_merge.py`]*
+  A paint layer holding a group's projection, with the group's opacity
+  (1 or 0.5) and blend mode, renders byte-identically to the group. The
+  projection includes the group's own transparency mask too. Inherit
+  alpha on the lowest layer of a group has nothing to clip to: the layer
+  doesn't show. Layers moved into a new isolated group (in a `clone()`)
+  composite the same as in place, byte for byte, when the lowest one is
+  opaque under the others (multiply and screen above it); partly
+  transparent normal layers come out within 1–2 levels (the group's
+  composite is rounded to 8 bits before it goes over the layers below).
 - **A pass-through group has no projection of its own**: its
   `projectionPixelData()` reads fully transparent (Krita composites its
   children straight into the parent). A **hidden** group's projection is
@@ -417,6 +427,42 @@ are fast enough that per-pixel Python loops are never justified.
     (y down): a top-right marker at (119, 50) ended at (114, 64), bottom
     right [verified, run 3]. For a custom pivot, rotate and then `move` by
     the offset.
+  - *[verified 2026-11-25, P5.6, headless, `tests/krita/test_transform.py`]*
+    Both run headless with no view and no dialog; the bounds are already
+    updated when they return (call `waitForDone` anyway). A **quarter
+    turn** (90, 180, 270, -90) is an **exact pixel permutation**, clockwise
+    for positive angles; with an odd side the half-pixel corner rounds up
+    ((10, 6, 9, 4) turned 90° became (13, 4, 4, 9)). Other angles give the
+    turned corners' bounding box (8×8 at (10, 6), 30°: (8, 4, 12, 12)).
+    Locked and hidden layers are transformed too.
+  - `scaleNode`'s `filter` ids: `Bicubic`, `Bilinear`, `NearestNeighbor`,
+    `Lanczos3`, `Mitchell`, `BSpline`, `Bell`, `Hermite` all scale
+    differently; `Box` gives the same pixels as `NearestNeighbor`, and an
+    unknown name silently gives Bicubic. NearestNeighbor ×2 doubles each
+    pixel.
+  - Krita's transforms **don't keep colour under alpha 0** reliably: after
+    a quarter turn none was left; after a Bicubic scale the alpha-0 pixels
+    outside the old bounds were still where they were (not scaled with the
+    layer). Visible pixels are unaffected; the tests compare those.
+  - `position()` of a paint layer is its paint device's offset, which a
+    rotate changes ((0, 0) became (23, -4) after a quarter turn), so a
+    translate must stay relative: `move(position() + d)`.
+  - **On a group**, `scaleNode` and `rotateNode` transform every node in
+    the subtree with one transform: children scale about the same origin
+    and turn about the group's bounds' centre, keeping their layout. But
+    **`move` on a group changes nothing visible**: `position()` changes,
+    the children don't move. Translate a group by moving its layers.
+  - A group's `bounds()` is its projection's: **clipped to the canvas**
+    (a child reaching past the bottom edge leaves the group's height at
+    the edge), without a clipped child's overhang, and **(0, 0, 0, 0) for
+    a hidden pass-through group** (a hidden isolated group and a visible
+    pass-through one report the right bounds). `scaleNode` divides by that
+    width; `commands/transform.py` makes such a group isolated for the
+    call.
+  - Writing the old pixels back with `setPixelData` over the old bounds,
+    and transparent pixels over the rest of the new bounds, restores
+    `bounds()` exactly after a scale or rotate (`position()` stays
+    different, which nothing reads).
 - `Node.save(filename, xRes, yRes, InfoObject, exportRect)` writes the
   node to a file, **with the layer's opacity applied**: alpha 200 at 50%
   opacity was saved as 100. It needs app-wide batch mode (see *Crash

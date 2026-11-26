@@ -46,6 +46,8 @@ EXPECTED_TOOLS = {
     "krita_layer_stats",
     "krita_select",
     "krita_selection_to_layer",
+    "krita_transform_layer",
+    "krita_merge_layers",
 }
 
 # tool -> (kwargs, plugin action, canned plugin payload)
@@ -173,6 +175,18 @@ CASES = {
                                             "children": []},
                                   "cut_rect": {"x": 2, "y": 3, "w": 4, "h": 5}, "cut": True,
                                   "copied": 20, "warnings": []}),
+    "krita_transform_layer": ({"id": "A", "flip": "h"}, "transform_layer",
+                              {"doc": "doc-1", "dry_run": False, "layer": "{1}", "path": "A",
+                               "type": "paintlayer",
+                               "bounds_before": {"x": 10, "y": 6, "w": 8, "h": 4},
+                               "bounds_after": {"x": 10, "y": 6, "w": 8, "h": 4},
+                               "applied": [{"op": "flip", "axis": "h", "shift": [0, 0]}],
+                               "warnings": []}),
+    "krita_merge_layers": ({"ids": ["G"], "name": "Flat"}, "merge_layers",
+                           {"doc": "doc-1", "dry_run": False, "mode": "group", "merged": ["{1}"],
+                            "layer": {"id": "{9}", "name": "Flat", "path": "Flat",
+                                      "children": []},
+                            "removed": ["{1}", "{2}", "{3}"], "warnings": []}),
     "krita_list_layers": ({}, "list_layers",
                           {"root": "/", "layers": [{"id": "{1}", "name": "a", "children": []}],
                            "counts": {"paintlayer": 1, "total": 1}}),
@@ -379,7 +393,8 @@ DOC_TOOLS = {"krita_save", "krita_get_canvas", "krita_stroke", "krita_fill",
              "krita_render", "krita_lint", "krita_undo", "krita_redo", "krita_journal",
              "krita_ui_undo", "krita_ui_redo", "krita_duplicate_layer",
              "krita_set_active_layer", "krita_trim_layers", "krita_layer_stats",
-             "krita_select", "krita_selection_to_layer"}
+             "krita_select", "krita_selection_to_layer", "krita_transform_layer",
+             "krita_merge_layers"}
 # close_document has no active-document default.
 REQUIRED_DOC_TOOLS = {"krita_close_document"}
 OPTIONAL_DOC_TOOLS = DOC_TOOLS - REQUIRED_DOC_TOOLS
@@ -1271,4 +1286,80 @@ def test_selection_schemas_and_typos():
                        ("krita_select", {"mode": "rect", "colour": 1}),
                        ("krita_selection_to_layer", {"source": "S"}),
                        ("krita_selection_to_layer", {"source": "S", "name": "P", "mode": 1})):
+        assert _call_tool(name, args).is_error, (name, args)
+
+
+# --- P5.6 / P5.7: transform_layer, merge_layers --------------------------------
+
+def test_transform_layer_params_and_summaries(fake_call):
+    fake_call.payload = CASES["krita_transform_layer"][2]
+    result = server.krita_transform_layer("A", flip="h")
+    assert fake_call.calls[0] == ("transform_layer", {"id": "A", "resample": "Bicubic",
+                                                      "flip": "h"}, None)
+    assert result["summary"] == ("Transformed 'A' (flip h) in doc-1: 8x4 at (10, 6) -> "
+                                 "8x4 at (10, 6)")
+    server.krita_transform_layer("A", translate=(3, -2), scale=(2, 0.5), rotate=90,
+                                 pivot=(1.5, 2), resample="NearestNeighbor", doc="doc-2",
+                                 dry_run=True, timeout_s=9)
+    assert fake_call.calls[1] == ("transform_layer", {
+        "id": "A", "resample": "NearestNeighbor", "translate": [3, -2], "scale": [2.0, 0.5],
+        "rotate": 90, "pivot": [1.5, 2.0], "doc": "doc-2", "dry_run": True}, 9)
+    server.krita_transform_layer("A", scale=2, pivot="center")
+    assert fake_call.calls[2][1] == {"id": "A", "resample": "Bicubic", "scale": 2,
+                                     "pivot": "center"}
+    fake_call.payload = {"doc": "doc-2", "dry_run": True, "path": "A",
+                         "bounds_before": {"x": 0, "y": 0, "w": 4, "h": 2},
+                         "would_apply": [{"op": "scale", "size": {"w": 8, "h": 4}},
+                                         {"op": "rotate", "degrees": 90.0},
+                                         {"op": "translate", "by": [3, -2]}],
+                         "bounds_predicted": {"x": 3, "y": -4, "w": 4, "h": 8}, "warnings": []}
+    assert server.krita_transform_layer("A", scale=2, rotate=90, translate=(3, -2),
+                                        dry_run=True)["summary"] == (
+        "Would transform 'A' (scale to 8x4, rotate 90°, translate by (3, -2)) in doc-2: "
+        "4x2 at (0, 0) -> about 4x8 at (3, -4) (dry run, nothing changed)")
+
+
+def test_merge_layers_params_and_summaries(fake_call):
+    fake_call.payload = CASES["krita_merge_layers"][2]
+    result = server.krita_merge_layers(["G"], "Flat")
+    assert fake_call.calls[0] == ("merge_layers", {"ids": ["G"], "name": "Flat"}, None)
+    assert result["summary"] == ("Flattened group {1} into 'Flat' ({9}) in doc-1, removing "
+                                 "3 layers")
+    server.krita_merge_layers(["A", "B"], "AB", doc="doc-2", dry_run=True, timeout_s=9)
+    assert fake_call.calls[1] == ("merge_layers", {"ids": ["A", "B"], "name": "AB",
+                                                   "doc": "doc-2", "dry_run": True}, 9)
+    fake_call.payload = {"doc": "doc-2", "dry_run": True, "mode": "layers",
+                         "merged": ["{1}", "{2}"], "would_create": {"name": "AB"},
+                         "would_remove": ["{1}", "{2}"],
+                         "warnings": [{"code": "not_adjacent", "message": "1 layer between"}]}
+    assert server.krita_merge_layers(["A", "B"], "AB", dry_run=True)["summary"] == (
+        "Would merge 2 layers into a new layer 'AB' in doc-2, removing 2 layers "
+        "(1 warning: 1 layer between) (dry run, nothing changed)")
+
+
+def test_transform_and_merge_schemas_and_typos():
+    tools = _tools()
+    params = tools["krita_transform_layer"].parameters
+    assert set(params["properties"]) == {"id", "translate", "scale", "rotate", "flip", "pivot",
+                                         "resample", "doc", "dry_run", "timeout_s"}
+    assert params["required"] == ["id"]
+    params = tools["krita_merge_layers"].parameters
+    assert set(params["properties"]) == {"ids", "name", "doc", "dry_run", "timeout_s"}
+    assert params["required"] == ["ids", "name"]
+    transform = " ".join(tools["krita_transform_layer"].description.split())
+    assert "flip, scale, rotate, translate" in transform and "clockwise" in transform
+    merge = " ".join(tools["krita_merge_layers"].description.split())
+    assert "pass_through_flattened" in merge and "same parent" in merge
+    for name, args in (("krita_transform_layer", {"id": "A", "flip": "x"}),
+                       ("krita_transform_layer", {"id": "A", "scale": 0}),
+                       ("krita_transform_layer", {"id": "A", "scale": [2, 200]}),
+                       ("krita_transform_layer", {"id": "A", "translate": [1.5, 0]}),
+                       ("krita_transform_layer", {"id": "A", "translate": [1, 2, 3]}),
+                       ("krita_transform_layer", {"id": "A", "rotate": 4000}),
+                       ("krita_transform_layer", {"id": "A", "pivot": "middle"}),
+                       ("krita_transform_layer", {"id": "A", "resample": "Box"}),
+                       ("krita_transform_layer", {"id": "A", "skew": 1}),
+                       ("krita_merge_layers", {"ids": [], "name": "M"}),
+                       ("krita_merge_layers", {"ids": ["A"]}),
+                       ("krita_merge_layers", {"ids": ["A"], "name": "M", "mode": 1})):
         assert _call_tool(name, args).is_error, (name, args)

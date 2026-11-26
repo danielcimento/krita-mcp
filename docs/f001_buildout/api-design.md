@@ -508,7 +508,7 @@ Settled in P5.2 (2026-11-25), `kritamcp/commands/layers.py`:
   parent, above, count}, warnings}` (`above` null = on top; the warning's
   `id` is null), nothing changes.
 
-### `krita_merge_layers(doc?, ids, name)` · P1
+### `krita_merge_layers(doc?, ids, name, dry_run?)` · P1
 
 - One group ID: flatten the group into one paint layer at its position.
   The group's projection becomes the new layer's pixels, which bakes in
@@ -523,6 +523,64 @@ Settled in P5.2 (2026-11-25), `kritamcp/commands/layers.py`:
   not the group's own opacity (spike Q8). The flattened layer therefore
   takes the group's opacity and blend mode as properties, and doesn't bake
   them into its pixels.
+
+Settled in P5.7 (2026-11-25), `kritamcp/commands/merge.py`:
+
+- **Params** (strict keys, `details.unknown`): `ids` (a non-empty list;
+  `/`, a repeated id or an empty list is `bad_request` with
+  `details.param: "ids"`; a mask is `conflict`), `name` (required, the
+  `create_layers` rules, `details.param`), `dry_run`. One id must be a
+  group (else `bad_request`); several must share a parent (else
+  `bad_request`, `details.parents`). Any layer type but masks can be
+  merged; a group goes with its subtree. Default timeout 300 s.
+- **One group.** Pixels: the group's `projectionPixelData` over its
+  `bounds()`. It is read from the document when Krita keeps it (isolated,
+  and the group and its ancestors visible), otherwise from a `clone()` with
+  the group made isolated and visible and its ancestors visible
+  (`export_layers`' `_isolate`). Verified headless: the projection includes
+  inherit-alpha clipping, blend modes and the group's own transparency
+  mask, and excludes its opacity; the new layer takes the group's
+  **visibility, opacity, blend mode, inherit alpha and lock** (and its layer
+  style, if `layerStyleToAsl` gives one; for groups it gives `''`). An
+  isolated group flattened at opacity 1 or 0.5 (with screen) leaves the
+  document's projection **byte-identical**; so does a hidden one (the new
+  layer is hidden). A pass-through group warns `pass_through_flattened`: its
+  pixels are its isolated composite.
+- **Several layers.** Computed in a `clone()`: the layers are moved
+  (subtrees kept, bottom first) into a new isolated group `kmcp-merge-temp`
+  directly above the topmost one, their ancestors made visible, and that
+  group's projection is read. The temporary group exists only in the
+  clone, which is closed in `finally`; the user's document never holds it,
+  whatever fails. The new layer is a plain paint layer (normal, opacity 1,
+  visible). Measured: with the lowest merged layer opaque under the others
+  (multiply 0.5 and screen 0.8 above it) the projection is byte-identical;
+  with partly transparent normal layers at opacities 0.7 / 0.5 / 0.8 it is
+  within 1 level (2 on other data): the intermediate composite is rounded
+  to 8 bits before it goes over the layers below. Warnings:
+  `isolated_compositing` (`ids`: merged layers with a blend mode other than
+  normal, or filter layers: inside the merge they only blend with the
+  merged layers below them), `clipping_base_not_merged` (the lowest merged
+  layer has inherit alpha: inside the group it has nothing to clip to and
+  doesn't show; verified), `hidden_layers_dropped` (`ids`),
+  `not_adjacent` (`ids` of unmerged siblings between them, which end up
+  below the merged layer).
+- **Apply** (batch items, rolled back on failure): create the paint layer
+  directly above the topmost merged layer (looked up by id after the
+  insert), write the pixels, set the properties (lock last); then remove
+  each merged layer, top first, with its subtree (`_take_out`).
+- **Journal.** One entry: `RemoveNode` of the new layer plus a
+  `ReinsertNode` per removed layer (P5.1 protocol). Undo puts the original
+  nodes back (ids, subtrees, pixels, properties: `list_layers`, every
+  layer's pixels and the projection equal, tested); redo re-inserts the
+  same merged layer. Removed layers can't be spilled: over the memory cap
+  the result warns `not_undoable`.
+- **Result.** `{doc, dry_run: false, mode: "group" | "layers", merged (ids,
+  top first), layer: <layer object>, removed (ids with subtrees, top to
+  bottom), warnings}`, plus `nothing_visible` (empty new layer) and
+  `duplicate_name` (another layer, not a merged one, has `name`). `dry_run`:
+  `{doc, dry_run: true, mode, merged, would_create: {name, type, parent,
+  above}, would_remove, warnings}` (no pixels are computed, so no
+  `nothing_visible`); nothing changes.
 
 ### `krita_set_active_layer(doc?, id)` · P1
 
@@ -1100,7 +1158,7 @@ Settled in P5.5 (2026-11-25), `kritamcp/commands/selection.py`,
   `dry_run`: `{doc, dry_run: true, source, cut_rect, cut, would_create:
   {name, type, parent, above}, warnings}`, nothing changes.
 
-### `krita_transform_layer(doc?, id, translate?, scale?, rotate?, flip?, pivot?, resample="Bicubic")`
+### `krita_transform_layer(doc?, id, translate?, scale?, rotate?, flip?, pivot?, resample="Bicubic", dry_run?)`
 
 - `translate: [dx, dy]` is relative. It uses `Node.move` with the position plus the delta.
 - `scale: [sx, sy]` or a number, `rotate` in degrees, clockwise.
@@ -1118,6 +1176,69 @@ Settled in P5.5 (2026-11-25), `kritamcp/commands/selection.py`,
   `rotateNode(radians(rotate))`.
 - `resample` takes Krita's filter names: `Bicubic` (default), `Bilinear`,
   `NearestNeighbor`, `Lanczos3`, `Mitchell`, `BSpline`, `Bell`, `Hermite`.
+
+Settled in P5.6 (2026-11-25), `kritamcp/commands/transform.py`,
+`kritamcp/transformplan.py` (pure: parameters and geometry):
+
+- **Params** (strict keys). `id` (`/` is `bad_request`), `translate` `[dx,
+  dy]` whole pixels within ±163840, `scale` a number or `[sx, sy]` in
+  0.01–100 (no negative factors: `flip` mirrors), `rotate` degrees in
+  ±3600 (applied modulo 360), `flip` `"h"` / `"v"`, `pivot` `"center"` or
+  `[x, y]`, `resample` one of the eight filters (case-insensitive; Krita
+  silently falls back to Bicubic on any other name, and `Box` is
+  NearestNeighbor). Errors carry `details.param`. None of translate /
+  scale / rotate / flip is `bad_request`; given but changing nothing
+  (`[0, 0]`, 1, a multiple of 360) is a no-op with no journal entry.
+- **Targets.** A paint layer without masks, or a group whose subtree is
+  only paint layers and groups (nested, pass-through and hidden ones
+  too). Anything else is `conflict` (`details.type` / `types`): Krita's
+  transforms would change masks and other layers too, and the journal
+  could not restore them. A layer with no pixels is `conflict`. Flip,
+  scale and rotate need an 8-bit RGBA document (`conflict`); a translate
+  doesn't.
+- **Pivot.** `"center"`: the centre of the target's `bounds()` before the
+  call (for a group the projection's bounds, which stop at the canvas
+  edge; a hidden pass-through group reads empty there, and the union of
+  its paint layers' bounds is used). Flip, scale and rotate keep it fixed.
+- **Steps**, in order, each on the result of the one before:
+  - *flip*: ours, exact. Every paint layer's pixels over its bounds go
+    through `QImage.mirrored` and are written at their mirrored place about
+    the axis through the pivot (`2 * axis` rounded to a whole number, so a
+    custom pivot snaps to the nearest half pixel); what they leave is
+    cleared. About the default centre the layer stays in place; a group's
+    composite is mirrored exactly (tested).
+  - *scale*: `scaleNode(pivot, round(w * sx), round(h * sy), resample)` on
+    the target (a group scales all its layers with one transform), with
+    `w × h` Krita's own `bounds()` (its factor is `W / w`).
+  - *rotate*: `rotateNode(radians)` about the bounds' centre, then every
+    paint layer moves by the pivot's displacement `(p - c) - R(p - c)`,
+    rounded. Quarter turns are exact pixel permutations (90, 180, 270, -90,
+    450 tested); `resample` doesn't apply (Krita's rotation has its own
+    filter).
+  - *translate*: `Node.move(position + d)` on every paint layer (on a group
+    `move` changes nothing visible), exact.
+  A hidden pass-through group is made isolated for the native calls and
+  put back.
+- **Journal.** One entry: a `RestorePixels` per paint layer for the flip /
+  scale / rotate part, holding its pixels over its old bounds plus
+  transparent patches over the parts of its new bounds outside them, and a
+  `MoveBy` of the paint layers for the translate part (no snapshot). Undo
+  restores `list_layers` (bounds included), every layer's pixels and the
+  projection exactly (tested for each step, combined, on groups); redo
+  gives the transformed state back. Krita's transforms don't reliably
+  keep colour under alpha 0 (invisible); such colour outside a layer's
+  bounds is not in the snapshot, so undo doesn't bring it back either. Over the journal caps: `not_undoable`. A
+  failure mid-call writes the snapshots back. Default timeout 300 s.
+- **Result.** `{doc, dry_run: false, layer (id), path, type, bounds_before,
+  bounds_after, applied: [{op: "flip", axis, shift}, {op: "scale", factor,
+  size, resample}, {op: "rotate", degrees, shift}, {op: "translate", by}],
+  warnings}`. `dry_run`: `{doc, dry_run: true, layer, path, type,
+  bounds_before, would_apply (the same steps, each with its predicted
+  `bounds`), bounds_predicted, warnings}`, nothing changes. Predictions
+  follow Krita's rounding (a quarter turn rounds a half-pixel corner up;
+  other angles take the turned corners' bounding box); the tests find them
+  exact for flips, NearestNeighbor scales and quarter turns, and within a
+  pixel for Bicubic scales and other angles.
 
 ---
 

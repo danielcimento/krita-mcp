@@ -324,10 +324,10 @@ tools.
 - [x] **P5.5 `selection_to_layer`.** Our own masked copy, unless Q9 shows
   `Selection.cut` / `paste` do the right thing (they go through the system
   clipboard, so never).
-- [ ] **P5.6 `transform_layer`.** Translate, and an exact flip with
+- [x] **P5.6 `transform_layer`.** Translate, and an exact flip with
   `QImage.mirrored`. Scale and rotate use `scaleNode` / `rotateNode` if Q6
   shows usable pivots, otherwise `QTransform` on the pixels.
-- [ ] **P5.7 `merge_layers`.** Group flatten through the projection, and
+- [x] **P5.7 `merge_layers`.** Group flatten through the projection, and
   multi-layer merge through a temporary group. Opacity handling per Q8.
 - [ ] **P5.8 `occlusion_map`.** Builds on `render(only=…)` and the alpha helpers.
 - [x] **P5.9 Lint `conventions` set.** The six extra rules.

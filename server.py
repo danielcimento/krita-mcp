@@ -1303,6 +1303,179 @@ def krita_selection_to_layer(source: str, name: str, parent: Optional[str] = Non
     return _done(result, summary)
 
 
+# --- Transform and merge (api-design § krita_transform_layer, § krita_merge_layers)
+
+Resample = Literal["Bicubic", "Bilinear", "NearestNeighbor", "Lanczos3", "Mitchell", "BSpline",
+                   "Bell", "Hermite"]
+ScaleFactor = Annotated[float, Field(ge=0.01, le=100)]
+
+
+def _step_text(step) -> str:
+    if not isinstance(step, dict):
+        return str(step)
+    op = step.get("op")
+    if op == "flip":
+        return f"flip {step.get('axis')}"
+    if op == "scale":
+        size = step.get("size") or {}
+        return f"scale to {size.get('w')}x{size.get('h')}"
+    if op == "rotate":
+        return f"rotate {step.get('degrees'):g}°"
+    if op == "translate":
+        by = step.get("by") or ["?", "?"]
+        return f"translate by ({by[0]}, {by[1]})"
+    return str(op)
+
+
+@mcp.tool()
+def krita_transform_layer(id: str, translate: Optional[tuple[int, int]] = None,
+                          scale: Optional[Union[ScaleFactor, tuple[ScaleFactor, ScaleFactor]]] = None,
+                          rotate: Annotated[Optional[float], Field(ge=-3600, le=3600)] = None,
+                          flip: Optional[Literal["h", "v"]] = None,
+                          pivot: Optional[Union[Literal["center"], tuple[float, float]]] = None,
+                          resample: Resample = "Bicubic", doc: Optional[str] = None,
+                          dry_run: bool = False, timeout_s: Optional[float] = None) -> dict:
+    """
+    Move, mirror, resize or turn a paint layer, or a group of paint layers
+    (its layers keep their places relative to each other). Steps run in
+    this fixed order: flip, scale, rotate, translate. Coordinates are canvas
+    pixels, origin top-left.
+
+    - flip: "h" mirrors left-right, "v" top-bottom. Exact (no resampling):
+      the pixels are mirrored about the pivot's vertical ("h") or
+      horizontal ("v") line, by default the layer's own centre, so the
+      layer stays in place. A custom pivot moves it to the mirrored place
+      (the axis is rounded to the nearest half pixel).
+    - scale: one factor, or [sx, sy] (0.01-100 each), about the pivot (it
+      stays fixed). The new size is the bounds times the factors, rounded.
+      resample picks Krita's filter (default "Bicubic"; "NearestNeighbor"
+      keeps hard pixels).
+    - rotate: degrees, positive = clockwise on screen, about the pivot.
+      Quarter turns (90, 180, 270) are exact pixel permutations; other
+      angles use Krita's own (bicubic) rotation, whatever resample says.
+    - translate: [dx, dy] whole pixels, relative. Exact.
+    - pivot: "center" (default: the centre of the layer's bounds before
+      the call) or [x, y] in canvas pixels.
+
+    Masks, filter / fill / clone / vector / file layers, a paint layer with
+    masks and a group holding any of those fail with "conflict" (the undo
+    could not restore them), as does a layer with no pixels. The document
+    must be 8-bit RGBA unless the call only translates.
+
+    Returns {doc, layer (id), path, type, bounds_before, bounds_after
+    ({x, y, w, h}), applied (the steps done, with their pixel shifts and
+    Krita's scale factors), warnings}; with dry_run, {doc, layer,
+    bounds_before, would_apply (each step with its predicted bounds),
+    bounds_predicted, warnings} and nothing changes (predictions can be
+    off by a pixel). One call is one agent undo step: krita_undo restores
+    the pixels and bounds exactly.
+
+    Args:
+        id: The layer or group to transform: UUID, name path such as
+            "Head/Eyes", or unique name
+        translate: [dx, dy], whole canvas pixels, applied last
+        scale: A factor, or [sx, sy], each 0.01-100 (1 keeps the size)
+        rotate: Degrees, clockwise on screen (-3600 to 3600)
+        flip: "h" (mirror left-right) or "v" (top-bottom), applied first
+        pivot: "center" (default) or [x, y] in canvas pixels: the point that
+               flip, scale and rotate keep fixed
+        resample: Krita's scaling filter: Bicubic (default), Bilinear,
+                  NearestNeighbor, Lanczos3, Mitchell, BSpline, Bell, Hermite
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        dry_run: Only validate and predict the bounds
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
+    """
+    if scale is not None and not isinstance(scale, (int, float)):
+        scale = list(scale)
+    params = _with({"id": id, "resample": resample},
+                   translate=None if translate is None else list(translate), scale=scale,
+                   rotate=rotate, flip=flip,
+                   pivot=pivot if pivot is None or isinstance(pivot, str) else list(pivot),
+                   doc=doc, dry_run=dry_run or None)
+    result = client.call("transform_layer", params, timeout_s=timeout_s)
+    where = _in(result) or f" in {doc or 'the active document'}"
+    what = f"{result.get('path', id)!r}"
+    before = _rect_text(result.get("bounds_before"))
+    if result.get("dry_run"):
+        steps = ", ".join(_step_text(s) for s in result.get("would_apply") or []) or "nothing"
+        summary = (f"Would transform {what} ({steps}){where}: {before} -> about "
+                   f"{_rect_text(result.get('bounds_predicted'))} (dry run, nothing changed)")
+    else:
+        steps = ", ".join(_step_text(s) for s in result.get("applied") or []) or "nothing to do"
+        summary = (f"Transformed {what} ({steps}){where}: {before} -> "
+                   f"{_rect_text(result.get('bounds_after'))}")
+    return _done(result, summary + _warnings_note(result.get("warnings")))
+
+
+@mcp.tool()
+def krita_merge_layers(ids: Annotated[list[str], Field(min_length=1)], name: str,
+                       doc: Optional[str] = None, dry_run: bool = False,
+                       timeout_s: Optional[float] = None) -> dict:
+    """
+    Merge layers into one new paint layer named name.
+
+    - One group: flatten it in place. The pixels are the group's composite
+      (clipping, blend modes, filters, masks and layer styles inside it are
+      baked in); the new layer keeps the group's opacity, blend mode,
+      visibility, clipping and lock as properties, so the document renders
+      the same. A pass-through group is flattened to its isolated composite
+      (warning "pass_through_flattened": its blend modes no longer reach
+      the layers below it). Hidden groups work too (the new layer is
+      hidden).
+    - Several layers with the same parent (else "bad_request"): merged, in
+      their stacking order, as if grouped at the topmost one's place, then
+      flattened. Their opacities and blend modes are baked into the pixels;
+      the new layer is normal, opacity 1, visible. Warnings: layers with a
+      blend mode other than normal only blend with the merged layers below
+      them ("isolated_compositing"), a clipped lowest layer loses its base
+      ("clipping_base_not_merged"), hidden layers drop out
+      ("hidden_layers_dropped"), layers in between that are not merged end
+      up below ("not_adjacent").
+
+    The new layer takes the (topmost) merged layer's place; the merged
+    layers are removed with their subtrees. Masks can't be merged on their
+    own ("conflict"). Nothing temporary is left in the document.
+
+    Returns {doc, mode ("group" or "layers"), merged (the ids, top first),
+    layer (the new layer object), removed (every removed id, subtrees
+    included, top to bottom), warnings}; with dry_run, {doc, mode, merged,
+    would_create: {name, type, parent, above}, would_remove, warnings} and
+    nothing changes. One call is one agent undo step: krita_undo puts the
+    original layers back exactly (same ids, pixels and properties).
+
+    Args:
+        ids: One group, or several sibling layers: UUIDs, name paths such
+             as "Head/Eyes", or unique names
+        name: The new layer's name
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        dry_run: Only validate and report what would be merged
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
+    """
+    params = _with({"ids": list(ids), "name": name}, doc=doc, dry_run=dry_run or None)
+    result = client.call("merge_layers", params, timeout_s=timeout_s)
+    where = _in(result) or f" in {doc or 'the active document'}"
+    merged = result.get("merged") or list(ids)
+    what = (f"group {merged[0]}" if result.get("mode") == "group"
+            else _count(len(merged), "layer"))
+    if result.get("dry_run"):
+        removed = result.get("would_remove") or []
+        verb = "flatten" if result.get("mode") == "group" else "merge"
+        summary = (f"Would {verb} {what} into a new layer {name!r}{where}, removing "
+                   f"{_count(len(removed), 'layer')}" + _warnings_note(result.get("warnings"))
+                   + " (dry run, nothing changed)")
+    else:
+        layer = result.get("layer") or {}
+        verb = "Flattened" if result.get("mode") == "group" else "Merged"
+        summary = (f"{verb} {what} into {layer.get('path', name)!r} ({layer.get('id')}){where}, "
+                   f"removing {_count(len(result.get('removed') or []), 'layer')}"
+                   + _warnings_note(result.get("warnings")))
+    return _done(result, summary)
+
+
 # --- Analysis (api-design § Analysis) ----------------------------------------
 
 def _lint_summary(result: dict, doc: Optional[str]) -> str:

@@ -98,6 +98,7 @@ If using a virtual environment:
 | `krita_move_layers` | Reorder and reparent layers (`parent`, `above` / `below` / `index`); groups move with their subtree; `dry_run` |
 | `krita_delete_layers` | Delete layers (a group with its subtree) in one call; `dry_run` |
 | `krita_duplicate_layer` | Copy a layer (a group with its subtree, a layer with its masks; new ids) directly above it, or under `parent` / above `above`; `name`, `dry_run` |
+| `krita_merge_layers` | Flatten a group into one paint layer (its composite; opacity, blend mode, visibility kept as properties), or merge sibling layers into one; same ids back on undo; `dry_run`, one undo step |
 | `krita_set_active_layer` | Select a layer in the Layers docker (what painting without `layer` paints on); UI state, not an undo step |
 
 **Pixels**
@@ -116,6 +117,7 @@ If using a virtual environment:
 | Tool | Description |
 |------|-------------|
 | `krita_select` | Set the selection: `rect`, `polygon` (antialiased or not), `alpha_of` a layer, `invert`, `none`, `all`; `op` replace / add / subtract / intersect; then `grow`, `shrink`, `feather`. Not an agent undo step |
+| `krita_transform_layer` | Flip (exact), scale (Krita's filters), rotate (clockwise; quarter turns exact) and translate a paint layer or a group of paint layers about a pivot, in that order; `dry_run` predicts the bounds, one undo step |
 | `krita_selection_to_layer` | Cut (or copy) a paint layer's pixels inside the selection to a new layer at the same position, alpha scaled by the selection (soft edges from feathering); never touches the clipboard; `dry_run`, one undo step |
 
 **Analysis**

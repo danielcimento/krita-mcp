@@ -40,6 +40,8 @@ EXPECTED_REGISTRY = {
     "save": (300, False),
     "select": (30, False),
     "selection_to_layer": (300, True),
+    "transform_layer": (300, True),
+    "merge_layers": (300, True),
     "set_brush": (30, False),
     "set_active_layer": (30, False),
     "set_color": (30, False),
