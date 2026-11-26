@@ -1,11 +1,11 @@
 """Plugin configuration (D7, D8). Pure: no krita / PyQt5 imports.
 
 The module constants below are the fixed settings. The user-editable part
-(allowed roots, limit overrides, journal size) comes from ``load()``, which
+(allowed roots, limit overrides, journal size, lint settings) comes from ``load()``, which
 reads ``~/.krita-mcp-config.json`` and ``KRITA_MCP_ALLOWED_DIRS``, and from
 ``current()``, which caches that and re-loads when the inputs change.
 Commands read ``current()`` at call time: ``roots`` and ``output_dir`` for
-paths, ``limits`` for the canvas size.
+paths, ``limits`` for the canvas size, ``lint`` for the lint snapshot.
 
 Bad user config never raises: every problem goes into ``Settings.errors``,
 which ``/health`` reports.
@@ -46,16 +46,23 @@ ALLOWED_DIRS_ENV = "KRITA_MCP_ALLOWED_DIRS"  # os.pathsep-separated
 
 DEFAULT_LIMITS = {"max_canvas_dim": 16384, "max_canvas_pixels": 67108864}  # D8
 DEFAULT_JOURNAL = {"max_actions": 20, "max_bytes": 1073741824}  # D6
+# Lint settings (D14, D17), copied into the lint snapshot's ``settings``.
+# additive_mode: which spelling of the rig's Add is accepted (D17).
+# stray_alpha_*: a pixel with 0 < alpha < below farther than distance px
+# from any pixel with alpha >= below is stray (api-design § Lint rules).
+DEFAULT_LINT = {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4}
+LINT_ADDITIVE_MODES = ("either", "add", "linear_dodge")
+LINT_INT_RANGES = {"stray_alpha_below": (1, 255), "stray_alpha_distance": (1, 64)}
 
 # Static sanity bound for coordinates and radii in the painting tools, ten
 # times the default per-side limit. Not affected by the config file.
 COORD = 10 * DEFAULT_LIMITS["max_canvas_dim"]
-KNOWN_KEYS = ("allowed_dirs", "limits", "journal")
+KNOWN_KEYS = ("allowed_dirs", "limits", "journal", "lint")
 
 
 @dataclasses.dataclass(frozen=True)
 class Settings:
-    """The resolved user config. ``limits`` and ``journal`` are read-only."""
+    """The resolved user config. ``limits``, ``journal`` and ``lint`` are read-only."""
 
     roots: tuple            # realpath'd allowed roots; roots[0] is output_dir
     output_dir: str         # realpath'd; may not exist yet
@@ -65,6 +72,7 @@ class Settings:
     config_file: str
     config_loaded: bool     # the file existed and was used
     requested_roots: tuple  # the extra roots as given (file, then env), valid or not
+    lint: types.MappingProxyType = types.MappingProxyType(DEFAULT_LINT)
 
 
 def load(config_file=None, env=None, output_dir=None, home=None):
@@ -82,6 +90,7 @@ def load(config_file=None, env=None, output_dir=None, home=None):
     errors = []
     limits = dict(DEFAULT_LIMITS)
     journal = dict(DEFAULT_JOURNAL)
+    lint = dict(DEFAULT_LINT)
 
     data, loaded = _read_config_file(config_file, errors)
     for key in data:
@@ -93,6 +102,7 @@ def load(config_file=None, env=None, output_dir=None, home=None):
         file_dirs = []
     _merge_ints(data, "limits", limits, config_file, errors)
     _merge_ints(data, "journal", journal, config_file, errors)
+    _merge_lint(data, lint, config_file, errors)
 
     requested = []
     for d in file_dirs:
@@ -117,7 +127,7 @@ def load(config_file=None, env=None, output_dir=None, home=None):
         roots=tuple(roots), output_dir=output_dir,
         limits=types.MappingProxyType(limits), journal=types.MappingProxyType(journal),
         errors=tuple(errors), config_file=config_file, config_loaded=loaded,
-        requested_roots=tuple(requested),
+        requested_roots=tuple(requested), lint=types.MappingProxyType(lint),
     )
 
 
@@ -217,6 +227,35 @@ def _merge_ints(data, section, into, config_file, errors):
                           f"got {value!r}; default {into[key]} kept")
         else:
             into[key] = value
+
+
+def _merge_lint(data, into, config_file, errors):
+    """Overlay ``data["lint"]`` onto ``into``: ``additive_mode`` one of
+    ``LINT_ADDITIVE_MODES``, the thresholds ints within ``LINT_INT_RANGES``.
+    A bad value keeps its default, with an error."""
+    if "lint" not in data:
+        return
+    given = data["lint"]
+    if not isinstance(given, dict):
+        errors.append(f"config file {config_file}: 'lint' must be an object; ignored")
+        return
+    for key, value in given.items():
+        if key not in into:
+            errors.append(f"config file {config_file}: unknown key lint.{key} ignored")
+        elif key == "additive_mode":
+            if isinstance(value, str) and value in LINT_ADDITIVE_MODES:
+                into[key] = value
+            else:
+                choices = ", ".join(repr(m) for m in LINT_ADDITIVE_MODES)
+                errors.append(f"config file {config_file}: lint.additive_mode must be one of {choices}, "
+                              f"got {value!r}; default {into[key]!r} kept")
+        else:
+            lo, hi = LINT_INT_RANGES[key]
+            if type(value) is int and lo <= value <= hi:
+                into[key] = value
+            else:
+                errors.append(f"config file {config_file}: lint.{key} must be an integer from {lo} to {hi}, "
+                              f"got {value!r}; default {into[key]} kept")
 
 
 # --- Cached access ------------------------------------------------------

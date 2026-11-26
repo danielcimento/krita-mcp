@@ -54,6 +54,7 @@ def test_no_file_gives_defaults(cfg, out, home):
     assert s.output_dir == out
     assert dict(s.limits) == config.DEFAULT_LIMITS
     assert dict(s.journal) == config.DEFAULT_JOURNAL
+    assert dict(s.lint) == config.DEFAULT_LINT
     assert s.errors == ()
     assert s.config_loaded is False
     assert s.config_file == cfg
@@ -264,6 +265,71 @@ def test_defaults_are_not_mutated(cfg, out, home):
     write(cfg, {"limits": {"max_canvas_dim": 1}})
     load(cfg, out, home)
     assert config.DEFAULT_LIMITS["max_canvas_dim"] == 16384
+
+
+# --- load(): lint (D14, D17) -------------------------------------------
+
+def test_lint_defaults():
+    assert config.DEFAULT_LINT == {"additive_mode": "either", "stray_alpha_below": 8,
+                                   "stray_alpha_distance": 4}
+
+
+@pytest.mark.parametrize("mode", ["either", "add", "linear_dodge"])
+def test_lint_overrides(cfg, out, home, mode):
+    write(cfg, {"lint": {"additive_mode": mode, "stray_alpha_below": 255, "stray_alpha_distance": 1}})
+    s = load(cfg, out, home)
+    assert dict(s.lint) == {"additive_mode": mode, "stray_alpha_below": 255, "stray_alpha_distance": 1}
+    assert s.errors == ()
+
+
+def test_lint_partial_override_keeps_other_defaults(cfg, out, home):
+    write(cfg, {"lint": {"stray_alpha_distance": 64}})
+    s = load(cfg, out, home)
+    assert dict(s.lint) == {**config.DEFAULT_LINT, "stray_alpha_distance": 64}
+
+
+@pytest.mark.parametrize("bad", ["Add", "ADD", "normal", "", None, 1, ["add"]])
+def test_lint_bad_additive_mode_keeps_default(cfg, out, home, bad):
+    write(cfg, {"lint": {"additive_mode": bad, "stray_alpha_below": 16}})
+    s = load(cfg, out, home)
+    assert dict(s.lint) == {**config.DEFAULT_LINT, "stray_alpha_below": 16}
+    assert len(s.errors) == 1
+    assert f"lint.additive_mode must be one of 'either', 'add', 'linear_dodge', got {bad!r}" in s.errors[0]
+    assert "default 'either' kept" in s.errors[0]
+
+
+@pytest.mark.parametrize("key,bad", [
+    ("stray_alpha_below", 0), ("stray_alpha_below", 256), ("stray_alpha_below", True),
+    ("stray_alpha_below", 8.0), ("stray_alpha_below", "8"),
+    ("stray_alpha_distance", 0), ("stray_alpha_distance", 65), ("stray_alpha_distance", -4),
+    ("stray_alpha_distance", None),
+])
+def test_lint_bad_threshold_keeps_default(cfg, out, home, key, bad):
+    write(cfg, {"lint": {key: bad}})
+    s = load(cfg, out, home)
+    assert dict(s.lint) == config.DEFAULT_LINT
+    lo, hi = config.LINT_INT_RANGES[key]
+    assert s.errors == (f"config file {cfg}: lint.{key} must be an integer from {lo} to {hi}, "
+                        f"got {bad!r}; default {config.DEFAULT_LINT[key]} kept",)
+
+
+def test_lint_unknown_key_and_non_object(cfg, out, home):
+    write(cfg, {"lint": {"additive": "add"}})
+    s = load(cfg, out, home)
+    assert dict(s.lint) == config.DEFAULT_LINT
+    assert s.errors == (f"config file {cfg}: unknown key lint.additive ignored",)
+    write(cfg, {"lint": "add"})
+    s = load(cfg, out, home)
+    assert dict(s.lint) == config.DEFAULT_LINT
+    assert s.errors == (f"config file {cfg}: 'lint' must be an object; ignored",)
+
+
+def test_lint_is_read_only_and_defaults_not_mutated(cfg, out, home):
+    write(cfg, {"lint": {"additive_mode": "add"}})
+    s = load(cfg, out, home)
+    with pytest.raises(TypeError):
+        s.lint["additive_mode"] = "either"
+    assert config.DEFAULT_LINT["additive_mode"] == "either"
 
 
 # --- load(): defaults from the environment -----------------------------

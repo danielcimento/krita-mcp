@@ -253,7 +253,8 @@ To document in the tool docs and README:
      {
        "allowed_dirs": ["~/umamo-art", "~/projects/mao"],
        "limits": {"max_canvas_dim": 16384, "max_canvas_pixels": 67108864},
-       "journal": {"max_actions": 20, "max_bytes": 1073741824}
+       "journal": {"max_actions": 20, "max_bytes": 1073741824},
+       "lint": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4}
      }
      ```
   3. `KRITA_MCP_ALLOWED_DIRS` (`os.pathsep`-separated) in **Krita's**
@@ -302,6 +303,12 @@ To document in the tool docs and README:
     loopback-only and refuses browser requests. If loading the config
     fails unexpectedly, `/health` still answers, with the failure in
     `config_errors`.
+- *(P4.2, 2026-11-25): the `lint` section* (`Settings.lint`,
+  `DEFAULT_LINT`). `additive_mode` is `"either"`, `"add"` or
+  `"linear_dodge"` (D17); `stray_alpha_below` an int from 1 to 255 and
+  `stray_alpha_distance` an int from 1 to 64 (D14). Unknown sub-keys and
+  bad values go to `errors`, and the default is kept. `krita_lint` copies
+  the section into its snapshot's `settings`.
 
 ## D8. Size limits
 
@@ -443,6 +450,15 @@ The default rule set is exactly the spec's list. The extra checks from
 CONVENTIONS (nesting depth, Title Case, blend-mode suffix, pose
 visibility, reference groups) are in an opt-in `conventions` set. Details
 are in [api-design.md § Lint rules](api-design.md#lint-rules).
+
+*(P4.2, 2026-11-25): the ten default rules are built in
+`kritamcp/lint.py`, over the snapshot format in api-design.md § Snapshot
+(P4.1/P4.2), with one hand-written snapshot per rule in
+`tests/unit/snapshots/`.* Settled on the way: a reference group's contents
+are skipped by every rule, but the bracket group itself is checked like any
+group; the side-token spellings and the suggested standard name are listed
+in api-design.md § Lint rules. The thresholds and `additive_mode` come
+from the config's `lint` section (D7).
 
 ## D15. Painting tools stay, with `doc` and `layer`
 
