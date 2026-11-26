@@ -1,7 +1,7 @@
 {
   "description": "acceptance.md § Fixtures, Lint fixture (tests/fixtures/lint_four_findings.kra). The default rules give exactly: node-type Blur, duplicate-name Back/Hair, inherit-alpha Shade, empty-layer Spare.",
   "document": {"width": 64, "height": 64, "color_model": "RGBA", "color_depth": "U8", "color_profile": "sRGB-elle-V2-srgbtrc.icc", "pixel_stats": true},
-  "settings": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4, "stray_speck_max_px": 64},
+  "settings": {"stray_alpha_below": 8, "stray_alpha_distance": 4, "stray_speck_max_px": 64},
   "nodes": [
     {"id": "{00000001-0000-4000-8000-000000000001}", "name": "Blur", "path": "Blur", "type": "filterlayer", "parent": null, "depth": 1, "order": 0, "visible": true, "opacity": 1.0, "blend_mode": "copy", "inherit_alpha": false, "alpha_locked": false, "locked": false, "pass_through": null, "has_layer_style": false, "bounds": {"x": 0, "y": 0, "w": 64, "h": 64}, "alpha": null},
     {"id": "{00000001-0000-4000-8000-000000000002}", "name": "Head", "path": "Head", "type": "grouplayer", "parent": null, "depth": 1, "order": 1, "visible": true, "opacity": 1.0, "blend_mode": "normal", "inherit_alpha": false, "alpha_locked": false, "locked": false, "pass_through": false, "has_layer_style": false, "bounds": {"x": 20, "y": 4, "w": 8, "h": 8}, "alpha": null},

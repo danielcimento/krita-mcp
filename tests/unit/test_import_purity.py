@@ -15,7 +15,8 @@ import pytest
 PURE = ["kritamcp.cmdqueue", "kritamcp.config", "kritamcp.errors", "kritamcp.paths",
         "kritamcp.params", "kritamcp.refs", "kritamcp.version", "kritamcp.batch",
         "kritamcp.blendmodes", "kritamcp.layerprops", "kritamcp.manifest", "kritamcp.renderplan",
-        "kritamcp.lint", "kritamcp.transformplan", "kritamcp.occlusionplan",
+        "kritamcp.lint", "kritamcp.lint.engine", "kritamcp.lint.core", "kritamcp.lint.live2d",
+        "kritamcp.alphastats", "kritamcp.transformplan", "kritamcp.occlusionplan",
         "kritamcp.canvasplan", "kritamcp.diffplan"]
 
 
@@ -30,7 +31,8 @@ def test_package_import_has_no_krita_side_effects():
         "import sys, kritamcp, kritamcp.config, kritamcp.errors, kritamcp.paths, kritamcp.params\n"
         "import kritamcp.refs, kritamcp.version, kritamcp.cmdqueue, kritamcp.batch\n"
         "import kritamcp.blendmodes, kritamcp.layerprops, kritamcp.manifest, kritamcp.renderplan\n"
-        "import kritamcp.lint, kritamcp.transformplan, kritamcp.occlusionplan\n"
+        "import kritamcp.lint, kritamcp.lint.engine, kritamcp.lint.core, kritamcp.lint.live2d\n"
+        "import kritamcp.transformplan, kritamcp.occlusionplan\n"
         "import kritamcp.canvasplan, kritamcp.diffplan\n"
         "assert kritamcp.Krita is None\n"
         "assert not hasattr(kritamcp, 'KritaMCPExtension')\n"

@@ -186,6 +186,33 @@ class UpdateLayersTest(TreeBase):
                 {"id": ids["C"], "name": "A"}, {"id": "A", "name": "B"},
                 {"id": ids["B"], "name": "C"}, {"id": "K", "name": "K"}]))
             self.assertEqual(result["warnings"], [])
+            self.assertNotIn("notes", result)
+
+    def test_rename_to_a_name_of_the_other_kind_is_a_note(self):
+        """F004 K9: lint's suggested_names can make a layer share its parent
+        group's name (Wand A / Wand A), which the naming rules allow: a note,
+        not a warning. Same-kind clashes still warn."""
+        with scratch_document(16, 16, name="kmcp-update-kind") as doc:
+            handle, ids = self.build(doc)
+            dry = self.assertOk(run("update_layers", doc=handle, dry_run=True,
+                                    changes=[{"id": "G/X", "name": "G"}]))
+            result = self.assertOk(run("update_layers", doc=handle,
+                                       changes=[{"id": "G/X", "name": "G"}]))
+            for r in (dry, result):
+                self.assertEqual(r["warnings"], [])
+                (note,) = r["notes"]
+                self.assertEqual((note["code"], note["id"], note["name"], note["others"]),
+                                 ("name_shared_across_kinds", ids["X"], "G", [ids["G"]]))
+                self.assertIn("matches group 'G': allowed", note["message"])
+                self.assertIn("use an id or a path", note["message"])
+            # A group renamed like another group still warns, and a layer's
+            # name it also has is a note beside it.
+            result = self.assertOk(run("update_layers", doc=handle, changes=[{"id": "K", "name": "G"}]))
+            self.assertEqual([(w["code"], w["others"]) for w in result["warnings"]],
+                             [("duplicate_name", [ids["G"]])])
+            self.assertIn("like 1 other group", result["warnings"][0]["message"])
+            self.assertEqual([(n["code"], n["others"]) for n in result["notes"]],
+                             [("name_shared_across_kinds", [ids["X"]])])
 
     def test_validation_failures_change_nothing(self):
         cases = [
@@ -242,7 +269,9 @@ class UpdateLayersTest(TreeBase):
             self.assertEqual(result["would_update"], [
                 {"id": ids["G"], "path": "G", "set": {"visible": False, "pass_through": True}},
                 {"id": ids["K"], "path": "K", "set": {"name": "C"}}])
-            self.assertEqual([w["code"] for w in result["warnings"]], ["duplicate_name"])
+            # K is a group, C a paint layer: a note, not a warning (F004 K9).
+            self.assertEqual(result["warnings"], [])
+            self.assertEqual([n["code"] for n in result["notes"]], ["name_shared_across_kinds"])
             self.assertIs(result["dry_run"], True)
             self.assertEqual(snapshot(doc), before)
             self.assertEqual(len(batch.JOURNALS.get(handle)), 0)

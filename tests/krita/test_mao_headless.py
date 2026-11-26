@@ -390,8 +390,10 @@ def stray_size_report(doc, snapshot):
 @unittest.skipUnless(os.environ.get(MAO_ENV), f"set {MAO_ENV} to the Mao .ora (acceptance § 1)")
 class MaoLintTest(EnvelopeAssertions, unittest.TestCase):
     """Acceptance § Fixtures, secondary check: lint on the rebuilt Mao
-    (without new_canvas's Background) gives exactly 11 duplicate-name
-    findings. The per-rule counts of the ``default`` and ``conventions``
+    (without new_canvas's Background), with the Live2D conventions on,
+    gives exactly 11 duplicate-name findings, and exactly one
+    reference-unbracketed warning, for Expression References (F004 K8).
+    The per-rule counts of the ``default`` and ``conventions``
     sets, the snapshot time and a stray-alpha report (P5.10: layers
     flagged, specks, the component-size histogram) are printed as
     ``KMCP_MAO:`` lines; nothing is asserted about stray alpha."""
@@ -407,7 +409,7 @@ class MaoLintTest(EnvelopeAssertions, unittest.TestCase):
         handle = None
         results = {}
         try:
-            with temp_config({"allowed_dirs": [tmp]}):
+            with temp_config({"allowed_dirs": [tmp], "live2d": {"enabled": True}}):
                 out = os.path.join(tmp, "mao")
                 ora_to_manifest.convert(ora, out)
                 canvas = self.assertOk(run("new_canvas", width=WIDTH, height=HEIGHT,
@@ -470,3 +472,11 @@ class MaoLintTest(EnvelopeAssertions, unittest.TestCase):
         self.assertTrue(all(len(f["related_ids"]) == 2 for f in dups))  # each name used twice
         self.assertTrue(all(sorted(s["name"][-1] for s in f["suggested_names"]) == ["A", "B"]
                             for f in dups), [f["message"] for f in dups])
+        self.assertTrue(all(f["severity"] == "error" for f in dups))  # the pack raises it
+        # F004 K8: [ Guide Image ] is bracketed; nothing else is hidden.
+        unbracketed = [f for f in results["conventions"][1]["findings"]
+                       if f["rule"] == "reference-unbracketed"]
+        self.assertEqual([(f["path"], f["severity"]) for f in unbracketed],
+                         [("Expression References", "warning")])
+        self.assertEqual(unbracketed[0]["suggested_names"],
+                         [{"id": unbracketed[0]["layer_id"], "name": "[ Expression References ]"}])

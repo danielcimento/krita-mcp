@@ -110,6 +110,27 @@ def call():
 
 
 @pytest.fixture(scope="session")
+def live2d_enabled(call):
+    """Whether the running plugin has the Live2D conventions on (config
+    ``live2d.enabled``, F004). A plugin before F004 has no such setting and
+    always applies them."""
+    health = call.health()
+    if "live2d" not in health:
+        return True
+    return bool((health.get("live2d") or {}).get("enabled"))
+
+
+@pytest.fixture
+def live2d(live2d_enabled):
+    """For tests of the Live2D conventions: fail, saying how to fix it,
+    when the user's config doesn't turn them on."""
+    if not live2d_enabled:
+        pytest.fail('needs the Live2D conventions: set "live2d": {"enabled": true} in '
+                    "~/.krita-mcp-config.json (applies without a restart; see "
+                    "docs/f004_live2d_opt_in/config.md)", pytrace=False)
+
+
+@pytest.fixture(scope="session")
 def output_dir(call):
     """The plugin's output dir (the first allowed root), realpath'd."""
     dirs = call.health().get("allowed_dirs") or [DEFAULT_OUTPUT_DIR]

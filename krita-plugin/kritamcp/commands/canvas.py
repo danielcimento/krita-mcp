@@ -93,9 +93,10 @@ def _size_params(params):
 
 @command("set_canvas_size", timeout=LONG_TIMEOUT, mutating=True)
 def cmd_set_canvas_size(params):
-    """Resize the canvas (no scaling) about ``anchor``. Always warns that
-    it breaks existing rigs. One journal entry; ``dry_run`` reports the
-    offset."""
+    """Resize the canvas (no scaling) about ``anchor``. With the Live2D
+    conventions on (config ``live2d.enabled``, F004) every result warns
+    that it breaks existing rigs. One journal entry; ``dry_run`` reports
+    the offset."""
     params = _strict_item(params, KEYS)
     width, height = _size_params(params)
     anchor = canvasplan.check_anchor(params.get("anchor", canvasplan.DEFAULT_ANCHOR))
@@ -107,7 +108,7 @@ def cmd_set_canvas_size(params):
     result = {"doc": handle, "width_before": old[0], "height_before": old[1],
               "width": width, "height": height, "offset": {"x": dx, "y": dy},
               "anchor": anchor, "dry_run": dry_run, "changed": old != (width, height),
-              "warnings": [dict(RIG_WARNING)]}
+              "warnings": [dict(RIG_WARNING)] if config.current().live2d["enabled"] else []}
     if dry_run or not result["changed"]:
         return result
 

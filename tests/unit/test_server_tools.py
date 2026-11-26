@@ -148,8 +148,8 @@ CASES = {
     "krita_lint": ({}, "lint",
                    {"doc": "doc-1", "findings": [], "counts": {"error": 0, "warning": 0, "info": 0},
                     "rules_run": ["node-type"], "pixel_stats": True,
-                    "settings": {"additive_mode": "either", "stray_alpha_below": 8,
-                                 "stray_alpha_distance": 4}}),
+                    "rules_off": {}, "settings": {"stray_alpha_below": 8,
+                                                  "stray_alpha_distance": 4}}),
     "krita_duplicate_layer": ({"id": "A"}, "duplicate_layer",
                               {"doc": "doc-1", "dry_run": False, "source": "{1}",
                                "layer": {"id": "{2}", "name": "A", "path": "A",
@@ -1078,6 +1078,23 @@ def test_render_summary_cost_hint(fake_call):
     assert "slow" not in server.krita_render("a.png")["summary"]
 
 
+def test_render_summary_cost_hint_dropped_once_png_level_is_low(fake_call):
+    """F004 K10: the hint suggests png_level=1, so it goes once that (or 0)
+    is in use; a slower level still gets it."""
+    full = {"doc": "doc-1", "path": "/out/a.png", "width": 5800, "height": 8400,
+            "region": {"x": 0, "y": 0, "w": 5800, "h": 8400}, "scale": 1.0, "bytes": 11_000_000}
+    for level in (0, 1):
+        fake_call.payload = {**full, "png_level": level}
+        assert "slow" not in server.krita_render("a.png", png_level=level)["summary"]
+    fake_call.payload = {**full, "png_level": 6}
+    assert server.krita_render("a.png", png_level=6)["summary"].endswith(
+        "pass scale=0.25 for previews, or png_level=1")
+    # get_canvas takes neither option, so its hint points at krita_render.
+    fake_call.payload = full
+    assert server.krita_get_canvas()["summary"].endswith(
+        "use krita_render with scale=0.25 for previews, or png_level=1")
+
+
 def test_get_canvas_summary_and_docstring(fake_call):
     fake_call.payload = {"doc": "doc-4", "path": "/out/c.png", "width": 4, "height": 3,
                          "region": {"x": 0, "y": 0, "w": 4, "h": 3}, "scale": 1.0, "bytes": 90}
@@ -1118,10 +1135,12 @@ def test_lint_schema_and_docstring():
     assert params["properties"]["severity_min"]["anyOf"][0]["enum"] == ["info", "warning", "error"]
     description = " ".join(tool.description.split())
     for rule in lint.RULES.values():
-        assert f"- {rule.id} ({rule.severity})" in description, rule.id
+        assert f"- {rule.id} ({rule.severity}" in description, rule.id
     for phrase in ('"default"', '"conventions"', '"all"', "additive_mode", "stray_alpha_below",
                    "stray_alpha_distance", "stacking order", "document-level", "related_ids",
-                   "Reads only"):
+                   "Reads only", "live2d.enabled", "lint.disable", "rules_off", "reference_pattern",
+                   "allowed_blend_modes", "max_nesting", "pose_pattern", "default_pose",
+                   "error with the Live2D conventions on"):
         assert phrase in description, phrase
     for args in ({"severity_min": "fatal"}, {"rules": "default"}, {"rules": [1]}, {"bogus": 1},
                  {"group_by": "layer"}, {"limit": 0}, {"offset": -1}):
@@ -1138,6 +1157,19 @@ def test_lint_summary(fake_call):
         "No findings in doc-2 (1 rule); pixel rules skipped (not an 8-bit RGBA document)")
     fake_call.payload = {"counts": {"error": 1, "warning": 0, "info": 2}}
     assert server.krita_lint(doc="doc-5")["summary"] == "1 error, 2 info in doc-5"
+
+
+def test_lint_summary_names_rules_the_config_left_out(fake_call):
+    """F004: with the Live2D conventions off, the summary says how many of
+    the requested rules didn't run and how to turn them on."""
+    fake_call.payload = {"doc": "doc-2", "findings": [], "rules_run": ["r"] * 3,
+                         "counts": {"error": 0, "warning": 0, "info": 0}, "pixel_stats": True,
+                         "rules_off": {"live2d": ["a"] * 13, "disabled": ["b"]}}
+    assert server.krita_lint(rules=["all"])["summary"] == (
+        "No findings in doc-2 (3 rules); 13 Live2D convention rules off (set live2d.enabled in "
+        "the config to run them); 1 rule disabled by lint.disable")
+    fake_call.payload = {**fake_call.payload, "rules_off": {}}
+    assert server.krita_lint()["summary"] == "No findings in doc-2 (3 rules)"
 
 
 def test_readme_tool_tables_list_every_tool():
@@ -1529,6 +1561,17 @@ def test_set_canvas_size_params_and_summaries(fake_call):
         {"code": "not_undoable", "message": "journal cleared"}]}
     assert server.krita_set_canvas_size(40, 30)["summary"].endswith(
         "(1 warning: journal cleared)")
+
+
+def test_set_canvas_size_summary_without_live2d(fake_call):
+    """F004: the plugin sends rig_breaking only with live2d.enabled; without
+    it the summary doesn't mention rigs."""
+    fake_call.payload = {**CASES["krita_set_canvas_size"][2], "warnings": []}
+    assert server.krita_set_canvas_size(40, 30)["summary"] == (
+        "Resized the canvas of doc-1 from 32x24 to 40x30 (anchor center, content moved by (4, 3))")
+    fake_call.payload = {**fake_call.payload, "dry_run": True}
+    assert server.krita_set_canvas_size(40, 30)["summary"].endswith(
+        "content moved by (4, 3)) (dry run, nothing changed)")
 
 
 def test_set_canvas_size_schema_and_typos():

@@ -1,11 +1,13 @@
 """Plugin configuration (D7, D8). Pure: no krita / PyQt5 imports.
 
 The module constants below are the fixed settings. The user-editable part
-(allowed roots, limit overrides, journal size, lint settings) comes from ``load()``, which
+(allowed roots, limit overrides, journal size, lint settings, the Live2D
+conventions) comes from ``load()``, which
 reads ``~/.krita-mcp-config.json`` and ``KRITA_MCP_ALLOWED_DIRS``, and from
 ``current()``, which caches that and re-loads when the inputs change.
 Commands read ``current()`` at call time: ``roots`` and ``output_dir`` for
-paths, ``limits`` for the canvas size, ``lint`` for the lint snapshot.
+paths, ``limits`` for the canvas size, ``lint`` and ``live2d`` for the lint
+snapshot, ``live2d.enabled`` for the convention-specific warnings (F004).
 
 Bad user config never raises: every problem goes into ``Settings.errors``,
 which ``/health`` reports.
@@ -14,6 +16,7 @@ which ``/health`` reports.
 import dataclasses
 import json
 import os
+import re
 import stat
 import threading
 import types
@@ -48,24 +51,38 @@ DEFAULT_LIMITS = {"max_canvas_dim": 16384, "max_canvas_pixels": 67108864}  # D8
 # D6. max_bytes: pixel snapshots kept in memory; max_disk_bytes: the total
 # spilled to PNGs under the state directory beyond that.
 DEFAULT_JOURNAL = {"max_actions": 20, "max_bytes": 1073741824, "max_disk_bytes": 4294967296}
-# Lint settings (D14, D17), copied into the lint snapshot's ``settings``.
-# additive_mode: which spelling of the rig's Add is accepted (D17).
+# Lint settings (D14; F004 G3), copied into the lint snapshot's ``settings``.
+# Generic (category 2, F004 survey.md):
 # stray_alpha_*: a pixel with 0 < alpha < below farther than distance px
 # from any pixel with alpha >= below is stray (api-design § Lint rules).
 # stray_speck_max_px: an 8-connected group of stray pixels this size or
 # smaller is a speck (a finding); larger ones are soft glows, not flagged
 # (P5.10). 64 px (8x8) covers stray dabs and eraser leftovers; a glow that
 # fades out beyond the distance is a ring of hundreds of pixels or more.
-DEFAULT_LINT = {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4,
-                "stray_speck_max_px": 64}
-LINT_ADDITIVE_MODES = ("either", "add", "linear_dodge")
+# reference_pattern: a group whose trimmed name matches it (re.search) is
+# reference material, skipped with its contents by every rule; null: none.
+# disable: rule ids left out of the default/conventions/all sets (opt-out).
+DEFAULT_LINT = {"stray_alpha_below": 8, "stray_alpha_distance": 4, "stray_speck_max_px": 64,
+                "reference_pattern": r"^\[.*\]$", "disable": ()}
 LINT_INT_RANGES = {"stray_alpha_below": (1, 255), "stray_alpha_distance": (1, 64),
                    "stray_speck_max_px": (1, 1_000_000)}
+
+# The Live2D rig conventions (category 3, opt-in; live2d-workspace
+# CONVENTIONS.md). enabled: the lint pack "live2d" is in the rule sets,
+# makes duplicate-name an error with pose-suffix suggestions, and
+# set_canvas_size warns that it breaks rigs. The other keys are that
+# pack's knobs (lint/live2d.py has their meaning).
+DEFAULT_LIVE2D = {"enabled": False, "additive_mode": "either",
+                  "allowed_blend_modes": ("normal", "multiply", "add", "linear_dodge"),
+                  "max_nesting": 3, "pose_pattern": r"^(?P<stem>.*\S) (?P<pose>[A-KM-QS-Z])$",
+                  "default_pose": "A"}
+LIVE2D_ADDITIVE_MODES = ("either", "add", "linear_dodge")
+LIVE2D_MAX_NESTING = 64
 
 # Static sanity bound for coordinates and radii in the painting tools, ten
 # times the default per-side limit. Not affected by the config file.
 COORD = 10 * DEFAULT_LIMITS["max_canvas_dim"]
-KNOWN_KEYS = ("allowed_dirs", "limits", "journal", "lint")
+KNOWN_KEYS = ("allowed_dirs", "limits", "journal", "lint", "live2d")
 # The config-file key that lists extra allowed directories (K2: named in
 # every forbidden_path error and in /health).
 ALLOWED_DIRS_KEY = "allowed_dirs"
@@ -73,7 +90,8 @@ ALLOWED_DIRS_KEY = "allowed_dirs"
 
 @dataclasses.dataclass(frozen=True)
 class Settings:
-    """The resolved user config. ``limits``, ``journal`` and ``lint`` are read-only."""
+    """The resolved user config. ``limits``, ``journal``, ``lint`` and
+    ``live2d`` are read-only (lists in them are tuples)."""
 
     roots: tuple            # realpath'd allowed roots; roots[0] is output_dir
     output_dir: str         # realpath'd; may not exist yet
@@ -85,6 +103,7 @@ class Settings:
     requested_roots: tuple  # the extra roots as given (file, then env), valid or not
     lint: types.MappingProxyType = types.MappingProxyType(DEFAULT_LINT)
     file_dirs: tuple = ()   # the config file's allowed_dirs strings, as written
+    live2d: types.MappingProxyType = types.MappingProxyType(DEFAULT_LIVE2D)
 
 
 def load(config_file=None, env=None, output_dir=None, home=None):
@@ -103,6 +122,7 @@ def load(config_file=None, env=None, output_dir=None, home=None):
     limits = dict(DEFAULT_LIMITS)
     journal = dict(DEFAULT_JOURNAL)
     lint = dict(DEFAULT_LINT)
+    live2d = dict(DEFAULT_LIVE2D)
 
     data, loaded = _read_config_file(config_file, errors)
     for key in data:
@@ -114,7 +134,8 @@ def load(config_file=None, env=None, output_dir=None, home=None):
         file_dirs = []
     _merge_ints(data, "limits", limits, config_file, errors)
     _merge_ints(data, "journal", journal, config_file, errors)
-    _merge_lint(data, lint, config_file, errors)
+    legacy = _merge_lint(data, lint, config_file, errors)
+    _merge_live2d(data, live2d, legacy, config_file, errors)
 
     requested = []
     for d in file_dirs:
@@ -141,6 +162,7 @@ def load(config_file=None, env=None, output_dir=None, home=None):
         errors=tuple(errors), config_file=config_file, config_loaded=loaded,
         requested_roots=tuple(requested), lint=types.MappingProxyType(lint),
         file_dirs=tuple(d for d in file_dirs if isinstance(d, str)),
+        live2d=types.MappingProxyType(live2d),
     )
 
 
@@ -243,25 +265,32 @@ def _merge_ints(data, section, into, config_file, errors):
 
 
 def _merge_lint(data, into, config_file, errors):
-    """Overlay ``data["lint"]`` onto ``into``: ``additive_mode`` one of
-    ``LINT_ADDITIVE_MODES``, the thresholds ints within ``LINT_INT_RANGES``.
-    A bad value keeps its default, with an error."""
+    """Overlay ``data["lint"]`` onto ``into``: the thresholds ints within
+    ``LINT_INT_RANGES``, ``reference_pattern`` a regular expression or
+    null, ``disable`` a list of known rule ids. A bad value keeps its
+    default, with an error. Returns the legacy ``lint.additive_mode`` (F004:
+    now ``live2d.additive_mode``), or None."""
     if "lint" not in data:
-        return
+        return None
     given = data["lint"]
     if not isinstance(given, dict):
         errors.append(f"config file {config_file}: 'lint' must be an object; ignored")
-        return
+        return None
+    legacy = None
     for key, value in given.items():
-        if key not in into:
+        if key == "additive_mode":
+            legacy = value  # checked by _merge_live2d
+        elif key not in into:
             errors.append(f"config file {config_file}: unknown key lint.{key} ignored")
-        elif key == "additive_mode":
-            if isinstance(value, str) and value in LINT_ADDITIVE_MODES:
-                into[key] = value
-            else:
-                choices = ", ".join(repr(m) for m in LINT_ADDITIVE_MODES)
-                errors.append(f"config file {config_file}: lint.additive_mode must be one of {choices}, "
+        elif key == "reference_pattern":
+            problem = _regex_problem(value, allow_none=True)
+            if problem:
+                errors.append(f"config file {config_file}: lint.reference_pattern {problem}, "
                               f"got {value!r}; default {into[key]!r} kept")
+            else:
+                into[key] = value
+        elif key == "disable":
+            into[key] = _rule_ids(value, config_file, errors)
         else:
             lo, hi = LINT_INT_RANGES[key]
             if type(value) is int and lo <= value <= hi:
@@ -269,6 +298,107 @@ def _merge_lint(data, into, config_file, errors):
             else:
                 errors.append(f"config file {config_file}: lint.{key} must be an integer from {lo} to {hi}, "
                               f"got {value!r}; default {into[key]} kept")
+    return legacy
+
+
+def _regex_problem(value, allow_none=False, groups=()):
+    """Why ``value`` isn't a usable regular expression, or None."""
+    if value is None and allow_none:
+        return None
+    if not isinstance(value, str):
+        return "must be a regular expression (a string)" + (" or null" if allow_none else "")
+    try:
+        compiled = re.compile(value)
+    except re.error as e:
+        return f"is not a valid regular expression ({e})"
+    missing = [g for g in groups if g not in compiled.groupindex]
+    if missing:
+        return "needs the named groups " + ", ".join(f"(?P<{g}>...)" for g in missing)
+    return None
+
+
+def _rule_ids(value, config_file, errors):
+    """``lint.disable`` as a tuple of known rule ids; others are dropped
+    with an error."""
+    from . import lint  # pure; imported here so config stays importable on its own
+
+    if not isinstance(value, list):
+        errors.append(f"config file {config_file}: lint.disable must be a list of rule ids, "
+                      f"got {value!r}; ignored")
+        return ()
+    out = []
+    for rid in value:
+        if isinstance(rid, str) and rid in lint.RULES:
+            if rid not in out:
+                out.append(rid)
+        else:
+            errors.append(f"config file {config_file}: lint.disable: unknown rule {rid!r} ignored "
+                          f"(rules: {', '.join(lint.RULES)})")
+    return tuple(out)
+
+
+def _merge_live2d(data, into, legacy_additive, config_file, errors):
+    """Overlay ``data["live2d"]`` onto ``into`` (``DEFAULT_LIVE2D``'s keys).
+    ``legacy_additive`` (``lint.additive_mode``, F003) applies unless
+    ``live2d.additive_mode`` is given, with a note either way."""
+    given = data.get("live2d", {})
+    if not isinstance(given, dict):
+        errors.append(f"config file {config_file}: 'live2d' must be an object; ignored")
+        given = {}
+    additive_key = "live2d.additive_mode"
+    if legacy_additive is not None:
+        if "additive_mode" in given:
+            errors.append(f"config file {config_file}: lint.additive_mode ignored: it moved to "
+                          "live2d.additive_mode, which is also set (F004)")
+        else:
+            errors.append(f"config file {config_file}: lint.additive_mode moved to "
+                          "live2d.additive_mode (F004); read from the old place for now")
+            given = {**given, "additive_mode": legacy_additive}
+            additive_key = "lint.additive_mode"
+    for key, value in given.items():
+        if key not in into:
+            errors.append(f"config file {config_file}: unknown key live2d.{key} ignored")
+        elif key == "enabled":
+            if isinstance(value, bool):
+                into[key] = value
+            else:
+                errors.append(f"config file {config_file}: live2d.enabled must be true or false, "
+                              f"got {value!r}; default {into[key]} kept")
+        elif key == "additive_mode":
+            if isinstance(value, str) and value in LIVE2D_ADDITIVE_MODES:
+                into[key] = value
+            else:
+                choices = ", ".join(repr(m) for m in LIVE2D_ADDITIVE_MODES)
+                errors.append(f"config file {config_file}: {additive_key} must be one of {choices}, "
+                              f"got {value!r}; default {into[key]!r} kept")
+        elif key == "allowed_blend_modes":
+            from . import blendmodes  # pure
+            if isinstance(value, list) and value and all(isinstance(m, str) and blendmodes.is_valid(m)
+                                                         for m in value):
+                into[key] = tuple(dict.fromkeys(value))
+            else:
+                errors.append(f"config file {config_file}: live2d.allowed_blend_modes must be a non-empty "
+                              f"list of Krita blend mode ids (such as \"normal\", \"multiply\", \"add\"), "
+                              f"got {value!r}; default kept")
+        elif key == "max_nesting":
+            if type(value) is int and 1 <= value <= LIVE2D_MAX_NESTING:
+                into[key] = value
+            else:
+                errors.append(f"config file {config_file}: live2d.max_nesting must be an integer from 1 "
+                              f"to {LIVE2D_MAX_NESTING}, got {value!r}; default {into[key]} kept")
+        elif key == "pose_pattern":
+            problem = _regex_problem(value, groups=("stem", "pose"))
+            if problem:
+                errors.append(f"config file {config_file}: live2d.pose_pattern {problem}, "
+                              f"got {value!r}; default kept")
+            else:
+                into[key] = value
+        elif key == "default_pose":
+            if isinstance(value, str) and value.strip() == value and value:
+                into[key] = value
+            else:
+                errors.append(f"config file {config_file}: live2d.default_pose must be a non-empty "
+                              f"string, got {value!r}; default {into[key]!r} kept")
 
 
 # How config changes take effect (/health's config_reload; K2).
@@ -291,9 +421,15 @@ def describe(settings):
         "allowed_dirs_env": ALLOWED_DIRS_ENV,
         "config_reload": RELOAD_NOTE,
         "limits": dict(settings.limits),
-        "lint": dict(settings.lint),  # krita_lint's settings (D14, D17)
+        "lint": plain(settings.lint),  # krita_lint's settings (D14; F004)
+        "live2d": plain(settings.live2d),  # the Live2D conventions (F004; off by default)
         "config_errors": list(settings.errors),
     }
+
+
+def plain(mapping):
+    """``mapping`` as a JSON-ready dict: tuples become lists."""
+    return {k: list(v) if isinstance(v, tuple) else v for k, v in mapping.items()}
 
 
 # --- Cached access ------------------------------------------------------

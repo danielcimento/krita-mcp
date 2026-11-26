@@ -19,7 +19,7 @@ def _canvas(call, docs_to_close, work, name):
     return doc
 
 
-def test_set_canvas_size_moves_the_art_and_undoes(call, scratch, docs_to_close):
+def test_set_canvas_size_moves_the_art_and_undoes(call, scratch, docs_to_close, live2d_enabled):
     work, _ = scratch
     doc = _canvas(call, docs_to_close, work, "f001-canvas-size")
     before = call("list_layers", doc=doc)["layers"]
@@ -29,8 +29,9 @@ def test_set_canvas_size_moves_the_art_and_undoes(call, scratch, docs_to_close):
     assert call("get_document_info", doc=doc)["width"] == 40
 
     result = call("set_canvas_size", doc=doc, width=50, height=36, anchor="center")
-    assert [w["code"] for w in result["warnings"]] == ["rig_breaking"]
-    assert "breaks any existing rig" in result["summary"]
+    # F004: the rig warning is a Live2D-convention one.
+    assert [w["code"] for w in result["warnings"]] == (["rig_breaking"] if live2d_enabled else [])
+    assert ("breaks any existing rig" in result["summary"]) is live2d_enabled
     info = call("get_document_info", doc=doc)
     assert (info["width"], info["height"]) == (50, 36)
     part = {layer["name"]: layer for layer in call("list_layers", doc=doc)["layers"]}["Part"]

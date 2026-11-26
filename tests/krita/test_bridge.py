@@ -111,7 +111,8 @@ class HandlerAuthTest(BridgeTestBase):
             "allowed_dirs_env": "KRITA_MCP_ALLOWED_DIRS",
             "config_reload": config.RELOAD_NOTE,
             "limits": config.DEFAULT_LIMITS,
-            "lint": config.DEFAULT_LINT,
+            "lint": config.plain(config.DEFAULT_LINT),
+            "live2d": config.plain(config.DEFAULT_LIVE2D),
             "config_errors": [],
             "busy": None,
             "queued": 0,
@@ -121,15 +122,15 @@ class HandlerAuthTest(BridgeTestBase):
         bridge.AUTH_TOKEN = None
         with temp_config({"allowed_dirs": ["/definitely/not/here", "relative"],
                           "limits": {"max_canvas_pixels": 4096}, "colour": 1,
-                          "lint": {"additive_mode": "add"}}) as path:
+                          "lint": {"stray_alpha_below": 4}, "live2d": {"enabled": True}}) as path:
             status, body = self.request("GET", "/health")
         self.assertEqual(status, 200)
         self.assertEqual(body["config_file"], path)
         self.assertIs(body["config_loaded"], True)
         self.assertEqual(body["allowed_dirs"], [config.current().output_dir])
         self.assertEqual(body["limits"], {"max_canvas_dim": 16384, "max_canvas_pixels": 4096})
-        self.assertEqual(body["lint"], {"additive_mode": "add", "stray_alpha_below": 8,
-                                        "stray_alpha_distance": 4, "stray_speck_max_px": 64})
+        self.assertEqual(body["lint"], {**config.plain(config.DEFAULT_LINT), "stray_alpha_below": 4})
+        self.assertEqual(body["live2d"], {**config.plain(config.DEFAULT_LIVE2D), "enabled": True})
         errors = body["config_errors"]
         self.assertEqual(len(errors), 3, errors)
         self.assertTrue(any("'colour'" in e for e in errors), errors)
@@ -152,6 +153,7 @@ class HandlerAuthTest(BridgeTestBase):
         self.assertEqual(body["status"], "ok")
         self.assertEqual(body["allowed_dirs"], [])
         self.assertIsNone(body["lint"])
+        self.assertIsNone(body["live2d"])
         self.assertEqual(body["config_errors"], ["could not load the config: RuntimeError: boom"])
 
     def test_no_token_loaded_refuses_info_and_post(self):

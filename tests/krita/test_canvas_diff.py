@@ -19,6 +19,8 @@ from kritamcp.errors import CommandError
 from test_dispatch import EnvelopeAssertions, run
 from test_pixels import pattern
 
+LIVE2D = {"live2d": {"enabled": True}}  # F004: rig_breaking is a Live2D-convention warning
+
 W, H = 32, 24
 # A window wide enough for every canvas size used here, past the edges too.
 WIN = (-24, -24, 96, 80)
@@ -125,7 +127,7 @@ class SetCanvasSizeTest(Base):
             self.assertEqual(box(node), (bx + dx, by + dy, bw, bh), name)
 
     def test_every_anchor_grow_and_shrink_with_undo_redo(self):
-        with scratch_document(W, H, name="kmcp-canvas-anchors") as doc:
+        with scratch_document(W, H, name="kmcp-canvas-anchors") as doc, temp_config(LIVE2D):
             handle, ids, data = self.build(doc)
             start = state(doc, handle)
             boxes = {n: box(nodes.node_by_id(doc, ids[n])) for n in data}
@@ -210,8 +212,17 @@ class SetCanvasSizeTest(Base):
             self.assertOk(run("undo", doc=handle))
             self.assertEqual(state(doc, handle), start)
 
+    def test_no_rig_warning_without_live2d(self):
+        """F004: rig_breaking comes only with live2d.enabled (the headless
+        suite's config is the defaults)."""
+        with scratch_document(W, H, name="kmcp-canvas-generic") as doc:
+            handle, ids, data = self.build(doc)
+            self.assertEqual(self.resize(handle, 40, 30, dry_run=True)["warnings"], [])
+            self.assertEqual(self.resize(handle, 40, 30)["warnings"], [])
+            self.assertOk(run("undo", doc=handle))
+
     def test_dry_run_same_size_and_errors(self):
-        with scratch_document(W, H, name="kmcp-canvas-errors") as doc:
+        with scratch_document(W, H, name="kmcp-canvas-errors") as doc, temp_config(LIVE2D):
             handle, ids, data = self.build(doc)
             start = state(doc, handle)
             dry = self.resize(handle, 40, 30, anchor="bottom", dry_run=True)

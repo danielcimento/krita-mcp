@@ -25,9 +25,9 @@ Python iterations, the runs themselves found by ``re`` in C.
 import math
 import re
 
-DEFAULT_SETTINGS = {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4,
-                    "stray_speck_max_px": 64}
-ADDITIVE_MODES = ("either", "add", "linear_dodge")
+# The stray-alpha settings (the config's lint section). F004: the Live2D
+# additive_mode moved to the live2d section; it was never a pixel setting.
+DEFAULT_SETTINGS = {"stray_alpha_below": 8, "stray_alpha_distance": 4, "stray_speck_max_px": 64}
 MAX_DISTANCE = 256
 MAX_SPECK_PX = 1_000_000
 MAX_RUNS = 2_000_000  # components() stops past this many runs (a noise field)
@@ -54,7 +54,7 @@ def to_ff(mask01):
 
 
 def normalize_settings(raw):
-    """The lint settings as a plain dict: ``raw`` (a mapping, an object with
+    """The stray-alpha settings as a plain dict: ``raw`` (a mapping, an object with
     attributes, or None, e.g. ``config.current().lint``) over
     ``DEFAULT_SETTINGS``. Missing or invalid values fall back to the
     default; config validation and its error messages are config.py's job.
@@ -73,8 +73,6 @@ def normalize_settings(raw):
 
 
 def _valid(key, value):
-    if key == "additive_mode":
-        return value in ADDITIVE_MODES
     if isinstance(value, bool) or not isinstance(value, int):
         return False
     if key == "stray_alpha_below":

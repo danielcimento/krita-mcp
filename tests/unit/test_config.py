@@ -279,22 +279,43 @@ def test_defaults_are_not_mutated(cfg, out, home):
     assert config.DEFAULT_LIMITS["max_canvas_dim"] == 16384
 
 
-# --- load(): lint (D14, D17) -------------------------------------------
+# --- load(): lint (D14; F004) --------------------------------------------
 
 def test_lint_defaults():
-    assert config.DEFAULT_LINT == {"additive_mode": "either", "stray_alpha_below": 8,
-                                   "stray_alpha_distance": 4, "stray_speck_max_px": 64}
+    assert config.DEFAULT_LINT == {"stray_alpha_below": 8, "stray_alpha_distance": 4,
+                                   "stray_speck_max_px": 64, "reference_pattern": r"^\[.*\]$",
+                                   "disable": ()}
     assert config.LINT_INT_RANGES["stray_speck_max_px"] == (1, 1_000_000)
 
 
-@pytest.mark.parametrize("mode", ["either", "add", "linear_dodge"])
-def test_lint_overrides(cfg, out, home, mode):
-    write(cfg, {"lint": {"additive_mode": mode, "stray_alpha_below": 255, "stray_alpha_distance": 1,
-                         "stray_speck_max_px": 1}})
+def test_lint_overrides(cfg, out, home):
+    write(cfg, {"lint": {"stray_alpha_below": 255, "stray_alpha_distance": 1, "stray_speck_max_px": 1,
+                         "reference_pattern": r"^Ref ", "disable": ["stray-alpha", "empty-layer"]}})
     s = load(cfg, out, home)
-    assert dict(s.lint) == {"additive_mode": mode, "stray_alpha_below": 255, "stray_alpha_distance": 1,
-                            "stray_speck_max_px": 1}
+    assert dict(s.lint) == {"stray_alpha_below": 255, "stray_alpha_distance": 1, "stray_speck_max_px": 1,
+                            "reference_pattern": r"^Ref ", "disable": ("stray-alpha", "empty-layer")}
     assert s.errors == ()
+
+
+def test_lint_reference_pattern_null_and_bad(cfg, out, home):
+    write(cfg, {"lint": {"reference_pattern": None}})
+    assert load(cfg, out, home).lint["reference_pattern"] is None
+    for bad, why in (("[", "is not a valid regular expression"), (3, "must be a regular expression")):
+        write(cfg, {"lint": {"reference_pattern": bad}})
+        s = load(cfg, out, home)
+        assert s.lint["reference_pattern"] == config.DEFAULT_LINT["reference_pattern"]
+        assert len(s.errors) == 1 and f"lint.reference_pattern {why}" in s.errors[0]
+
+
+def test_lint_disable_keeps_known_rules(cfg, out, home):
+    write(cfg, {"lint": {"disable": ["empty-layer", "bogus", 3, "empty-layer", "pose-visibility"]}})
+    s = load(cfg, out, home)
+    assert s.lint["disable"] == ("empty-layer", "pose-visibility")
+    assert [e.split(": ", 1)[1].split(" (rules:")[0] for e in s.errors] == [
+        "lint.disable: unknown rule 'bogus' ignored", "lint.disable: unknown rule 3 ignored"]
+    write(cfg, {"lint": {"disable": "empty-layer"}})
+    s = load(cfg, out, home)
+    assert s.lint["disable"] == () and "lint.disable must be a list of rule ids" in s.errors[0]
 
 
 def test_lint_speck_max_px_upper_bound(cfg, out, home):
@@ -306,16 +327,6 @@ def test_lint_partial_override_keeps_other_defaults(cfg, out, home):
     write(cfg, {"lint": {"stray_alpha_distance": 64}})
     s = load(cfg, out, home)
     assert dict(s.lint) == {**config.DEFAULT_LINT, "stray_alpha_distance": 64}
-
-
-@pytest.mark.parametrize("bad", ["Add", "ADD", "normal", "", None, 1, ["add"]])
-def test_lint_bad_additive_mode_keeps_default(cfg, out, home, bad):
-    write(cfg, {"lint": {"additive_mode": bad, "stray_alpha_below": 16}})
-    s = load(cfg, out, home)
-    assert dict(s.lint) == {**config.DEFAULT_LINT, "stray_alpha_below": 16}
-    assert len(s.errors) == 1
-    assert f"lint.additive_mode must be one of 'either', 'add', 'linear_dodge', got {bad!r}" in s.errors[0]
-    assert "default 'either' kept" in s.errors[0]
 
 
 @pytest.mark.parametrize("key,bad", [
@@ -347,11 +358,89 @@ def test_lint_unknown_key_and_non_object(cfg, out, home):
 
 
 def test_lint_is_read_only_and_defaults_not_mutated(cfg, out, home):
-    write(cfg, {"lint": {"additive_mode": "add"}})
+    write(cfg, {"lint": {"stray_alpha_below": 4}, "live2d": {"additive_mode": "add"}})
     s = load(cfg, out, home)
     with pytest.raises(TypeError):
-        s.lint["additive_mode"] = "either"
-    assert config.DEFAULT_LINT["additive_mode"] == "either"
+        s.lint["stray_alpha_below"] = 8
+    with pytest.raises(TypeError):
+        s.live2d["additive_mode"] = "either"
+    assert config.DEFAULT_LINT["stray_alpha_below"] == 8
+    assert config.DEFAULT_LIVE2D["additive_mode"] == "either"
+
+
+# --- load(): live2d (F004) ------------------------------------------------
+
+def test_live2d_defaults_off(cfg, out, home):
+    assert config.DEFAULT_LIVE2D == {
+        "enabled": False, "additive_mode": "either",
+        "allowed_blend_modes": ("normal", "multiply", "add", "linear_dodge"), "max_nesting": 3,
+        "pose_pattern": r"^(?P<stem>.*\S) (?P<pose>[A-KM-QS-Z])$", "default_pose": "A"}
+    assert dict(load(cfg, out, home).live2d) == config.DEFAULT_LIVE2D
+
+
+@pytest.mark.parametrize("mode", ["either", "add", "linear_dodge"])
+def test_live2d_overrides(cfg, out, home, mode):
+    given = {"enabled": True, "additive_mode": mode, "allowed_blend_modes": ["normal", "screen", "normal"],
+             "max_nesting": 4, "pose_pattern": r"(?P<stem>.+) v(?P<pose>\d+)", "default_pose": "1"}
+    write(cfg, {"live2d": given})
+    s = load(cfg, out, home)
+    assert dict(s.live2d) == {**given, "allowed_blend_modes": ("normal", "screen")}
+    assert s.errors == ()
+
+
+@pytest.mark.parametrize("key,bad,why", [
+    ("enabled", "yes", "live2d.enabled must be true or false"),
+    ("enabled", 1, "live2d.enabled must be true or false"),
+    ("additive_mode", "Add", "live2d.additive_mode must be one of 'either', 'add', 'linear_dodge'"),
+    ("allowed_blend_modes", [], "live2d.allowed_blend_modes must be a non-empty list"),
+    ("allowed_blend_modes", ["normal", "Screen"], "live2d.allowed_blend_modes must be a non-empty list"),
+    ("max_nesting", 0, "live2d.max_nesting must be an integer from 1 to 64"),
+    ("max_nesting", True, "live2d.max_nesting must be an integer from 1 to 64"),
+    ("pose_pattern", "(", "live2d.pose_pattern is not a valid regular expression"),
+    ("pose_pattern", "(?P<stem>.*) (.)", "live2d.pose_pattern needs the named groups (?P<pose>...)"),
+    ("default_pose", "", "live2d.default_pose must be a non-empty string"),
+    ("bogus", 1, "unknown key live2d.bogus ignored"),
+])
+def test_live2d_bad_value_keeps_default(cfg, out, home, key, bad, why):
+    write(cfg, {"live2d": {key: bad, "max_nesting": 5} if key != "max_nesting" else {key: bad}})
+    s = load(cfg, out, home)
+    assert {k: v for k, v in s.live2d.items() if k != "max_nesting"} == \
+        {k: v for k, v in config.DEFAULT_LIVE2D.items() if k != "max_nesting"}
+    assert len(s.errors) == 1 and why in s.errors[0], s.errors
+
+
+def test_live2d_non_object(cfg, out, home):
+    write(cfg, {"live2d": True})
+    s = load(cfg, out, home)
+    assert dict(s.live2d) == config.DEFAULT_LIVE2D
+    assert s.errors == (f"config file {cfg}: 'live2d' must be an object; ignored",)
+
+
+def test_legacy_lint_additive_mode_moves_to_live2d(cfg, out, home):
+    """F003 configs had lint.additive_mode: still read, with a note."""
+    write(cfg, {"lint": {"additive_mode": "add"}})
+    s = load(cfg, out, home)
+    assert s.live2d["additive_mode"] == "add" and "additive_mode" not in s.lint
+    assert s.errors == (f"config file {cfg}: lint.additive_mode moved to live2d.additive_mode (F004); "
+                        "read from the old place for now",)
+    write(cfg, {"lint": {"additive_mode": "Add"}})
+    s = load(cfg, out, home)
+    assert s.live2d["additive_mode"] == "either"
+    assert "lint.additive_mode must be one of 'either', 'add', 'linear_dodge', got 'Add'" in s.errors[1]
+    write(cfg, {"lint": {"additive_mode": "add"}, "live2d": {"additive_mode": "linear_dodge"}})
+    s = load(cfg, out, home)
+    assert s.live2d["additive_mode"] == "linear_dodge"
+    assert s.errors == (f"config file {cfg}: lint.additive_mode ignored: it moved to "
+                        "live2d.additive_mode, which is also set (F004)",)
+
+
+def test_describe_reports_lint_and_live2d_as_json(cfg, out, home):
+    write(cfg, {"lint": {"disable": ["empty-layer"]}, "live2d": {"enabled": True}})
+    d = config.describe(load(cfg, out, home))
+    assert d["lint"]["disable"] == ["empty-layer"]
+    assert d["live2d"]["enabled"] is True
+    assert d["live2d"]["allowed_blend_modes"] == ["normal", "multiply", "add", "linear_dodge"]
+    json.dumps(d)
 
 
 # --- load(): defaults from the environment -----------------------------

@@ -37,10 +37,33 @@ STRAY_METHODS = ("auto", "grow", "shift")
 _grow_checked = {}
 
 
-def lint_settings():
-    """The lint settings from ``config.current().lint`` (when the config
-    has that section), over the defaults."""
+def stray_settings():
+    """The stray-alpha settings from ``config.current().lint``, over the
+    defaults (``layer_stats``, and the alpha part of the lint snapshot)."""
     return alphastats.normalize_settings(getattr(config.current(), "lint", None))
+
+
+def lint_settings(raw=None):
+    """The lint snapshot's ``settings`` (F004): the stray-alpha settings,
+    ``reference_pattern`` and ``disable`` from the config's ``lint``
+    section, and the ``live2d`` section, over ``lint.default_settings()``.
+    ``raw``: a settings dict to use instead of the config (tests); values
+    are checked by ``lint.run``, not here."""
+    if raw is None:
+        cfg = config.current()
+        raw = {**config.plain(getattr(cfg, "lint", {}) or {}),
+               "live2d": config.plain(getattr(cfg, "live2d", {}) or {})}
+    out = lint.default_settings()
+    out.update(alphastats.normalize_settings(raw))
+    for key in ("reference_pattern", "disable"):
+        if key in raw:
+            out[key] = list(raw[key]) if isinstance(raw[key], tuple) else raw[key]
+    for name in lint.PACKS:
+        if isinstance(raw.get(name), dict):
+            out[name] = {**out[name], **config.plain(raw[name])}
+    if "additive_mode" in raw and "additive_mode" not in (raw.get("live2d") or {}):
+        out["live2d"]["additive_mode"] = raw["additive_mode"]  # an F003-shaped settings dict
+    return out
 
 
 def grow_dilate(strong01, w, h, r):
@@ -166,7 +189,7 @@ def collect_snapshot(doc, settings=None, *, method="auto", timings=None):
     layer read."""
     if method not in STRAY_METHODS:
         raise ValueError(f"method must be one of {STRAY_METHODS}, got {method!r}")
-    settings = lint_settings() if settings is None else alphastats.normalize_settings(settings)
+    settings = lint_settings(settings)
     doc.waitForDone()  # pending strokes or updates land before pixels are read
     pixel_stats = _is_rgba8(doc)
     document = {
@@ -209,7 +232,9 @@ def cmd_lint(params):
     snapshot of one document. ``rules`` (rule ids and/or set names, default
     ``["default"]``) and ``severity_min`` are checked before the snapshot
     is collected; bad values are ``bad_request``. The settings come from
-    the config's ``lint`` section. Reads only."""
+    the config's ``lint`` and ``live2d`` sections (F004: the Live2D rules
+    are off unless ``live2d.enabled``; ``rules_off`` lists what the
+    requested sets left out). Reads only."""
     rules = params.get("rules")
     severity_min = params.get("severity_min")
     lint.check_args(rules, severity_min)
@@ -222,7 +247,8 @@ def cmd_lint(params):
     snapshot = collect_snapshot(doc)
     result = lint.run(snapshot, rules, severity_min)
     out = {"doc": handle, "counts": result["counts"], "total": len(result["findings"]),
-           "rules_run": result["rules_run"], "settings": snapshot["settings"],
+           "rules_run": result["rules_run"], "rules_off": result["rules_off"],
+           "settings": snapshot["settings"],
            "pixel_stats": snapshot["document"]["pixel_stats"]}
     if group_by == "rule":
         out["group_by"] = "rule"
@@ -261,7 +287,9 @@ def _page(items, limit, offset):
 def group_findings(findings, limit, offset):
     """``{rule: {severity, count, items, next_offset}}`` in the order rules
     first appear in ``findings`` (F003 K3): each rule's findings counted,
-    ``items`` the page ``[offset:offset + limit]`` of them."""
+    ``items`` the page ``[offset:offset + limit]`` of them. Items leave out
+    ``rule`` and ``severity``, which their group already gives (F004 G11:
+    the smoke test's ``lint(all)`` stays under 8 KB)."""
     grouped = {}
     for f in findings:
         grouped.setdefault(f["rule"], []).append(f)
@@ -269,10 +297,14 @@ def group_findings(findings, limit, offset):
     for rule_id, items in grouped.items():
         page, paging = _page(items, limit, offset)
         end = offset + len(page)
-        out[rule_id] = {"severity": items[0]["severity"], "count": len(items), "items": page,
+        out[rule_id] = {"severity": items[0]["severity"], "count": len(items),
+                        "items": [{k: v for k, v in f.items() if k not in GROUP_KEYS} for f in page],
                         "next_offset": paging.get("next_offset",
                                                   end if end < len(items) else None)}
     return out
+
+
+GROUP_KEYS = ("rule", "severity")  # given once per group, not per item
 
 
 # --- layer_stats (P5.3) ----------------------------------------------------
@@ -340,7 +372,7 @@ def cmd_layer_stats(params):
     doc.waitForDone()  # pending strokes or updates land before pixels are read
     index, by_id = nodes.tree(doc)
     targets = check_layer_refs(index, params, "layer_stats")
-    settings = lint_settings()
+    settings = stray_settings()
     canvas = (doc.width(), doc.height())
     layers, skipped = [], []
     for _, nid in targets:

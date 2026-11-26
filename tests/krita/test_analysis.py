@@ -23,7 +23,7 @@ import unittest
 from krita import Krita, Selection
 
 from helpers import add_paint_layer, scratch_document, settle, temp_config
-from kritamcp import alphastats, config, registry
+from kritamcp import alphastats, config, lint, registry
 from kritamcp.commands import analysis
 from kritamcp.errors import CommandError
 from test_dispatch import EnvelopeAssertions, run
@@ -31,8 +31,8 @@ from test_dispatch import EnvelopeAssertions, run
 NODE_KEYS = ["id", "name", "path", "type", "parent", "depth", "order", "visible", "opacity",
              "blend_mode", "inherit_alpha", "alpha_locked", "locked", "pass_through",
              "has_layer_style", "bounds", "alpha"]
-DEFAULTS = {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4,
-            "stray_speck_max_px": 64}
+DEFAULTS = lint.default_settings()  # F004: core settings plus the (off) live2d section
+STRAY_DEFAULTS = {"stray_alpha_below": 8, "stray_alpha_distance": 4, "stray_speck_max_px": 64}
 NO_SPECKS = alphastats.empty_specks()
 
 # A layer style as Krita's own ``layerStyleToAsl`` writes it (PSD-XML), with
@@ -407,23 +407,35 @@ class StraySpecksTest(EnvelopeAssertions, unittest.TestCase):
 
 class SettingsAndCommandTest(EnvelopeAssertions, unittest.TestCase):
     def test_settings_from_config_lint_section(self):
-        self.assertEqual(analysis.lint_settings(),
+        self.assertEqual(analysis.stray_settings(),
                          alphastats.normalize_settings(getattr(config.current(), "lint", None)))
         saved = config.current
-        fake = types.SimpleNamespace(lint={"stray_alpha_below": 4, "additive_mode": "add"})
+        fake = types.SimpleNamespace(
+            lint={"stray_alpha_below": 4, "reference_pattern": "^Ref", "disable": ("empty-layer",)},
+            live2d={"enabled": True, "additive_mode": "add", "allowed_blend_modes": ("normal",)})
         config.current = lambda: fake
         try:
-            self.assertEqual(analysis.lint_settings(), {
-                "additive_mode": "add", "stray_alpha_below": 4, "stray_alpha_distance": 4,
-                "stray_speck_max_px": 64})
+            want = lint.default_settings()
+            want.update(stray_alpha_below=4, reference_pattern="^Ref", disable=["empty-layer"])
+            want["live2d"].update(enabled=True, additive_mode="add", allowed_blend_modes=["normal"])
+            self.assertEqual(analysis.lint_settings(), want)
+            self.assertEqual(analysis.stray_settings(), {**STRAY_DEFAULTS, "stray_alpha_below": 4})
             with scratch_document(64, 64) as doc:
                 alpha_layer(doc, "Faint", WINDOW, blocks=[(5, 5, 2, 2, 3)])
                 settle(doc)
                 snap = analysis.collect_snapshot(doc)
         finally:
             config.current = saved
-        self.assertEqual(snap["settings"]["stray_alpha_below"], 4)
+        self.assertEqual(snap["settings"], want)
         self.assertEqual(by_name(snap)["Faint"]["alpha"]["stray_count"], 4)
+
+    def test_f003_shaped_settings_dict_still_works(self):
+        """collect_snapshot(doc, settings) with F003's flat dict (additive_mode
+        next to the thresholds) puts additive_mode under live2d."""
+        got = analysis.lint_settings({"additive_mode": "add", "stray_alpha_below": 4})
+        self.assertEqual(got["live2d"]["additive_mode"], "add")
+        self.assertEqual(got["stray_alpha_below"], 4)
+        self.assertNotIn("additive_mode", got)
 
     def test_settings_without_lint_section_are_defaults(self):
         saved = config.current

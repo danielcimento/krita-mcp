@@ -33,7 +33,16 @@ TWIN = os.path.join(REPO, "tests", "unit", "snapshots", "lint_four_findings.json
 
 EXPECTED = collections.Counter([("node-type", "Blur"), ("inherit-alpha", "Shade"),
                                 ("duplicate-name", "Back/Hair"), ("empty-layer", "Spare")])
-DEFAULT_RULES = lint.set_members("default")
+DEFAULT_RULES = lint.set_members("default")  # what runs with the Live2D pack on
+CORE_DEFAULT = [r for r in DEFAULT_RULES if lint.RULES[r].pack == "core"]
+LIVE2D = {"live2d": {"enabled": True}}  # F004: the conventions are opt-in
+
+
+def live2d_settings(**knobs):
+    """The full lint settings with the Live2D pack on."""
+    s = lint.default_settings()
+    s["live2d"].update(enabled=True, **knobs)
+    return s
 
 
 def without_ids(snapshot):
@@ -63,7 +72,7 @@ class _OpenFixture:
 
     def __enter__(self):
         self.tmp = tempfile.mkdtemp(prefix="kmcp-lint-fixture-")
-        self.config = temp_config({"allowed_dirs": [self.tmp]})
+        self.config = temp_config({"allowed_dirs": [self.tmp], **LIVE2D})
         self.config.__enter__()
         self.handle = None
         try:
@@ -96,7 +105,8 @@ class LintFixtureTest(EnvelopeAssertions, unittest.TestCase):
             twin = without_ids(json.load(f))
         got = without_ids(snapshot)
         self.assertEqual(got["document"], twin["document"])
-        self.assertEqual(got["settings"], twin["settings"])
+        # The twin stores only the stray-alpha settings; the rest are defaults.
+        self.assertEqual({k: got["settings"][k] for k in twin["settings"]}, twin["settings"])
         self.assertEqual([n["path"] for n in got["nodes"]], [n["path"] for n in twin["nodes"]])
         for mine, theirs in zip(got["nodes"], twin["nodes"]):
             self.assertEqual(mine, theirs, mine["path"])
@@ -123,7 +133,8 @@ class LintFixtureTest(EnvelopeAssertions, unittest.TestCase):
         # Sorted by stacking order: Blur, Back/Hair, Shade, Spare.
         self.assertEqual([f["path"] for f in result["findings"]],
                          ["Blur", "Back/Hair", "Shade", "Spare"])
-        self.assertEqual(result["settings"], lint.DEFAULT_SETTINGS)
+        self.assertEqual(result["settings"], live2d_settings())
+        self.assertEqual(result["rules_off"], {})
         self.assertIs(result["pixel_stats"], True)
         return snapshot
 
@@ -166,8 +177,29 @@ class LintCommandTest(EnvelopeAssertions, unittest.TestCase):
         add_paint_layer(doc, "Spare")
         settle(doc)
 
-    def test_selection_severity_and_sorting(self):
+    def test_live2d_off_by_default(self):
+        """F004: without live2d.enabled only the core rules run by default,
+        and rules_off names the rest; a Live2D rule named by id still runs."""
         with scratch_document(16, 16) as doc:
+            self._doc(doc)
+            handle = registry.handle_for(doc)
+            default = self.assertOk(run("lint", doc=handle))
+            self.assertEqual(default["rules_run"], CORE_DEFAULT)
+            self.assertEqual(default["rules_off"],
+                             {"live2d": [r for r in DEFAULT_RULES if r not in CORE_DEFAULT]})
+            self.assertEqual([(f["rule"], f["path"]) for f in default["findings"]],
+                             [("empty-layer", "Spare"), ("out-of-canvas", "Body")])
+            self.assertIs(default["settings"]["live2d"]["enabled"], False)
+            by_id = self.assertOk(run("lint", doc=handle, rules=["inherit-alpha"]))
+            self.assertEqual([(f["rule"], f["path"]) for f in by_id["findings"]],
+                             [("inherit-alpha", "Eye L")])
+            with temp_config({"lint": {"disable": ["empty-layer"]}}):
+                fewer = self.assertOk(run("lint", doc=handle))
+            self.assertEqual(fewer["rules_off"]["disabled"], ["empty-layer"])
+            self.assertEqual([f["rule"] for f in fewer["findings"]], ["out-of-canvas"])
+
+    def test_selection_severity_and_sorting(self):
+        with scratch_document(16, 16) as doc, temp_config(LIVE2D):
             self._doc(doc)
             handle = registry.handle_for(doc)
             default = self.assertOk(run("lint", doc=handle))
@@ -217,7 +249,7 @@ class LintCommandTest(EnvelopeAssertions, unittest.TestCase):
         self.assertError(run("lint", doc="doc-999999", rules=["bogus"]), "bad_request")
 
     def test_document_level_finding_sorts_first(self):
-        with scratch_document(16, 16, color_depth="U16") as doc:
+        with scratch_document(16, 16, color_depth="U16") as doc, temp_config(LIVE2D):
             add_paint_layer(doc, "Spare").setInheritAlpha(True)
             result = self.assertOk(run("lint", doc=registry.handle_for(doc)))
         self.assertIs(result["pixel_stats"], False)
@@ -227,7 +259,9 @@ class LintCommandTest(EnvelopeAssertions, unittest.TestCase):
         self.assertIsNone(result["findings"][0]["layer_id"])
 
     def test_settings_from_config(self):
-        cases = ({}, {"lint": {"additive_mode": "add"}}, {"lint": {"additive_mode": "linear_dodge"}})
+        cases = (LIVE2D, {"live2d": {"enabled": True, "additive_mode": "add"}},
+                 {"live2d": {"enabled": True, "additive_mode": "linear_dodge"}},
+                 {"lint": {"additive_mode": "add"}, **LIVE2D})  # F003's place: still read
         with scratch_document(16, 16) as doc:
             layer = add_paint_layer(doc, "Glow")
             self.assertTrue(layer.setPixelData(bytes((0, 0, 0, 255)) * 4, 0, 0, 2, 2))
@@ -239,10 +273,12 @@ class LintCommandTest(EnvelopeAssertions, unittest.TestCase):
                 with temp_config(data):
                     got[json.dumps(data)] = self.assertOk(run("lint", doc=handle))
             del layer
-        plain, add, dodge = (got[json.dumps(d)] for d in cases)
-        self.assertEqual(plain["settings"]["additive_mode"], "either")
+        plain, add, dodge, legacy = (got[json.dumps(d)] for d in cases)
+        self.assertEqual(plain["settings"]["live2d"]["additive_mode"], "either")
         self.assertEqual(pairs(plain["findings"]), collections.Counter())
-        self.assertEqual(add["settings"], dict(lint.DEFAULT_SETTINGS, additive_mode="add"))
+        self.assertEqual(add["settings"], live2d_settings(additive_mode="add"))
+        self.assertEqual(legacy["settings"], add["settings"])
+        self.assertEqual(legacy["findings"], add["findings"])
         self.assertEqual(pairs(add["findings"]), collections.Counter([("blend-mode", "Glow")]))
         self.assertIn("'add'", add["findings"][0]["message"])
         self.assertEqual(pairs(dodge["findings"]), collections.Counter())
@@ -326,7 +362,8 @@ class LayerStyleTest(EnvelopeAssertions, unittest.TestCase):
                 after = pixels.as_bytes(doc.pixelData(0, 0, 32, 32))
                 own = pixels.as_bytes(styled.pixelData(8, 8, 8, 8))
                 self.assertEqual(styled.bounds().getRect(), (8, 8, 8, 8))  # the style isn't in bounds
-                result = self.assertOk(run("lint", doc=registry.handle_for(doc)))
+                with temp_config(LIVE2D):  # layer-style is a Live2D-convention rule
+                    result = self.assertOk(run("lint", doc=registry.handle_for(doc)))
                 kra = os.path.join(tmp, "styled.kra")
                 fileio.save_as(doc, kra)
                 del styled, plain
@@ -342,7 +379,7 @@ class LayerStyleTest(EnvelopeAssertions, unittest.TestCase):
             self.assertEqual(pairs(result["findings"]),
                              collections.Counter([("layer-style", "Styled")]))
 
-            with temp_config({"allowed_dirs": [tmp]}):
+            with temp_config({"allowed_dirs": [tmp], **LIVE2D}):
                 handle = self.assertOk(run("open_file", path=kra))["doc"]
                 reopened = self.assertOk(run("lint", doc=handle))
                 self.assertOk(run("close_document", doc=handle, discard=True))

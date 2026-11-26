@@ -3,7 +3,11 @@ made with the MCP tools' default parameters, returns at most 8 KB on the
 Mao ``.kra``. Also K6 (exactly 11 duplicate-name errors, all A/B pose
 pairs, fixed by one update_layers call from suggested_names), K7
 (stray-alpha findings carry pixels and bounds) and the 3.2 rebuild in one
-call. Calls go through ``dispatch.execute`` with the params ``server.py``
+call. F004 (smoke test revision 2): K8 (exactly one reference-unbracketed
+warning, for Expression References, before and after the B poses are
+hidden) and K9 (the 22 suggested renames give no duplicate_name warning,
+only notes for the names shared with a group). The config has the Live2D
+conventions on, as the smoke test's does. Calls go through ``dispatch.execute`` with the params ``server.py``
 sends by default (tests/unit/test_server_tools.py pins those); the size
 is the JSON of the result, which the server returns plus a one-line
 ``summary``.
@@ -54,7 +58,7 @@ class SmokeSizesTest(EnvelopeAssertions, unittest.TestCase):
         tmp = tempfile.mkdtemp(prefix="kmcp-smoke-")
         handles = []
         try:
-            with temp_config({"allowed_dirs": [tmp]}):
+            with temp_config({"allowed_dirs": [tmp], "live2d": {"enabled": True}}):
                 work = os.path.join(tmp, "work.kra")
                 shutil.copyfile(src, work)
                 self._sequence(tmp, work, handles)
@@ -68,6 +72,14 @@ class SmokeSizesTest(EnvelopeAssertions, unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
         too_big = [(s, label) for s, label in self.sizes if s + SUMMARY_ALLOWANCE > LIMIT]
         self.assertEqual(too_big, [], "results over 8 KB")
+
+    def assertReferenceUnbracketed(self, result):
+        """K8: exactly one reference-unbracketed warning, Expression References."""
+        group = result["by_rule"]["reference-unbracketed"]
+        self.assertEqual((group["count"], group["severity"]), (1, "warning"))
+        (f,) = group["items"]
+        self.assertEqual(f["path"], "Expression References")
+        self.assertEqual(f["suggested_names"], [{"id": f["layer_id"], "name": "[ Expression References ]"}])
 
     def _ids(self, handle):
         """path -> id, from one full listing (not a measured call)."""
@@ -91,8 +103,11 @@ class SmokeSizesTest(EnvelopeAssertions, unittest.TestCase):
             self.assertEqual(len(json.load(f)["layers"]), 222)
 
         lint_all = self.ok("lint all", "lint", doc=doc, rules=["all"], **LINT_DEFAULTS)
+        self.assertEqual(lint_all["rules_off"], {})
         dup = lint_all["by_rule"]["duplicate-name"]
         self.assertEqual(dup["count"], 11)  # K6: A/B pose pairs only
+        self.assertEqual(dup["severity"], "error")
+        self.assertReferenceUnbracketed(lint_all)
         stray = lint_all["by_rule"]["stray-alpha"]
         self.assertGreater(stray["count"], 0)
         for f in stray["items"]:
@@ -106,11 +121,30 @@ class SmokeSizesTest(EnvelopeAssertions, unittest.TestCase):
             self.assertEqual(sorted(s["name"][-1] for s in f["suggested_names"]), ["A", "B"],
                              f["message"])
             changes += [{"id": s["id"], "name": s["name"]} for s in f["suggested_names"]]
-        self.ok("update_layers 22 renames", "update_layers", doc=doc, changes=changes)
+        renamed = self.ok("update_layers 22 renames", "update_layers", doc=doc, changes=changes)
+        # K9: Wand A / Wand B now match their parent groups: allowed, so notes only.
+        self.assertEqual(renamed["warnings"], [])
+        shared = sorted(n["name"] for n in renamed.get("notes", []))
+        self.assertIn("Wand A", shared)
+        self.assertIn("Wand B", shared)
+        self.assertTrue(all(n["code"] == "name_shared_across_kinds" for n in renamed["notes"]))
         after = self.ok("lint duplicate-name", "lint", doc=doc, rules=["duplicate-name"],
                         **LINT_DEFAULTS)
         self.assertEqual(after["total"], 0)
         self.ok("save", "save", doc=doc)
+
+        # Stage 5.1 (revision 2): hide the B poses. They are a pose group
+        # set, so K8 still flags Expression References only.
+        ids, _ = self._ids(doc)
+        hide = [{"id": ids[p], "visible": False} for p in ("Arm L B", "Arm R B")]
+        self.assertOk(run("update_layers", doc=doc, changes=hide))
+        hidden = self.ok("lint pose-visibility, reference rules", "lint", doc=doc,
+                         rules=["pose-visibility", "reference-hidden", "reference-unbracketed"],
+                         **LINT_DEFAULTS)
+        self.assertEqual(sorted(hidden["by_rule"]), ["reference-unbracketed"])
+        self.assertReferenceUnbracketed(hidden)
+        self.assertOk(run("update_layers", doc=doc,
+                          changes=[{"id": c["id"], "visible": True} for c in hide]))
 
         # Stage 3: export, rebuild in one call, diff, render, a refused path.
         exported = self.ok("export_layers", "export_layers", doc=doc,

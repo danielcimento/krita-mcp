@@ -1,7 +1,7 @@
 {
   "description": "out-of-canvas: a paint layer's opaque_bounds beyond (0, 0, 64, 64).",
   "document": {"width": 64, "height": 64, "color_model": "RGBA", "color_depth": "U8", "color_profile": "sRGB-elle-V2-srgbtrc.icc"},
-  "settings": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4, "stray_speck_max_px": 64},
+  "settings": {"stray_alpha_below": 8, "stray_alpha_distance": 4, "stray_speck_max_px": 64},
   "nodes": [
     {"id": "{00000009-0000-4000-8000-000000000001}", "name": "Inside", "path": "Inside", "type": "paintlayer", "parent": null, "depth": 1, "order": 0, "visible": true, "opacity": 1.0, "blend_mode": "normal", "inherit_alpha": false, "alpha_locked": false, "locked": false, "pass_through": null, "has_layer_style": false, "bounds": {"x": 0, "y": 0, "w": 64, "h": 64}, "alpha": {"pixel_count": 4096, "opaque_bounds": {"x": 0, "y": 0, "w": 64, "h": 64}, "stray_count": 0, "stray_specks": {"count": 0, "pixels": 0, "regions": 0, "samples": [], "truncated": false}}},
     {"id": "{00000009-0000-4000-8000-000000000002}", "name": "Overhang", "path": "Overhang", "type": "paintlayer", "parent": null, "depth": 1, "order": 1, "visible": true, "opacity": 1.0, "blend_mode": "normal", "inherit_alpha": false, "alpha_locked": false, "locked": false, "pass_through": null, "has_layer_style": false, "bounds": {"x": -3, "y": 10, "w": 20, "h": 20}, "alpha": {"pixel_count": 400, "opaque_bounds": {"x": -3, "y": 10, "w": 20, "h": 20}, "stray_count": 0, "stray_specks": {"count": 0, "pixels": 0, "regions": 0, "samples": [], "truncated": false}}},

@@ -70,8 +70,9 @@ def krita_health() -> dict:
     from the next call without restarting Krita (``config_reload``);
     krita_reload_config shows the result. ``config_dirs`` are the file's
     entries as written, ``config_errors`` the problems, such as a skipped
-    directory; ``limits`` and ``lint`` are the canvas limits and
-    krita_lint's settings. ``busy``
+    directory; ``limits``, ``lint`` and ``live2d`` are the canvas limits,
+    krita_lint's settings and the Live2D conventions (``live2d.enabled``:
+    off unless the config turns them on). ``busy``
     is the command Krita is running now (``{"action", "elapsed_ms"}``) or
     null, and ``queued`` how many wait behind it.
     """
@@ -392,9 +393,10 @@ def krita_set_canvas_size(width: Annotated[int, Field(ge=1)], height: Annotated[
     """
     Change the canvas size without scaling anything (Image > Resize Canvas):
     the art keeps its place relative to itself and is shifted by the offset
-    the anchor gives. WARNING: this breaks any rig already made on the
-    document (mesh coordinates are canvas pixels); fix the canvas size
-    before rigging starts. Every result carries a "rig_breaking" warning.
+    the anchor gives. With the Live2D conventions on (config
+    live2d.enabled), every result carries a "rig_breaking" warning: a
+    resize breaks any rig already made on the document (mesh coordinates
+    are canvas pixels), so fix the canvas size before rigging starts.
 
     anchor is the part of the old canvas that stays put: "top-left" keeps
     the top-left corner, "center" grows or shrinks evenly on all sides,
@@ -436,16 +438,20 @@ def krita_set_canvas_size(width: Annotated[int, Field(ge=1)], height: Annotated[
     after = f"{result.get('width', width)}x{result.get('height', height)}"
     off = result.get("offset") or {}
     how = f"anchor {result.get('anchor', anchor)}, content moved by ({off.get('x')}, {off.get('y')})"
-    others = [w for w in result.get("warnings") or [] if
+    warnings = result.get("warnings") or []
+    rig = any(isinstance(w, dict) and w.get("code") == "rig_breaking" for w in warnings)
+    others = [w for w in warnings if
               not (isinstance(w, dict) and w.get("code") == "rig_breaking")]
     if result.get("dry_run"):
-        summary = (f"Would resize the canvas of {where} from {before} to {after} ({how}); "
-                   "this would break any existing rig (dry run, nothing changed)")
+        summary = (f"Would resize the canvas of {where} from {before} to {after} ({how})"
+                   + ("; this would break any existing rig" if rig else "")
+                   + " (dry run, nothing changed)")
     elif result.get("changed") is False:
         summary = f"The canvas of {where} is already {after}: nothing changed"
     else:
-        summary = (f"Resized the canvas of {where} from {before} to {after} ({how}); "
-                   "this breaks any existing rig (mesh coordinates are canvas pixels)")
+        summary = (f"Resized the canvas of {where} from {before} to {after} ({how})"
+                   + ("; this breaks any existing rig (mesh coordinates are canvas pixels)"
+                      if rig else ""))
     return _done(result, summary + _warnings_note(others))
 
 
@@ -760,14 +766,18 @@ def krita_update_layers(changes: list[LayerChange], doc: Optional[str] = None,
     Unknown keys fail, and so does naming the same layer in two changes.
 
     Every change is validated before anything changes; the first bad one
-    fails the call with details.index. A rename to a name another layer
-    has is allowed but listed in warnings ({code: "duplicate_name", id,
-    name, others}): a bare-name ref to it becomes ambiguous.
+    fails the call with details.index. A rename to a name another node of
+    the same kind has (layer and layer, group and group) is allowed but
+    listed in warnings ({code: "duplicate_name", id, name, others}): a
+    bare-name ref to it becomes ambiguous. A name shared between a group
+    and a layer (the Face group holding the Face layer) is allowed by the
+    naming rules and lint, so it is only an info note in notes ({code:
+    "name_shared_across_kinds", id, name, others, message}).
 
-    Returns {doc, updated: [{id, path, changed: [fields set]}], warnings};
-    with dry_run, {doc, would_update: [{id, path, set: {field: value}}],
-    warnings} and nothing changes. One successful call is one agent undo
-    step.
+    Returns {doc, updated: [{id, path, changed: [fields set]}], warnings,
+    notes?}; with dry_run, {doc, would_update: [{id, path, set: {field:
+    value}}], warnings, notes?} and nothing changes. One successful call
+    is one agent undo step.
 
     Args:
         changes: The changes, 1 to 2000, applied in order
@@ -894,15 +904,17 @@ def krita_duplicate_layer(id: str, name: Optional[str] = None, parent: Optional[
     source's parent).
 
     Naming: Krita keeps the source's name, so by default the copy has the
-    same name as the source; name sets another. A name another layer has
-    is allowed but warned about ({code: "duplicate_name", id, name,
-    others}: a bare-name ref becomes ambiguous). The layers inside a copied
-    group keep their names ({code: "duplicate_names_in_copy", count,
-    names}).
+    same name as the source; name sets another. A name another node of the
+    same kind has is allowed but warned about ({code: "duplicate_name",
+    id, name, others}: a bare-name ref becomes ambiguous); one a node of
+    the other kind has (group vs layer) is only a note
+    ("name_shared_across_kinds"). The layers inside a copied group keep
+    their names ({code: "duplicate_names_in_copy", count, names}).
 
     Returns {doc, source (id), layer (the copy's layer object), ids (the
-    copy and its subtree, top to bottom), warnings}; with dry_run, {doc,
-    source, would_create: {name, type, parent, above, count}, warnings}
+    copy and its subtree, top to bottom), warnings, notes?}; with dry_run,
+    {doc, source, would_create: {name, type, parent, above, count},
+    warnings, notes?}
     and nothing changes. One call is one agent undo step (krita_undo
     removes the copy).
 
@@ -1233,9 +1245,11 @@ _RENDER_HINT_PIXELS = 4_000_000
 
 
 def _render_summary(result: dict, path: str, what: str = "Rendered {doc}",
-                    what_no_doc: str = "Rendered") -> str:
+                    what_no_doc: str = "Rendered", via_render: bool = False) -> str:
     """"Rendered doc-2 to <path>: 1450x2100 (scale 0.25 of …), 1.2 MB", plus
-    the cost hint for big full-size renders."""
+    the cost hint for big full-size renders, unless png_level 0 or 1 was
+    already used (F004 K10). ``via_render``: the tool has neither option
+    (get_canvas), so the hint names krita_render."""
     w, h = result.get("width"), result.get("height")
     summary = what.format(doc=result["doc"]) if result.get("doc") else what_no_doc
     summary += f" to {result.get('path') or path}"
@@ -1258,10 +1272,13 @@ def _render_summary(result: dict, path: str, what: str = "Rendered {doc}",
         summary += " (" + ", ".join(details) + ")"
     if result.get("bytes") is not None:
         summary += f", {_size(result['bytes'])}"
-    if (scale == 1 and isinstance(w, int) and isinstance(h, int)
+    level = result.get("png_level")
+    fast = isinstance(level, int) and not isinstance(level, bool) and level <= 1
+    if (scale == 1 and not fast and isinstance(w, int) and isinstance(h, int)
             and w * h >= _RENDER_HINT_PIXELS):
-        summary += ("; full-size PNG encoding is slow (about 4 s at 5800x8400): pass "
-                    "scale=0.25 for previews, or png_level=1")
+        summary += ("; full-size PNG encoding is slow (about 4 s at 5800x8400): "
+                    + ("use krita_render with " if via_render else "pass ")
+                    + "scale=0.25 for previews, or png_level=1")
     return summary
 
 
@@ -1480,7 +1497,8 @@ def krita_selection_to_layer(source: str, name: str, parent: Optional[str] = Non
     top of that group's children, above (a sibling ref) directly above that
     layer (a child of parent, or without parent of the source's parent).
     A name another layer has is allowed but warned about
-    ({code: "duplicate_name"}).
+    ({code: "duplicate_name"}); a group's name only gives a note in notes
+    ("name_shared_across_kinds").
 
     Fails with "conflict" when there is no selection, the source is not a
     paint layer, or the selection doesn't overlap the layer; the document
@@ -1719,6 +1737,15 @@ def _lint_summary(result: dict, doc: Optional[str]) -> str:
                                     if isinstance(g, dict))
     if result.get("pixel_stats") is False:
         summary += "; pixel rules skipped (not an 8-bit RGBA document)"
+    off = result.get("rules_off")
+    if isinstance(off, dict):
+        live2d = off.get("live2d") or []
+        disabled = off.get("disabled") or []
+        if live2d:
+            summary += (f"; {_count(len(live2d), 'Live2D convention rule')} off "
+                        "(set live2d.enabled in the config to run them)")
+        if disabled:
+            summary += f"; {_count(len(disabled), 'rule')} disabled by lint.disable"
     return summary
 
 
@@ -1730,26 +1757,19 @@ def krita_lint(doc: Optional[str] = None, rules: Optional[list[str]] = None,
                offset: Annotated[int, Field(ge=0)] = 0,
                timeout_s: Optional[float] = None) -> dict:
     """
-    Check a document against the Live2D rig conventions (part separation
-    for Cubism) before exporting it. Reads only; the document is not
-    changed.
+    Check a document's layers for problems before handing it on. Reads
+    only; the document is not changed. Two packs of rules:
 
-    Default rules (set "default"):
-    - node-type (error): a node other than a paint layer or group: filter,
-      fill, clone, vector or file layers, and every mask (bake or remove)
-    - layer-style (error): a layer with a layer style (bake or remove)
-    - inherit-alpha (error): a clipped layer (inherit alpha); bake the
-      clipping into the pixels
-    - blend-mode (error): a paint layer's blend mode other than normal,
-      multiply or add (add and linear_dodge are the same mode)
-    - duplicate-name (error): a name used by several groups, or by several
-      layers, anywhere in the document (a group may share its name with a
-      layer, e.g. the Face group holding the Face layer); one finding per
-      name, related_ids lists them all, the message gives their paths and
-      a fix, and suggested_names ([{id, name}]) the pose-suffix names when
-      the copies sit in pose groups ("Hand L A" / "Hand L B")
-    - side-token (warning): "Eye" next to "Eye L" in one group, or a
-      non-standard side token such as "Eye_L", "Left Eye", "(L)"
+    Core rules (always available, set "default"; the config's
+    lint.disable takes one out of the sets):
+    - duplicate-name (warning; error with the Live2D conventions on): a
+      name used by several groups, or by several layers, anywhere in the
+      document (a group may share its name with a layer, e.g. the Face
+      group holding the Face layer); bare-name refs to them are ambiguous.
+      One finding per name, related_ids lists them all, the message gives
+      their paths and a fix; with the Live2D conventions on,
+      suggested_names ([{id, name}]) gives the pose-suffix names when the
+      copies sit in pose groups ("Hand L A" / "Hand L B")
     - empty-layer (warning): a paint layer with no pixels
     - out-of-canvas (warning): a paint layer's pixels reach past the canvas
     - stray-alpha (warning): isolated specks of faint pixels: groups of at
@@ -1758,14 +1778,24 @@ def krita_lint(doc: Optional[str] = None, rules: Optional[list[str]] = None,
       soft regions (glows) don't count. The finding has pixels (the specks'
       pixel count) and bounds (their box), enough to decide on
       krita_trim_layers without rendering
+
+    Live2D rig conventions (part separation for Cubism; OFF unless the
+    config's live2d.enabled is true). Set "default":
+    - node-type (error): a node other than a paint layer or group: filter,
+      fill, clone, vector or file layers, and every mask (bake or remove)
+    - layer-style (error): a layer with a layer style (bake or remove)
+    - inherit-alpha (error): a clipped layer (inherit alpha); bake the
+      clipping into the pixels
+    - blend-mode (error): a paint layer's blend mode outside
+      live2d.allowed_blend_modes (default normal, multiply, add; add and
+      linear_dodge are the same mode)
+    - side-token (warning): "Eye" next to "Eye L" in one group, or a
+      non-standard side token such as "Eye_L", "Left Eye", "(L)"
     - color-space (error): the document is not 8-bit RGBA sRGB (one
       document-level finding)
-    The contents of reference groups (a group named in brackets, such as
-    "[ Guide ]") are skipped. Pixel rules need an 8-bit RGBA document
-    (pixel_stats false otherwise).
-
-    Conventions rules (set "conventions", opt-in):
-    - nesting-depth (warning): a paint layer more than 3 groups deep
+    Set "conventions" (opt-in even with the pack on):
+    - nesting-depth (warning): a paint layer more than live2d.max_nesting
+      (default 3) groups deep
     - name-case (info): a paint layer or group name that is not Title Case
       with single-space-separated words (side tokens, A/B variants,
       numbers and lowercase minor words such as "of" are allowed)
@@ -1774,20 +1804,36 @@ def krita_lint(doc: Optional[str] = None, rules: Optional[list[str]] = None,
       blend mode
     - pose-visibility (warning): sibling pose groups "<X> A", "<X> B", ...
       where A is hidden or another one is visible
-    - reference-hidden (warning): a reference group (name in brackets)
-      that is visible
+    - reference-hidden (warning): a reference group that is visible
+    - reference-unbracketed (warning): a hidden group that is neither a
+      reference group nor a pose group, or a hidden top-level paint layer
+      that isn't a pose variant: reference material belongs in a
+      bracketed group, but hidden rig parts are fine, so the message gives
+      both readings (a group's finding has suggested_names with the
+      bracketed name)
     - mask-suffix (info): the base layer of a clipped (inherit alpha)
       layer whose name doesn't end in " Mask"
 
-    Sets: "default" (the default rules), "conventions" (the conventions
-    rules), "all" (every rule).
+    The contents of reference groups (a group whose name matches
+    lint.reference_pattern: by default in brackets, such as "[ Guide ]")
+    are skipped by every rule. Pixel rules need an 8-bit RGBA document
+    (pixel_stats false otherwise).
 
-    Settings come from the plugin's config file
-    (~/.krita-mcp-config.json), section "lint": additive_mode ("either"
-    (default), "add" or "linear_dodge": require one spelling of the Add
-    mode), stray_alpha_below (default 8), stray_alpha_distance
-    (default 4 px) and stray_speck_max_px (default 64). The result's
-    settings shows the ones used.
+    Sets: "default", "conventions", "all" (every rule), each expanded to
+    the rules the config enables; rules_off {reason: [rule ids]} lists the
+    ones a requested set left out ("live2d": the Live2D conventions are
+    off; "disabled": in lint.disable). A rule named by id always runs.
+
+    Settings come from the plugin's config file (~/.krita-mcp-config.json)
+    and are returned as settings. Section "lint": stray_alpha_below
+    (default 8), stray_alpha_distance (default 4 px), stray_speck_max_px
+    (default 64), reference_pattern (a regular expression; default
+    "^\\[.*\\]$"), disable (rule ids). Section "live2d": enabled (default
+    false), additive_mode ("either" (default), "add" or "linear_dodge":
+    require one spelling of the Add mode), allowed_blend_modes,
+    max_nesting, pose_pattern (a regular expression with groups stem and
+    pose; default: the last word one capital other than L and R) and
+    default_pose (default "A").
 
     Findings are {rule, severity, layer_id, path, message, related_ids?,
     suggested_names?, pixels?, bounds?}, sorted by stacking order (top to
@@ -1796,13 +1842,14 @@ def krita_lint(doc: Optional[str] = None, rules: Optional[list[str]] = None,
 
     Results are grouped by rule (group_by "rule", the default) so a big
     document's lint fits in context: by_rule {rule: {severity, count,
-    items (the first `limit` findings, from `offset`), next_offset}}.
+    items (the first `limit` findings, from `offset`, without the rule
+    and severity their group gives), next_offset}}.
     group_by "none" gives the flat findings list instead, paged the same
     way (offset, limit, next_offset). To see every finding of one rule,
     pass rules=["<rule>"] and a larger limit, or page with offset.
 
     Returns {doc, by_rule | findings, counts ({error, warning, info}, over
-    all findings), total, rules_run, settings, pixel_stats}.
+    all findings), total, rules_run, rules_off, settings, pixel_stats}.
 
     Args:
         doc: Document handle such as "doc-3" (new_canvas and open_file return
@@ -2297,7 +2344,7 @@ def krita_get_canvas(filename: str = "canvas.png", doc: Optional[str] = None,
     result = client.call("get_canvas", _with({"filename": filename}, doc=doc),
                          timeout_s=timeout_s)
     return _done(result, _render_summary(result, filename, what="Saved the canvas of {doc}",
-                                         what_no_doc="Saved the canvas"))
+                                         what_no_doc="Saved the canvas", via_render=True))
 
 
 def _journal_summary(result: dict, verb: str, done_key: str) -> str:

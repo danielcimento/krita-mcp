@@ -80,7 +80,7 @@ If using a virtual environment:
 
 | Tool | Description |
 |------|-------------|
-| `krita_health` | Whether Krita and the plugin are running; protocol, allowed dirs and how to add one (`config_file`, `config_key`), limits, lint settings, config errors, the busy command |
+| `krita_health` | Whether Krita and the plugin are running; protocol, allowed dirs and how to add one (`config_file`, `config_key`), limits, lint settings, whether the Live2D conventions are on (`live2d`), config errors, the busy command |
 | `krita_reload_config` | Re-read `~/.krita-mcp-config.json` now and report the allowed dirs and config errors (the plugin also re-reads it by itself; no restart) |
 | `krita_list_documents` | Open documents with their `doc` handles, size, path, modified and active flags |
 | `krita_get_document_info` | One document's size, resolution, colour space, layer counts, nesting depth and selection |
@@ -88,7 +88,7 @@ If using a virtual environment:
 | `krita_open_file` | Open a `.kra`, `.ora`, `.png`, …; returns its `doc` handle (an already open file keeps its handle) |
 | `krita_save` | Save in place, save as `.kra` (the document moves there), or export to PNG/JPG/PSD/ORA; Add / Linear Dodge layers are converted for `.psd` / `.ora` on a copy (`blend_conversions`) |
 | `krita_close_document` | Close a document by handle; refuses unsaved changes unless `discard=true` |
-| `krita_set_canvas_size` | Change the canvas size without scaling, about an `anchor` (`center`, `top-left`, …); pixels pushed past the edge are kept in the layers; always warns that it breaks existing rigs; `dry_run`, one undo step |
+| `krita_set_canvas_size` | Change the canvas size without scaling, about an `anchor` (`center`, `top-left`, …); pixels pushed past the edge are kept in the layers; warns that it breaks existing rigs when the Live2D conventions are on; `dry_run`, one undo step |
 
 **Layer tree**
 
@@ -126,7 +126,7 @@ If using a virtual environment:
 
 | Tool | Description |
 |------|-------------|
-| `krita_lint` | Check a document against the Live2D rig rules (node types, layer styles, clipping, blend modes, duplicate names, side tokens, empty / off-canvas layers, stray-alpha specks, colour space); opt-in `"conventions"` set (nesting depth, name case, blend suffixes, pose visibility, hidden references, mask suffixes); `rules`, `severity_min`; grouped by rule with the first `limit` findings each (`group_by`, `offset`), sorted by stacking order |
+| `krita_lint` | Check a document's layers: core rules for any document (duplicate names, empty and off-canvas layers, stray-alpha specks; `lint.disable` opts out) and, with `live2d.enabled` in the config, the Live2D rig conventions (node types, layer styles, clipping, blend modes, side tokens, colour space; opt-in `"conventions"` set: nesting depth, name case, blend suffixes, pose visibility, hidden and unbracketed references, mask suffixes); `rules`, `severity_min`, `rules_off` says what the config left out; grouped by rule with the first `limit` findings each (`group_by`, `offset`), sorted by stacking order |
 | `krita_layer_stats` | Per paint layer: bounds, opaque bounds, pixel and opaque counts, an alpha histogram (`buckets`), empty, overhang past the canvas, lint's stray-alpha numbers |
 | `krita_occlusion_map` | How much of a paint layer the layers drawn after it hide (global draw order, visible, `modes` default Normal only): a grayscale PNG of alpha x coverage over its bounds, `covered_pct` at `threshold`, `fully_hidden`, the layers counted; for skipping hidden areas in part separation |
 | `krita_diff_documents` | Compare two open documents: layers added, removed, renamed, moved and changed (matched by id, then name path, then unique name), and with `pixels` which paint layers' pixels differ and how the projections differ (changed pixels, bounds, largest channel difference, and alpha-0-only colour changes, ignored by default: `ignore_alpha0_rgb`) |
@@ -177,7 +177,9 @@ target a paint layer.
 
 ### Live2D workflow
 
-Open the artwork (`krita_open_file`) or start a canvas (`krita_new_canvas`),
+Turn the Live2D conventions on first (`"live2d": {"enabled": true}` in
+`~/.krita-mcp-config.json`, see below): without it `krita_lint` runs only
+the core rules. Then open the artwork (`krita_open_file`) or start a canvas (`krita_new_canvas`),
 build or restructure the part layers in one call with
 `krita_create_layers(manifest=…)` (and the update / move / delete tools),
 check the result with `krita_lint` until it reports no errors, then export
@@ -227,8 +229,12 @@ Every key is optional:
   "allowed_dirs": ["~/umamo-art", "~/projects/mao"],
   "limits": {"max_canvas_dim": 16384, "max_canvas_pixels": 67108864},
   "journal": {"max_actions": 20, "max_bytes": 1073741824},
-  "lint": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4,
-           "stray_speck_max_px": 64}
+  "lint": {"stray_alpha_below": 8, "stray_alpha_distance": 4, "stray_speck_max_px": 64,
+           "reference_pattern": "^\\[.*\\]$", "disable": []},
+  "live2d": {"enabled": true, "additive_mode": "either",
+             "allowed_blend_modes": ["normal", "multiply", "add", "linear_dodge"],
+             "max_nesting": 3, "pose_pattern": "^(?P<stem>.*\\S) (?P<pose>[A-KM-QS-Z])$",
+             "default_pose": "A"}
 }
 ```
 
@@ -258,13 +264,29 @@ Every key is optional:
   removed when Krita quits). Both byte caps cover the undo and redo stacks
   together. Deleted layers are kept in memory only. A call too big for the
   caps still happens but warns `not_undoable`.
-- **Lint.** `krita_lint`'s settings: `additive_mode` (`"either"`, or
-  `"add"` / `"linear_dodge"` to require one spelling of the Add blend
-  mode), and the stray-alpha thresholds: pixels with alpha below
-  `stray_alpha_below` (1–255) further than `stray_alpha_distance` px
-  (1–64) from any stronger pixel are stray, and 8-connected groups of at
-  most `stray_speck_max_px` (1–1,000,000, default 64) stray pixels are
-  reported as specks; larger groups (soft glows) are not.
+- **Lint.** `krita_lint`'s generic settings. The stray-alpha thresholds:
+  pixels with alpha below `stray_alpha_below` (1–255) further than
+  `stray_alpha_distance` px (1–64) from any stronger pixel are stray, and
+  8-connected groups of at most `stray_speck_max_px` (1–1,000,000,
+  default 64) stray pixels are reported as specks; larger groups (soft
+  glows) are not. `reference_pattern`: a group whose trimmed name matches
+  this regular expression is reference material, skipped with its
+  contents by every rule (default: wrapped in brackets; `null` for none).
+  `disable`: rule ids to leave out of the `default` / `conventions` /
+  `all` sets (a rule named in `rules` still runs).
+- **Live2D conventions** (off by default; the conventions of
+  `live2d-workspace/CONVENTIONS.md`). `enabled: true` adds the Live2D
+  lint rules to the sets, makes `duplicate-name` an error with
+  pose-suffix `suggested_names`, and makes `krita_set_canvas_size` warn
+  that it breaks rigs. Knobs: `additive_mode` (`"either"`, or `"add"` /
+  `"linear_dodge"` to require one spelling of the Add blend mode; F003's
+  `lint.additive_mode` is still read, with a note), `allowed_blend_modes`
+  (Krita blend mode ids; add a mode such as `"screen"` for a rig that
+  targets moc3 5.3), `max_nesting` (1–64), `pose_pattern` (a regular
+  expression with named groups `stem` and `pose`, matched against a whole
+  group name) and `default_pose` (the pose kept visible). Which behaviour
+  is core and which is a convention:
+  [docs/f004_live2d_opt_in/survey.md](docs/f004_live2d_opt_in/survey.md).
 - **Scripted launches.** `KRITA_MCP_ALLOWED_DIRS` (`:`-separated) in
   **Krita's** environment adds more dirs. macOS apps started from the Dock
   or Finder don't see shell variables, so the file is the usual way.
@@ -273,7 +295,7 @@ Every key is optional:
 - **Check it.** `krita_health` (and `krita_reload_config`) return
   `allowed_dirs` (the output dir first), `config_file`, `config_exists`,
   `config_key` (`"allowed_dirs"`), `config_dirs` (the file's entries as
-  written), `limits`, `lint` and `config_errors` (bad keys or values,
+  written), `limits`, `lint`, `live2d` and `config_errors` (bad keys or values,
   skipped dirs, a refused file); the health summary lists the errors.
 
 Only the plugin reads this file. The MCP server can't widen the allowed

@@ -42,7 +42,7 @@ from ..dispatch import LONG_TIMEOUT, command
 from ..errors import CommandError
 from .layers import (MASK_TYPES, PAINT, RemoveNode, _add, _bad, _dry_run, _duplicate_warnings,
                      _live, _parent_node, _position, _remove_node, _required_ref, _strict_item,
-                     placement)
+                     _with_notes, placement)
 from .pixels import RestorePixels, _bounds, _rect, _write
 
 MODES = ("rect", "polygon", "alpha_of", "invert", "none", "all")
@@ -436,10 +436,11 @@ def cmd_selection_to_layer(params):
     head = {"doc": handle, "source": plan["source"], "cut_rect": _rect(*plan["region"]),
             "cut": plan["cut"]}
     if dry_run:
-        return {**head, "dry_run": True,
-                "would_create": {"name": name, "type": PAINT, "parent": plan["parent"],
-                                 "above": plan["above"]},
-                "warnings": _duplicate_warnings(name, None, index.by_name(name), [])}
+        warnings, notes = _duplicate_warnings(index, name, None, "layer", index.by_name(name), [])
+        return _with_notes({**head, "dry_run": True,
+                            "would_create": {"name": name, "type": PAINT, "parent": plan["parent"],
+                                             "above": plan["above"]},
+                            "warnings": warnings}, notes)
 
     x, y, w, h = plan["region"]
     old = pixels.as_bytes(_live(doc, plan["source"]).pixelData(x, y, w, h))
@@ -458,7 +459,8 @@ def cmd_selection_to_layer(params):
     doc.waitForDone()
     nid = outcome.results[0]
     fresh, by_id = nodes.tree(doc)
-    warnings = _duplicate_warnings(name, nid, [o for o in fresh.by_name(name) if o != nid], [])
+    warnings, notes = _duplicate_warnings(fresh, name, nid, "layer",
+                                          [o for o in fresh.by_name(name) if o != nid], [])
     copied = pixels.count_alpha(copy)
     if not copied:
         warnings.append({"code": "nothing_copied",
@@ -472,6 +474,6 @@ def cmd_selection_to_layer(params):
                        "memory and disk caps: this call can't be undone, and the agent undo "
                        "journal was cleared",
             "nbytes": outcome.nbytes})
-    return {**head, "dry_run": False,
-            "layer": nodes.layer_object(by_id[nid], fresh, nid=nid), "copied": copied,
-            "warnings": warnings}
+    return _with_notes({**head, "dry_run": False,
+                        "layer": nodes.layer_object(by_id[nid], fresh, nid=nid), "copied": copied,
+                        "warnings": warnings}, notes)

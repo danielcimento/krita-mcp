@@ -189,6 +189,7 @@ class DuplicateLayerTest(Base):
             self.assertEqual(r["layer"]["path"], "G/P2")
             self.assertEqual(top_down(doc, ids["G"]), ["H", "P2", "X"])
             self.assertEqual([w["code"] for w in r["warnings"]], ["duplicate_names_in_copy"])
+            self.assertNotIn("notes", r)
 
             r = self.assertOk(run("duplicate_layer", doc=handle, id="E", parent="G"))
             self.assertEqual(top_down(doc, ids["G"]), ["E", "H", "P2", "X"])  # on top of G
@@ -204,6 +205,11 @@ class DuplicateLayerTest(Base):
                                   above="Background", name="E2"))
             self.assertEqual(top_down(doc), ["G", "P", "E", "Low", "E2", "Background"])
             self.assertEqual(r["warnings"], [])
+            # F004 K9: a layer copy named like a group is a note, not a warning.
+            r = self.assertOk(run("duplicate_layer", doc=handle, id=ids["E"], name="H"))
+            self.assertEqual(r["warnings"], [])
+            self.assertEqual([(n["code"], n["others"]) for n in r["notes"]],
+                             [("name_shared_across_kinds", [ids["H"]])])
 
     def test_locked_source_renamed(self):
         with scratch_document(W, H, name="kmcp-dup-locked") as doc:
@@ -343,7 +349,9 @@ class LayerStatsTest(Base):
 
             # The stray numbers (and counts) are lint's.
             snap = self.assertOk(run("lint_snapshot", doc=handle))["snapshot"]
-            self.assertEqual(r["settings"], snap["settings"])
+            self.assertEqual(sorted(r["settings"]), ["stray_alpha_below", "stray_alpha_distance",
+                                                     "stray_speck_max_px"])
+            self.assertEqual(r["settings"], {k: snap["settings"][k] for k in r["settings"]})
             by_id = {n["id"]: n["alpha"] for n in snap["nodes"]}
             for layer in r["layers"]:
                 for key in ("pixel_count", "opaque_bounds", "stray_count", "stray_specks"):

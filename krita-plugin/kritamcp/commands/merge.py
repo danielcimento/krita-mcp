@@ -33,7 +33,7 @@ from ..dispatch import LONG_TIMEOUT, command
 from ..errors import CommandError
 from .layers import (GROUP, MASK_TYPES, PAINT, RemoveNode, _add, _bad, _detach, _dry_run,
                      _duplicate_warnings, _insert, _live, _parent_node, _position, _remove_node,
-                     _strict_item, _take_out, subtree)
+                     _strict_item, _take_out, _with_notes, subtree)
 from .pixels import _bounds, _clone_node, _isolate, _write
 
 KEYS = ("doc", "ids", "name", "dry_run")
@@ -273,11 +273,11 @@ def cmd_merge_layers(params):
     others = [o for o in index.by_name(plan.name) if o not in plan.removed]
     head = {"doc": handle, "mode": plan.mode, "merged": plan.ids}
     if dry_run:
-        warnings += _duplicate_warnings(plan.name, None, others, [])
-        return {**head, "dry_run": True,
-                "would_create": {"name": plan.name, "type": PAINT, "parent": plan.parent,
-                                 "above": plan.ids[0]},
-                "would_remove": plan.removed, "warnings": warnings}
+        clash, notes = _duplicate_warnings(index, plan.name, None, "layer", others, [])
+        return _with_notes({**head, "dry_run": True,
+                            "would_create": {"name": plan.name, "type": PAINT, "parent": plan.parent,
+                                             "above": plan.ids[0]},
+                            "would_remove": plan.removed, "warnings": warnings + clash}, notes)
 
     merged = merged_pixels(doc, index, by_id, plan)
     del by_id  # this walk's wrappers; the apply looks nodes up again
@@ -300,8 +300,8 @@ def cmd_merge_layers(params):
                        "merge can't be undone, and the agent undo journal was cleared",
             "nbytes": outcome.nbytes})
     fresh, fresh_by_id = nodes.tree(doc)
-    warnings += _duplicate_warnings(plan.name, nid,
-                                    [o for o in fresh.by_name(plan.name) if o != nid], [])
-    return {**head, "dry_run": False,
-            "layer": nodes.layer_object(fresh_by_id[nid], fresh, nid=nid),
-            "removed": removed, "warnings": warnings}
+    clash, notes = _duplicate_warnings(fresh, plan.name, nid, "layer",
+                                       [o for o in fresh.by_name(plan.name) if o != nid], [])
+    return _with_notes({**head, "dry_run": False,
+                        "layer": nodes.layer_object(fresh_by_id[nid], fresh, nid=nid),
+                        "removed": removed, "warnings": warnings + clash}, notes)

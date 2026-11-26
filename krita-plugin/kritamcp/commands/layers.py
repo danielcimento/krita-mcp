@@ -701,9 +701,51 @@ class _UpdatePlanner:
         return _Change(nid, props)
 
 
+def name_kind(node_type):
+    """The namespace a layer name lives in (F003 K6, F004 K9): ``"group"``
+    for groups, ``"layer"`` for every other node type."""
+    return "group" if node_type == GROUP else "layer"
+
+
+def _kind_word(index, nid):
+    return "group" if index.get(nid)["type"] == GROUP else "layer"
+
+
+def name_clashes(index, subject, nid, name, kind, others):
+    """``(warnings, notes)`` for a node of ``kind`` (``name_kind``) named
+    ``name`` that ``others`` (ids in ``index``) are also named (F004 K9).
+
+    Same kind: a ``duplicate_name`` warning (D4: a bare-name ref to it is
+    ambiguous). Other kind (a group named like a layer, e.g. the Face
+    group holding the Face layer): allowed by the naming rules, so only a
+    ``name_shared_across_kinds`` note, which still says the bare name now
+    matches both. ``subject`` starts the message ("Layer {id} is now
+    named", "The new layer is named")."""
+    same = [o for o in others if name_kind(index.get(o)["type"]) == kind]
+    cross = [o for o in others if o not in same]
+    warnings, notes = [], []
+    if same:
+        warnings.append({
+            "code": "duplicate_name",
+            "message": f"{subject} {name!r}, like {len(same)} other "
+                       f"{kind}{'s' if len(same) != 1 else ''}; a bare-name ref to it is "
+                       "ambiguous (use its id or a path)",
+            "id": nid, "name": name, "others": same})
+    if cross:
+        shown = ", ".join(f"{_kind_word(index, o)} '{index.path_of(o)}'" for o in cross[:3])
+        more = f" and {len(cross) - 3} more" if len(cross) > 3 else ""
+        notes.append({
+            "code": "name_shared_across_kinds",
+            "message": f"{subject} {name!r}, which matches {shown}{more}: allowed (a group may "
+                       "share a layer's name); a bare-name ref now matches both, so use an id "
+                       "or a path",
+            "id": nid, "name": name, "others": cross})
+    return warnings, notes
+
+
 def _rename_warnings(index, plans):
-    """A ``duplicate_name`` warning per rename whose new name another layer
-    has after the call (D4: bare-name refs to it become ambiguous)."""
+    """``(warnings, notes)`` for the renames in ``plans``, against the names
+    every node has after the call (``name_clashes``)."""
     final = {nid: index.get(nid)["name"] for nid in index}
     for p in plans:
         if "name" in p.props:
@@ -711,20 +753,24 @@ def _rename_warnings(index, plans):
     by_name = {}
     for nid, name in final.items():  # stacking order
         by_name.setdefault(name, []).append(nid)
-    warnings = []
+    warnings, notes = [], []
     for p in plans:
         name = p.props.get("name")
         if name is None or name == index.get(p.nid)["name"]:
             continue
-        others = [o for o in by_name[name] if o != p.nid]
-        if others:
-            warnings.append({
-                "code": "duplicate_name",
-                "message": f"Layer {p.nid} is now named {name!r}, like {len(others)} other "
-                           f"layer{'s' if len(others) != 1 else ''}; a bare-name ref to it is "
-                           "ambiguous (use its id or a path)",
-                "id": p.nid, "name": name, "others": others})
-    return warnings
+        w, n = name_clashes(index, f"{_kind_word(index, p.nid).capitalize()} {p.nid} is now named",
+                            p.nid, name, name_kind(index.get(p.nid)["type"]),
+                            [o for o in by_name[name] if o != p.nid])
+        warnings += w
+        notes += n
+    return warnings, notes
+
+
+def _with_notes(result, notes):
+    """``result`` with ``notes`` added when there are any (F004 K9)."""
+    if notes:
+        result["notes"] = notes
+    return result
 
 
 class RestoreProps:
@@ -783,12 +829,12 @@ def cmd_update_layers(params):
     dry_run = _dry_run(params)
     index = nodes.build_index(doc)
     plans = batch.validate_all(params.get("changes"), _UpdatePlanner(index), field="changes")
-    warnings = _rename_warnings(index, plans)
+    warnings, notes = _rename_warnings(index, plans)
     if dry_run:
-        return {"doc": handle, "dry_run": True,
-                "would_update": [{"id": p.nid, "path": index.path_of(p.nid), "set": p.props}
-                                 for p in plans],
-                "warnings": warnings}
+        return _with_notes({"doc": handle, "dry_run": True,
+                            "would_update": [{"id": p.nid, "path": index.path_of(p.nid),
+                                              "set": p.props} for p in plans],
+                            "warnings": warnings}, notes)
 
     outcome = batch.run(plans, _update_one, doc, label="update_layers", field="changes")
     doc.refreshProjection()
@@ -797,7 +843,8 @@ def cmd_update_layers(params):
     fresh = nodes.build_index(doc)
     updated = [{"id": r["id"], "path": fresh.path_of(r["id"]) if r["id"] in fresh else None,
                 "changed": r["changed"]} for r in outcome.results]
-    return {"doc": handle, "dry_run": False, "updated": updated, "warnings": warnings}
+    return _with_notes({"doc": handle, "dry_run": False, "updated": updated, "warnings": warnings},
+                       notes)
 
 
 # --- tree surgery for move_layers and delete_layers -------------------------
@@ -1382,26 +1429,22 @@ def _duplicate_one(doc, plan):
     return nid, RemoveNode(nid)
 
 
-def _duplicate_warnings(name, nid, others, copied_names):
-    """``duplicate_name`` for the copy itself when another layer has its
-    name (``others``: their ids), and ``duplicate_names_in_copy`` for the
-    copied subtree, whose layers keep their names (D4: bare-name refs to
-    them become ambiguous)."""
-    warnings = []
-    if others:
-        warnings.append({
-            "code": "duplicate_name",
-            "message": f"The copy is named {name!r}, like {len(others)} other "
-                       f"layer{'s' if len(others) != 1 else ''}; a bare-name ref to it is "
-                       "ambiguous (use its id or a path, or pass 'name')",
-            "id": nid, "name": name, "others": others})
+def _duplicate_warnings(index, name, nid, kind, others, copied_names):
+    """``(warnings, notes)``: ``name_clashes`` for the new node itself
+    (``kind``; ``others``: ids in ``index`` with its name), and
+    ``duplicate_names_in_copy`` for the copied subtree, whose layers keep
+    their names (D4: bare-name refs to them become ambiguous)."""
+    warnings, notes = name_clashes(index, f"The new {kind} is named", nid, name, kind, others)
+    for w in warnings:
+        w["message"] = w["message"].replace("(use its id or a path)",
+                                            "(use its id or a path, or pass 'name')")
     if copied_names:
         warnings.append({
             "code": "duplicate_names_in_copy",
             "message": f"The {len(copied_names)} layer(s) inside the copy keep their names, "
                        "which the original's layers have too; refer to them by id or path",
             "count": len(copied_names), "names": sorted(set(copied_names))})
-    return warnings
+    return warnings, notes
 
 
 @command("duplicate_layer", timeout=LONG_TIMEOUT, mutating=True)
@@ -1415,14 +1458,15 @@ def cmd_duplicate_layer(params):
     plan = _plan_duplicate(index, params)
     name = plan.name if plan.name is not None else index.get(plan.source)["name"]
     inner = subtree(index, plan.source)[1:]
+    kind = name_kind(index.get(plan.source)["type"])
     if dry_run:
-        warnings = _duplicate_warnings(name, None, index.by_name(name),
-                                       [index.get(i)["name"] for i in inner])
-        return {"doc": handle, "dry_run": True, "source": plan.source,
-                "would_create": {"name": name, "type": index.get(plan.source)["type"],
-                                 "parent": plan.parent, "above": plan.above,
-                                 "count": 1 + len(inner)},
-                "warnings": warnings}
+        warnings, notes = _duplicate_warnings(index, name, None, kind, index.by_name(name),
+                                              [index.get(i)["name"] for i in inner])
+        return _with_notes({"doc": handle, "dry_run": True, "source": plan.source,
+                            "would_create": {"name": name, "type": index.get(plan.source)["type"],
+                                             "parent": plan.parent, "above": plan.above,
+                                             "count": 1 + len(inner)},
+                            "warnings": warnings}, notes)
 
     outcome = batch.run([plan], _duplicate_one, doc, label="duplicate_layer", field="id")
     doc.refreshProjection()
@@ -1431,8 +1475,9 @@ def cmd_duplicate_layer(params):
     nid = outcome.results[0]
     fresh, by_id = nodes.tree(doc)
     ids = subtree(fresh, nid)
-    warnings = _duplicate_warnings(name, nid, [o for o in fresh.by_name(name) if o != nid],
-                                   [fresh.get(i)["name"] for i in ids[1:]])
-    return {"doc": handle, "dry_run": False, "source": plan.source,
-            "layer": nodes.layer_object(by_id[nid], fresh, nid=nid), "ids": ids,
-            "warnings": warnings}
+    warnings, notes = _duplicate_warnings(fresh, name, nid, kind,
+                                          [o for o in fresh.by_name(name) if o != nid],
+                                          [fresh.get(i)["name"] for i in ids[1:]])
+    return _with_notes({"doc": handle, "dry_run": False, "source": plan.source,
+                        "layer": nodes.layer_object(by_id[nid], fresh, nid=nid), "ids": ids,
+                        "warnings": warnings}, notes)

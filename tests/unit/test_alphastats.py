@@ -127,21 +127,22 @@ def test_masks_and_tables():
 
 
 def test_normalize_settings():
+    assert a.DEFAULT_SETTINGS == {"stray_alpha_below": 8, "stray_alpha_distance": 4,
+                                  "stray_speck_max_px": 64}
     assert a.normalize_settings(None) == a.DEFAULT_SETTINGS
     assert a.normalize_settings({}) == a.DEFAULT_SETTINGS
     assert a.normalize_settings({"stray_alpha_below": 4, "stray_alpha_distance": 0,
                                  "additive_mode": "linear_dodge", "stray_speck_max_px": 1,
                                  "other": 1}) == {
-        "additive_mode": "linear_dodge", "stray_alpha_below": 4, "stray_alpha_distance": 0,
-        "stray_speck_max_px": 1}
+        "stray_alpha_below": 4, "stray_alpha_distance": 0, "stray_speck_max_px": 1}
     obj = types.SimpleNamespace(additive_mode="add", stray_alpha_below=16)
-    assert a.normalize_settings(obj) == {"additive_mode": "add", "stray_alpha_below": 16,
-                                         "stray_alpha_distance": 4, "stray_speck_max_px": 64}
+    assert a.normalize_settings(obj) == {"stray_alpha_below": 16, "stray_alpha_distance": 4,
+                                         "stray_speck_max_px": 64}
     assert a.normalize_settings({"stray_speck_max_px": a.MAX_SPECK_PX})["stray_speck_max_px"] == \
         a.MAX_SPECK_PX
     for bad in ({"stray_alpha_below": 0}, {"stray_alpha_below": 256}, {"stray_alpha_below": True},
                 {"stray_alpha_below": 4.0}, {"stray_alpha_distance": -1},
-                {"stray_alpha_distance": a.MAX_DISTANCE + 1}, {"additive_mode": "plus"},
+                {"stray_alpha_distance": a.MAX_DISTANCE + 1},
                 {"stray_speck_max_px": 0}, {"stray_speck_max_px": a.MAX_SPECK_PX + 1},
                 {"stray_speck_max_px": 64.0}, {"stray_speck_max_px": False}):
         assert a.normalize_settings(bad) == a.DEFAULT_SETTINGS, bad

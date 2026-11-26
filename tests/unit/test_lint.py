@@ -1,10 +1,14 @@
 """kritamcp.lint: the rules over hand-written snapshots (D14, P4.2; the
-conventions set P5.9; speck-only stray-alpha P5.10).
+conventions set P5.9; speck-only stray-alpha P5.10; packs F004).
 
 Each rule has a snapshot in tests/unit/snapshots/ with positive and
 negative cases. lint_four_findings.json is acceptance test 4's fixture
 document (acceptance.md § Fixtures, Lint fixture); conventions_clean.json
 is a small generic rig with no finding from any rule.
+
+``snap`` loads a snapshot with the Live2D pack on, since most rules here
+are written for those conventions; ``generic`` loads it as stored (the
+pack off, the plugin's default since F004). § Packs tests the difference.
 """
 
 import collections
@@ -16,22 +20,40 @@ import pytest
 
 from kritamcp import config, lint
 from kritamcp.errors import CommandError
+from kritamcp.lint import live2d
 
 SNAPSHOTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "snapshots")
-DEFAULT_RULES = ["node-type", "layer-style", "inherit-alpha", "blend-mode", "duplicate-name",
-                 "side-token", "empty-layer", "out-of-canvas", "stray-alpha", "color-space"]
+CORE_RULES = ["duplicate-name", "empty-layer", "out-of-canvas", "stray-alpha"]
+LIVE2D_DEFAULT_RULES = ["node-type", "layer-style", "inherit-alpha", "blend-mode", "side-token",
+                        "color-space"]
+DEFAULT_RULES = CORE_RULES + LIVE2D_DEFAULT_RULES  # with the Live2D pack on
 SEVERITY = {"node-type": "error", "layer-style": "error", "inherit-alpha": "error", "blend-mode": "error",
             "duplicate-name": "error", "side-token": "warning", "empty-layer": "warning",
             "out-of-canvas": "warning", "stray-alpha": "warning", "color-space": "error"}
 CONVENTION_RULES = ["nesting-depth", "name-case", "blend-suffix", "pose-visibility", "reference-hidden",
-                    "mask-suffix"]
+                    "reference-unbracketed", "mask-suffix"]
 CONVENTION_SEVERITY = {"nesting-depth": "warning", "name-case": "info", "blend-suffix": "warning",
-                       "pose-visibility": "warning", "reference-hidden": "warning", "mask-suffix": "info"}
+                       "pose-visibility": "warning", "reference-hidden": "warning",
+                       "reference-unbracketed": "warning", "mask-suffix": "info"}
+LIVE2D_OFF = {"live2d": LIVE2D_DEFAULT_RULES}  # rules_off of the default set, pack off
+
+
+def generic(name):
+    """The snapshot as stored: the Live2D pack off."""
+    with open(os.path.join(SNAPSHOTS, name + ".json")) as f:
+        return json.load(f)
+
+
+def on(s, **knobs):
+    """``s`` with the Live2D pack on (and ``knobs`` set), in place."""
+    s.setdefault("settings", {})["live2d"] = {**s.get("settings", {}).get("live2d", {}),
+                                              "enabled": True, **knobs}
+    return s
 
 
 def snap(name):
-    with open(os.path.join(SNAPSHOTS, name + ".json")) as f:
-        return json.load(f)
+    """The snapshot with the Live2D pack on."""
+    return on(generic(name))
 
 
 def ids(snapshot):
@@ -63,7 +85,9 @@ def test_snapshot_files_follow_the_format(name):
     # pixel_stats is what the collector adds; the rules don't read it.
     assert set(s["document"]) - {"pixel_stats"} == {"width", "height", "color_model",
                                                     "color_depth", "color_profile"}
-    assert set(s["settings"]) == set(lint.DEFAULT_SETTINGS)
+    s = generic(name)  # as stored
+    assert set(s["settings"]) <= set(lint.DEFAULT_SETTINGS)  # partial: run() fills in the rest
+    assert "live2d" not in s["settings"]  # tests pick the pack with snap / generic
     seen = {}
     for i, n in enumerate(s["nodes"]):
         assert n["order"] == i
@@ -116,15 +140,24 @@ def test_acceptance_default_equals_explicit_rule_list():
 # --- registry and selection --------------------------------------------
 
 def test_default_set_is_the_ten_rules_with_their_severities():
+    s = lint.settings(snap("lint_four_findings"))
     assert lint.set_members("default") == DEFAULT_RULES
-    assert {r: lint.RULES[r].severity for r in DEFAULT_RULES} == SEVERITY
+    assert {r: lint.severity_of(r, s) for r in DEFAULT_RULES} == SEVERITY
     assert set(DEFAULT_RULES) <= set(lint.set_members("all"))
     assert not set(lint.SETS) & set(lint.RULES)
 
 
-def test_conventions_set_is_the_six_rules_and_all_is_both():
+def test_rules_belong_to_their_pack():
+    assert [r for r in lint.RULES if lint.RULES[r].pack == "core"] == CORE_RULES
+    assert [r for r in lint.RULES if lint.RULES[r].pack == "live2d"] == \
+        LIVE2D_DEFAULT_RULES + CONVENTION_RULES
+    assert list(lint.PACKS) == ["live2d"]
+
+
+def test_conventions_set_is_the_seven_rules_and_all_is_both():
+    s = lint.settings(snap("lint_four_findings"))
     assert lint.set_members("conventions") == CONVENTION_RULES
-    assert {r: lint.RULES[r].severity for r in CONVENTION_RULES} == CONVENTION_SEVERITY
+    assert {r: lint.severity_of(r, s) for r in CONVENTION_RULES} == CONVENTION_SEVERITY
     assert lint.set_members("all") == DEFAULT_RULES + CONVENTION_RULES
     assert not set(DEFAULT_RULES) & set(CONVENTION_RULES)
     assert lint.run(snap("lint_four_findings"), ["default", "conventions"])["rules_run"] == \
@@ -134,11 +167,11 @@ def test_conventions_set_is_the_six_rules_and_all_is_both():
 def test_rule_selection_runs_in_registry_order_without_duplicates():
     s = snap("lint_four_findings")
     r = lint.run(s, ["empty-layer", "node-type", "empty-layer"])
-    assert r["rules_run"] == ["node-type", "empty-layer"]
+    assert r["rules_run"] == ["empty-layer", "node-type"]
     assert [(f["rule"], f["path"]) for f in r["findings"]] == [("node-type", "Blur"), ("empty-layer", "Spare")]
     assert lint.run(s, ["default", "node-type"])["rules_run"] == DEFAULT_RULES
     assert lint.run(s, ("color-space",)) == {"findings": [], "counts": {"error": 0, "warning": 0, "info": 0},
-                                             "rules_run": ["color-space"]}
+                                             "rules_run": ["color-space"], "rules_off": {}}
 
 
 @pytest.mark.parametrize("rules", [["nodetype"], ["default", "Default"], ["node-type", 3]])
@@ -146,7 +179,7 @@ def test_unknown_rule_is_bad_request_listing_valid_names(rules):
     with pytest.raises(CommandError) as e:
         lint.run(snap("lint_four_findings"), rules)
     assert e.value.code == "bad_request"
-    assert "valid: default, conventions, all, node-type" in e.value.message
+    assert "valid: default, conventions, all, duplicate-name" in e.value.message
     assert e.value.details["rules"] == list(lint.RULES)
     assert e.value.details["sets"] == ["default", "conventions", "all"]
     assert e.value.details["unknown"] == [n for n in rules if n not in lint.RULES and n not in lint.SETS]
@@ -268,14 +301,14 @@ def test_inherit_alpha():
 @pytest.mark.parametrize("mode,extra", [("either", []), ("add", ["Light Add"]), ("linear_dodge", ["Glow Add"])])
 def test_blend_mode_additive_modes(mode, extra):
     s = snap("blend_mode")
-    s["settings"]["additive_mode"] = mode
+    s["settings"]["live2d"]["additive_mode"] = mode
     r = run1(s, "blend-mode")
     assert paths(r) == extra + ["Sheen", "Effects/Tint"]  # the screen group and filter layer are exempt
     f = by_path(r)
     assert "'screen'" in f["Sheen"]["message"] and "krita_update_layers" in f["Sheen"]["message"]
     for p in extra:
         other = "linear_dodge" if mode == "add" else "add"
-        assert f[p]["message"] == (f"Layer '{p}' uses '{other}', but lint.additive_mode requires '{mode}' "
+        assert f[p]["message"] == (f"Layer '{p}' uses '{other}', but live2d.additive_mode requires '{mode}' "
                                    f"(same rendering): set blend_mode '{mode}' with krita_update_layers")
 
 
@@ -287,15 +320,18 @@ def test_blend_mode_default_setting_is_either():
 
 def test_bad_additive_mode_in_snapshot_is_bad_request():
     s = snap("blend_mode")
-    s["settings"]["additive_mode"] = "Add"
+    s["settings"]["live2d"]["additive_mode"] = "Add"
     with pytest.raises(CommandError) as e:
         lint.run(s)
     assert e.value.code == "bad_request"
+    assert "live2d.additive_mode must be one of either, add, linear_dodge" in e.value.message
 
 
 def test_settings_defaults_match_config():
-    assert lint.DEFAULT_SETTINGS == config.DEFAULT_LINT
-    assert lint.ADDITIVE_MODES == config.LINT_ADDITIVE_MODES
+    core = {k: v for k, v in lint.DEFAULT_SETTINGS.items() if k != "live2d"}
+    assert core == config.plain(config.DEFAULT_LINT)
+    assert lint.DEFAULT_SETTINGS["live2d"] == config.plain(config.DEFAULT_LIVE2D)
+    assert live2d.ADDITIVE_MODES == config.LIVE2D_ADDITIVE_MODES
 
 
 # --- duplicate-name ----------------------------------------------------
@@ -326,8 +362,8 @@ def _named(nodes):
     """A snapshot of ``nodes``, ``order`` from the list position."""
     for i, n in enumerate(nodes):
         n["order"] = i
-    return {"document": {"width": 10, "height": 10, "color_model": "RGBA", "color_depth": "U8",
-                         "color_profile": "sRGB-elle-V2-srgbtrc.icc"}, "nodes": nodes}
+    return on({"document": {"width": 10, "height": 10, "color_model": "RGBA", "color_depth": "U8",
+                            "color_profile": "sRGB-elle-V2-srgbtrc.icc"}, "nodes": nodes})
 
 
 def test_duplicate_name_group_may_share_a_layer_name():
@@ -413,7 +449,7 @@ def test_side_token():
     ("[ Guide ]", "[ Guide ]", None, [], None),
 ])
 def test_side_parts(name, stem, side, odd, suggestion):
-    assert tuple(lint.side_parts(name)) == (stem, side, odd, suggestion)
+    assert tuple(live2d.side_parts(name)) == (stem, side, odd, suggestion)
 
 
 def test_side_token_collision_counts_non_standard_tokens_as_sided():
@@ -628,8 +664,8 @@ def test_name_case():
     "Character's Hat", "Eye (Old)", "Layer 2.5",
 ])
 def test_name_case_accepts(name):
-    assert lint.name_case_problems(name) == []
-    assert lint.title_case(name) is None
+    assert live2d.name_case_problems(name) == []
+    assert live2d.title_case(name) is None
 
 
 @pytest.mark.parametrize("name,problems,fix", [
@@ -647,8 +683,8 @@ def test_name_case_accepts(name):
     ("   ", ["empty name"], None),
 ])
 def test_name_case_rejects(name, problems, fix):
-    assert lint.name_case_problems(name) == problems
-    assert lint.title_case(name) == fix
+    assert live2d.name_case_problems(name) == problems
+    assert live2d.title_case(name) == fix
 
 
 def test_blend_suffix():
@@ -676,7 +712,7 @@ def test_blend_suffix():
 
 def test_blend_suffix_suggests_the_required_additive_spelling():
     s = snap("blend_suffix")
-    s["settings"]["additive_mode"] = "linear_dodge"
+    s["settings"]["live2d"]["additive_mode"] = "linear_dodge"
     assert "set blend_mode 'linear_dodge'" in by_path(run1(s, "blend-suffix"))["Rim Add"]["message"]
 
 
@@ -710,7 +746,7 @@ def test_pose_visibility():
                                         ("Arm L", None), ("Arm R", None), ("A", None), ("Arm a", None),
                                         ("Arm L AB", None), ("Mouth Z", ("Mouth", "Z"))])
 def test_pose_parts(name, parts):
-    assert lint.pose_parts(name) == parts
+    assert live2d.pose_parts(name) == parts
 
 
 def test_reference_hidden():
@@ -735,7 +771,7 @@ def test_mask_suffix():
         "rename it to 'Skin Mask'")
     assert f["Face/Skin"]["related_ids"] == [i["Face/Blush"], i["Face/Shading"]]
     assert f["Body Base"]["message"].startswith("Group 'Body Base' is the clipping base of 'Clothes'")
-    assert lint.clipping_bases(s) == {i["Face/Skin"]: [i["Face/Blush"], i["Face/Shading"]],
+    assert live2d.clipping_bases(s) == {i["Face/Skin"]: [i["Face/Blush"], i["Face/Shading"]],
                                       i["Face/Cheek Mask"]: [i["Face/Freckles"]],
                                       i["Body Base"]: [i["Clothes"]]}
 
@@ -749,3 +785,156 @@ def test_mask_suffix_fires_only_with_inherit_alpha():
     clipped = {c for f in r["findings"] if f["rule"] == "mask-suffix" for c in f["related_ids"]}
     flagged = {f["layer_id"] for f in r["findings"] if f["rule"] == "inherit-alpha"}
     assert clipped <= flagged
+
+
+# --- reference-unbracketed (F004 K8) -----------------------------------
+
+def _hidden(n):
+    n["visible"] = False
+    return n
+
+
+def test_reference_unbracketed_flags_a_hidden_plain_group():
+    s = _named([_hidden(_node("e", "Expression References", "grouplayer")),
+                _node("m", "Mouth A", parent="e", path="Expression References/Mouth A"),
+                _hidden(_node("g", "[ Guide Image ]", "grouplayer")),
+                _node("gi", "Sketch", parent="g", path="[ Guide Image ]/Sketch")])
+    (f,) = run1(s, "reference-unbracketed")["findings"]
+    assert f["path"] == "Expression References" and f["severity"] == "warning"
+    assert f["message"] == (
+        "Hidden group 'Expression References' isn't bracketed: if it's reference material, rename it "
+        "to '[ Expression References ]'; if it's a rig part that starts hidden, ignore this warning")
+    assert f["suggested_names"] == [{"id": "e", "name": "[ Expression References ]"}]
+
+
+def test_reference_unbracketed_exempts_pose_groups():
+    """After Stage 5.1 the B poses are hidden; siblings with the same stem
+    make them a pose group set, so they are rig parts."""
+    s = _named([_node("a", "Arm L A", "grouplayer"),
+                _hidden(_node("b", "Arm L B", "grouplayer")),
+                _hidden(_node("rb", "Arm R B", "grouplayer")),
+                _node("ra", "Arm R A", "grouplayer"),
+                _hidden(_node("w", "Wand B", "grouplayer", parent="rb", path="Arm R B/Wand B")),
+                _hidden(_node("h", "Hat B", "grouplayer"))])  # a lone "B": no sibling, not a pose set
+    assert paths(run1(s, "reference-unbracketed")) == ["Arm R B/Wand B", "Hat B"]
+
+
+def test_reference_unbracketed_top_level_layers_only_and_not_twice():
+    s = _named([_hidden(_node("p", "Sketch")),                         # top-level hidden paint layer
+                _hidden(_node("q", "[ Old ]")),                        # brackets on a layer don't count
+                _node("g", "Head", "grouplayer"),
+                _hidden(_node("c", "Closed Eye", parent="g", path="Head/Closed Eye")),  # inside a group
+                _hidden(_node("o", "Old Art", "grouplayer")),
+                _hidden(_node("oi", "Older", "grouplayer", parent="o", path="Old Art/Older")),
+                _hidden(_node("ba", "Blink A")), _node("bb", "Blink B")])  # pose variants among layers
+    r = run1(s, "reference-unbracketed")
+    assert paths(r) == ["Sketch", "[ Old ]", "Old Art"]
+    f = by_path(r)
+    assert f["Sketch"]["message"] == (
+        "Hidden layer 'Sketch' isn't in a bracketed group: if it's reference material, move it into a "
+        "hidden group named '[ Sketch ]'; if it's a rig part that starts hidden, ignore this warning")
+    assert "'[ Old ]'" in f["[ Old ]"]["message"] and "suggested_names" not in f["Sketch"]
+
+
+def test_reference_unbracketed_follows_the_patterns():
+    s = _named([_hidden(_node("e", "Refs (ref)", "grouplayer")),
+                _hidden(_node("v2", "Arm v2", "grouplayer")), _node("v1", "Arm v1", "grouplayer")])
+    assert paths(run1(s, "reference-unbracketed")) == ["Refs (ref)", "Arm v2"]
+    s["settings"]["reference_pattern"] = r"\(ref\)$"
+    s["settings"]["live2d"]["pose_pattern"] = r"(?P<stem>.+) v(?P<pose>\d)"
+    assert paths(run1(s, "reference-unbracketed")) == []
+    s["nodes"][0]["name"] = s["nodes"][0]["path"] = "Refs"
+    (f,) = run1(s, "reference-unbracketed")["findings"]
+    assert "suggested_names" not in f  # "[ Refs ]" wouldn't match the pattern
+
+
+# --- packs (F004) -------------------------------------------------------
+
+def test_live2d_is_off_by_default():
+    assert lint.DEFAULT_SETTINGS["live2d"]["enabled"] is False
+    r = lint.run(generic("lint_four_findings"))
+    assert r["rules_run"] == CORE_RULES
+    assert r["rules_off"] == LIVE2D_OFF
+    assert [(f["rule"], f["path"], f["severity"]) for f in r["findings"]] == [
+        ("duplicate-name", "Back/Hair", "warning"), ("empty-layer", "Spare", "warning")]
+
+
+def test_live2d_off_duplicate_name_has_no_pose_suggestion():
+    s = _named([_node("a", "Arm L A", "grouplayer"),
+                _node("h1", "Hand L", parent="a", path="Arm L A/Hand L"),
+                _node("b", "Arm L B", "grouplayer"),
+                _node("h2", "Hand L", parent="b", path="Arm L B/Hand L")])
+    s["settings"]["live2d"]["enabled"] = False
+    (f,) = run1(s, "duplicate-name")["findings"]
+    assert f["severity"] == "warning" and "suggested_names" not in f
+    assert f["message"].endswith("or add an index: 'Hand L 1' / 'Hand L 2'")
+
+
+def test_sets_with_live2d_off_report_rules_off():
+    s = generic("conventions_clean")
+    assert lint.run(s, ["conventions"]) == {"findings": [], "counts": {"error": 0, "warning": 0, "info": 0},
+                                            "rules_run": [], "rules_off": {"live2d": CONVENTION_RULES}}
+    r = lint.run(s, ["all"])
+    assert r["rules_run"] == CORE_RULES
+    assert r["rules_off"] == {"live2d": LIVE2D_DEFAULT_RULES + CONVENTION_RULES}
+
+
+def test_a_rule_named_by_id_runs_with_its_pack_off():
+    r = lint.run(generic("lint_four_findings"), ["node-type", "default"])
+    assert r["rules_run"] == CORE_RULES + ["node-type"]
+    assert r["rules_off"] == {"live2d": [x for x in LIVE2D_DEFAULT_RULES if x != "node-type"]}
+    assert ("node-type", "Blur") in [(f["rule"], f["path"]) for f in r["findings"]]
+
+
+def test_disable_takes_rules_out_of_the_sets():
+    s = snap("lint_four_findings")
+    s["settings"]["disable"] = ["empty-layer", "node-type"]
+    r = lint.run(s)
+    assert r["rules_off"] == {"disabled": ["empty-layer", "node-type"]}
+    assert [f["rule"] for f in r["findings"]] == ["duplicate-name", "inherit-alpha"]
+    assert "empty-layer" in lint.run(s, ["empty-layer"])["rules_run"]  # by id it still runs
+    s["settings"]["live2d"]["enabled"] = False
+    # A pack that is off is the reason, even for a rule that is disabled too.
+    assert lint.run(s)["rules_off"] == {"disabled": ["empty-layer"], "live2d": LIVE2D_DEFAULT_RULES}
+
+
+def test_severity_min_uses_the_effective_severity():
+    assert paths(lint.run(snap("lint_four_findings"), severity_min="error")) == ["Blur", "Back/Hair", "Shade"]
+    assert paths(lint.run(generic("lint_four_findings"), severity_min="error")) == []
+
+
+@pytest.mark.parametrize("settings,why", [
+    ({"reference_pattern": "["}, "reference_pattern '[' is not a regular expression"),
+    ({"disable": "empty-layer"}, "disable must be a list of rule ids"),
+    ({"live2d": {"pose_pattern": "(?P<stem>.*)"}}, "live2d.pose_pattern needs the groups"),
+    ({"live2d": {"max_nesting": 0}}, "live2d.max_nesting must be a positive whole number"),
+    ({"live2d": {"allowed_blend_modes": []}}, "live2d.allowed_blend_modes must be a non-empty list"),
+    ({"live2d": {"default_pose": ""}}, "live2d.default_pose must be a non-empty string"),
+    ({"live2d": "on"}, "live2d must be an object"),
+])
+def test_bad_pack_settings_are_bad_request(settings, why):
+    s = generic("lint_four_findings")
+    s["settings"].update(settings)
+    with pytest.raises(CommandError) as e:
+        lint.run(s)
+    assert e.value.code == "bad_request" and why in e.value.message
+
+
+def test_reference_pattern_null_turns_reference_groups_off():
+    s = snap("reference_groups")
+    s["settings"]["reference_pattern"] = None
+    assert not lint.is_reference_group({"type": "grouplayer", "name": "[ Guide ]"}, lint.settings(s))
+    assert len(lint.checked_nodes(s)) == len(s["nodes"])
+
+
+def test_live2d_knobs():
+    s = snap("nesting_depth")
+    deep = paths(run1(s, "nesting-depth"))
+    s["settings"]["live2d"]["max_nesting"] = 4
+    assert len(paths(run1(s, "nesting-depth"))) < len(deep)
+    s = snap("blend_mode")
+    s["settings"]["live2d"]["allowed_blend_modes"] = ["normal", "multiply", "add", "screen"]
+    assert "Sheen" not in paths(run1(s, "blend-mode"))
+    s["settings"]["live2d"]["allowed_blend_modes"] = ["normal"]
+    msg = by_path(run1(s, "blend-mode"))["Sheen"]["message"]
+    assert "the rig supports only normal:" in msg

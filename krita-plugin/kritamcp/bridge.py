@@ -77,7 +77,7 @@ def config_health():
     except Exception as e:
         return {"allowed_dirs": [], "config_file": None, "config_loaded": False,
                 "config_exists": None, "config_key": config.ALLOWED_DIRS_KEY,
-                "config_reload": config.RELOAD_NOTE, "limits": None, "lint": None,
+                "config_reload": config.RELOAD_NOTE, "limits": None, "lint": None, "live2d": None,
                 "config_errors": [f"could not load the config: {type(e).__name__}: {e}"]}
 
 

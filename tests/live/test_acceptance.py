@@ -410,9 +410,9 @@ LINT_EXPECTED = collections.Counter([("node-type", "Blur"), ("inherit-alpha", "S
                                      ("duplicate-name", "Back/Hair"), ("empty-layer", "Spare")])
 
 
-def test_lint_fixture(call, scratch, docs_to_close):
+def test_lint_fixture(call, scratch, docs_to_close, live2d):
     """Acceptance § 4: the committed fixture (a copy in the scratch dir)
-    gives exactly the four findings."""
+    gives exactly the four findings, with the Live2D conventions on (F004)."""
     copy = os.path.join(scratch[0], "lint_four_findings.kra")
     shutil.copyfile(LINT_FIXTURE, copy)
     opened = call("open_file", path=copy)
@@ -430,7 +430,7 @@ def test_lint_fixture(call, scratch, docs_to_close):
     assert result["summary"] == f"3 errors, 1 warning in {opened['doc']} (10 rules)"
 
 
-def test_lint_mao(call, mao_dir, docs_to_close):
+def test_lint_mao(call, mao_dir, docs_to_close, live2d):
     """Acceptance § Fixtures, secondary check: the rebuilt Mao (without
     new_canvas's Background) has exactly 11 duplicate-name findings, all
     A/B pose pairs with pose-suffix suggested_names (F003 K6: a group may
@@ -448,6 +448,9 @@ def test_lint_mao(call, mao_dir, docs_to_close):
     assert all(len(f["related_ids"]) == 2 for f in dups)
     assert all(sorted(s["name"][-1] for s in f["suggested_names"]) == ["A", "B"]
                for f in dups), [f["message"] for f in dups]
+    # F004 K8: Expression References is the only unbracketed hidden group.
+    refs = call("lint", doc=doc, rules=["reference-unbracketed"])["findings"]
+    assert [f["path"] for f in refs] == ["Expression References"], [f["message"] for f in refs]
 
 
 # --- 5. Allowlist -------------------------------------------------------------

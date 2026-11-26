@@ -177,6 +177,11 @@ class BulkResultsTest(F003Base):
         self.assertEqual(grouped["total"], len(flat["findings"]))
         empty = grouped["by_rule"]["empty-layer"]
         self.assertEqual((empty["count"], len(empty["items"]), empty["next_offset"]), (5, 1, 1))
+        # Items leave out what the group gives (F004 G11); the rest is the flat finding.
+        first = next(f for f in flat["findings"] if f["rule"] == "empty-layer")
+        self.assertEqual(empty["items"][0], {k: v for k, v in first.items()
+                                             if k not in ("rule", "severity")})
+        self.assertEqual(empty["severity"], first["severity"])
         page = self.assertOk(run("lint", doc=handle, limit=2, offset=1))
         self.assertEqual(page["findings"], flat["findings"][1:3])
         self.assertError(run("lint", doc=handle, group_by="layer"), "bad_request")
