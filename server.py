@@ -13,7 +13,7 @@ Every tool returns a dict: the plugin's payload fields, a one-line
 import os
 import sys
 import time
-from typing import Optional
+from typing import Literal, Optional
 
 # server.py is the entry point client configs point at; make the
 # krita_mcp_server package next to it importable from any cwd.
@@ -665,6 +665,79 @@ def krita_delete_layers(ids: list[str], doc: Optional[str] = None, dry_run: bool
     summary = (verb + what + (_in(result) or f" in {doc or 'the active document'}")
                + _warnings_note(result.get("warnings")))
     if result.get("dry_run"):
+        summary += " (dry run, nothing changed)"
+    return _done(result, summary)
+
+
+def _rect_text(r) -> str:
+    if not isinstance(r, dict):
+        return "?"
+    return f"{r.get('w')}x{r.get('h')} at ({r.get('x')}, {r.get('y')})"
+
+
+@mcp.tool()
+def krita_import_png(id: str, png: str, x: int = 0, y: int = 0,
+                     mode: Literal["replace", "over"] = "replace", clear_outside: bool = False,
+                     doc: Optional[str] = None, dry_run: bool = False,
+                     timeout_s: Optional[float] = None) -> dict:
+    """
+    Write a PNG's pixels into an existing paint layer, with the PNG's
+    top-left corner at canvas pixel (x, y). Only the PNG's rectangle
+    (x, y, PNG width, PNG height) changes: pixels outside it are untouched
+    unless clear_outside is true. The rectangle may extend past the canvas
+    (Krita keeps those pixels). The document must be 8-bit RGBA, and the
+    target a paint layer (a group, mask or filter layer fails with
+    "conflict").
+
+    Modes:
+    - "replace": the layer's pixels in the rectangle become the PNG's
+      exactly, alpha included (transparent PNG pixels make the layer
+      transparent there).
+    - "over": the PNG is composited over the existing pixels (source-over,
+      like a Normal layer on top). Where the PNG is fully transparent the
+      layer is unchanged; where it is opaque, or the layer is empty, the
+      result is the PNG's pixel exactly; elsewhere colours are within one
+      level of the exact blend.
+    - clear_outside=true (replace only): the layer is cleared first, so it
+      ends up containing only the PNG.
+
+    Returns {doc, layer (id), png (resolved path), mode, clear_outside,
+    changed: {x, y, w, h} (the rectangle written; with clear_outside it
+    also covers the old content), bounds: the layer's new bounds or null,
+    warnings}; with dry_run, would_change instead of changed, and nothing
+    changes. One call is one agent undo step, which restores the old pixels
+    of the changed rectangle (kept in memory; an import too big for the
+    undo journal's byte cap warns "not_undoable").
+
+    Args:
+        id: The paint layer: a layer UUID, a name path such as "Head/Eyes",
+            or a unique name
+        png: PNG file to read, inside an allowed directory (absolute,
+             "~"-prefixed, or relative to the output dir)
+        x: Canvas x of the PNG's left edge, in pixels; may be negative
+        y: Canvas y of the PNG's top edge, in pixels; may be negative
+        mode: "replace" (default) or "over"
+        clear_outside: With mode "replace", clear the rest of the layer
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        dry_run: Only validate and report the rectangle that would change
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
+    """
+    params = {"id": id, "png": png, "x": x, "y": y, "mode": mode}
+    result = client.call("import_png",
+                         _with(params, clear_outside=clear_outside or None, doc=doc,
+                               dry_run=dry_run or None),
+                         timeout_s=timeout_s)
+    dry = result.get("dry_run")
+    rect = result.get("would_change") if dry else result.get("changed")
+    name = os.path.basename(result.get("png") or png)
+    how = result.get("mode", mode) + (", clear outside" if result.get("clear_outside") else "")
+    summary = (("Would import " if dry else "Imported ") + f"{name} into layer "
+               + f"{result.get('layer', id)} ({how}), changing {_rect_text(rect)}"
+               + (_in(result) or f" in {doc or 'the active document'}")
+               + _warnings_note(result.get("warnings")))
+    if dry:
         summary += " (dry run, nothing changed)"
     return _done(result, summary)
 

@@ -95,6 +95,7 @@ If using a virtual environment:
 | `krita_update_layers` | Change name, visibility, opacity (0–1), blend mode, locks, clipping, pass-through (groups) of many layers in one all-or-nothing call; only the fields given change. A rename to an existing name is allowed and listed in `warnings`. `dry_run` validates only |
 | `krita_move_layers` | Reorder and reparent layers in one all-or-nothing call: `parent` (default the current one), and `above` / `below` a sibling or `index` (from the bottom); default on top. Groups move with their subtree; ids, pixels and properties are kept; moving a group into itself fails. `dry_run` validates only |
 | `krita_delete_layers` | Delete layers (a group with its subtree) in one all-or-nothing call; returns every deleted id. `dry_run` validates only |
+| `krita_import_png` | Write a PNG into a paint layer at `x`/`y` (canvas pixels, may be negative or past the edge): `replace` (exact, alpha included) or `over` (source-over); pixels outside the PNG's rectangle are untouched unless `clear_outside` (replace only) clears the rest of the layer. 8-bit RGBA documents only. Returns the `changed` rectangle and the layer's new `bounds`; one agent undo step restores the old pixels. `dry_run` validates only |
 | `krita_undo` / `krita_redo` | Undo/redo actions |
 | `krita_clear` | Clear a layer to a solid color, or `"transparent"` |
 | `krita_get_color_at` | Eyedropper — sample color at a pixel |

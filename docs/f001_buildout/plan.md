@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phases 1–2 done (Phase 2 exit: live acceptance 1, the Mao rebuild, passed 2026-11-25). Phase 3 next. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phases 1–2 done (Phase 2 exit: live acceptance 1, the Mao rebuild, passed 2026-11-25). Phase 3 in progress: P3.1, P3.3 done. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -226,18 +226,18 @@ the full `test_handles`, and `test_layer_tree`. The headless
 
 ### Phase 3: Pixels (P0)
 
-- **P3.1 `pixels.py`.** BGRA↔QImage wrap and copy, PNG load/save,
+- [x] **P3.1 `pixels.py`.** BGRA↔QImage wrap and copy, PNG load/save,
   alpha extraction, opaque-bounds scan (row and column passes over the alpha
   bytes), source-over compositing with `QPainter`, and a guard for
   8-bit RGBA documents. Headless tests (`tests/krita`) cover byte order
   and bit-exact round trip (mirroring Q5).
-- **P3.2 `export_layers`.** Per-layer PNGs, cropping to opaque bounds,
+- [ ] **P3.2 `export_layers`.** Per-layer PNGs, cropping to opaque bounds,
   hidden layers, empty layers recorded with `png: null`, optional group
   projections, and the manifest. Always the `pixelData` → QImage path,
   never `Node.save`, which bakes opacity in and can open a dialog (D5).
-- **P3.3 `import_png`.** `replace` / `over` / `clear_outside`, paint-layer
+- [x] **P3.3 `import_png`.** `replace` / `over` / `clear_outside`, paint-layer
   check, and the changed rectangle in the result.
-- **P3.4 `render`.** Region, scale, `only` / `hide` resolution
+- [ ] **P3.4 `render`.** Region, scale, `only` / `hide` resolution
   (ancestors shown, descendants keep their state), background, and
   `png_level`. Subset renders go through a `clone()` closed in `finally`
   (D10 B). A headless test checks that the clone's projection follows

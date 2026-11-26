@@ -561,7 +561,7 @@ document.
   `x` / `y` are dropped. At most 2000
   layers (`too_large`), and the file is capped at 16 MB.
 
-### `krita_import_png(doc?, id, png, x=0, y=0, mode="replace")` · P0
+### `krita_import_png(doc?, id, png, x=0, y=0, mode="replace", clear_outside=false, dry_run?)` · P0
 
 - The target must be a paint layer, otherwise the call fails with `conflict`.
 - `replace`: the PNG's rectangle overwrites the layer's pixels exactly,
@@ -571,6 +571,48 @@ document.
 - `clear_outside: true` (with `replace`): first clear the layer's whole
   extent, so the layer then contains only the PNG.
 - Returns the changed rectangle and the layer's new bounds.
+
+*As built (P3.3, 2026-11-25; `kritamcp/commands/pixels.py`, 300 s,
+mutating):*
+
+- Validation, all before any change: `id` is any layer ref (`"/"` is
+  `bad_request`); a non-paint target is `conflict` with `details.type`
+  (`grouplayer`, `transparencymask`, `filterlayer`, …); a document that
+  isn't RGBA/U8 is `conflict` with `details.color_model` / `color_depth`
+  (D5); `png` goes through the allowed roots (`forbidden_path`,
+  `not_found`), must be a PNG by its header (`bad_request`) and within the
+  canvas size limits (`too_large`); `x`, `y` are whole numbers within
+  ±163840 (a `null` means 0); `mode` is `replace` or `over`;
+  `clear_outside` with `over` is `bad_request`.
+- `x`, `y` are where the PNG's top-left pixel lands. The rectangle may lie
+  partly or wholly off the canvas: Krita keeps those pixels and `bounds`
+  extends past the edge.
+- `over` is `pixels.composite_over`: Qt source-over on a 16-bit
+  premultiplied working image (`Format_RGBA64_Premultiplied`; 8-bit
+  premultiplication was up to 51 levels off at low alpha), measured within
+  one level of the exact formula at every alpha. It is exact where the
+  PNG pixel is opaque, where the layer pixel is fully transparent (the PNG
+  pixel), and where the PNG pixel is fully transparent (the layer pixel is
+  kept bit for bit, colour under zero alpha included).
+- `clear_outside` zeroes the layer over its old `bounds()` only, then
+  writes the PNG; with an empty layer it is the same as `replace`.
+- Result: `{doc, layer (id), png (resolved path), mode, clear_outside,
+  dry_run: false, changed: {x, y, w, h}, bounds: {x, y, w, h} | null,
+  warnings}`. `changed` is the PNG's rectangle, or with `clear_outside`
+  the bounding rectangle of it and the old bounds. `bounds` is the layer's
+  new exact bounds. With `dry_run`: `would_change` instead of `changed`,
+  no `bounds`, nothing changed and no journal entry.
+- Undo (D6): before writing, the old pixels of the affected rectangles
+  are read into the inverse, `RestorePixels(node_id, patches)` with
+  `node_ids` and `nbytes`; the patches are the PNG's rectangle, plus with
+  `clear_outside` the old bounds (one bounding rectangle when that is no
+  bigger than the two apart). The inverse writes them back on the layer
+  looked up by id in the live document at call time. One journal entry
+  per call (`batch.run` with one plan; a failure mid-write restores the
+  old pixels and reports `details.applied` / `rolled_back` like the other
+  batch tools). An entry over the journal's byte cap is not stored, the
+  journal is cleared and the result warns `not_undoable` with `nbytes`,
+  as `delete_layers` does.
 
 ### `krita_render(doc?, path, region?, scale=1.0, only?, hide?, background?)` · P0
 
@@ -587,6 +629,12 @@ document.
   Use `scale` (e.g. 0.25) for previews.
 - `png_level`: optional zlib level 0–9 for the output (default Qt's).
   Lower is faster and bigger. The same option exists on `export_layers`.
+  *(P3.1, 2026-11-25)* `pixels.save_png(…, level=)` maps the level to
+  `QImage.save`'s quality as `100 - ceil(91 * level / 9)`, the inverse of
+  Qt 5.15's `qpnghandler.cpp` (`compression = (100 - quality) * 9 / 91`).
+  `null` passes quality -1: Qt sets no level and libpng uses zlib's
+  default, 6. Writes go to a temp file in the same directory and are
+  renamed into place, so a failed write leaves no partial file.
 - Returns `path`, `width`, `height` and `elapsed_ms`.
 - `krita_get_canvas(filename)` stays as a shortcut for
   `render(path=<output dir>/<filename>)`.

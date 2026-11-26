@@ -22,6 +22,7 @@ EXPECTED_REGISTRY = {
     "get_canvas": (300, False),
     "get_color_at": (30, False),
     "get_document_info": (30, False),
+    "import_png": (300, True),
     "list_documents": (30, False),
     "list_brushes": (30, False),
     "list_layers": (30, False),

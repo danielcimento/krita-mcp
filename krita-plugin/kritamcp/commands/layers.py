@@ -204,7 +204,7 @@ class _Planner:
                 raise _bad("'png' is only valid on paint layers", param="png")
             plan.png = paths.resolve_allowed_path(spec["png"], must_exist=True)
             plan.size = pixels.png_size(plan.png)
-            _check_png_size(plan.size, spec["png"])
+            pixels.check_png_limits(plan.size, spec["png"])
             plan.x, plan.y = _check_coord(spec, "x"), _check_coord(spec, "y")
             if not self._rgba_checked:
                 pixels.require_rgba8(self.doc)
@@ -226,22 +226,6 @@ class _Planner:
         if plan.png is not None:
             out.update(png=plan.png, x=plan.x, y=plan.y, w=plan.size[0], h=plan.size[1])
         return out
-
-
-def _check_png_size(size, given):
-    limits = config.current().limits
-    w, h = size
-    max_dim, max_pixels = limits["max_canvas_dim"], limits["max_canvas_pixels"]
-    if max(w, h) > max_dim:
-        raise CommandError("too_large",
-                           f"PNG {given} is {w}x{h}; the limit is {max_dim} pixels per side "
-                           "(max_canvas_dim)",
-                           {"limit": "max_canvas_dim", "max": max_dim, "w": w, "h": h})
-    if w * h > max_pixels:
-        raise CommandError("too_large",
-                           f"PNG {given} is {w}x{h} = {w * h} pixels; the limit is {max_pixels} "
-                           "(max_canvas_pixels)",
-                           {"limit": "max_canvas_pixels", "max": max_pixels, "pixels": w * h})
 
 
 def _remove_node(doc, nid):

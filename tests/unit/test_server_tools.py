@@ -33,6 +33,7 @@ EXPECTED_TOOLS = {
     "krita_update_layers",
     "krita_move_layers",
     "krita_delete_layers",
+    "krita_import_png",
 }
 
 # tool -> (kwargs, plugin action, canned plugin payload)
@@ -87,6 +88,11 @@ CASES = {
     "krita_delete_layers": ({"ids": ["a"]}, "delete_layers",
                             {"doc": "doc-1", "dry_run": False, "deleted": ["{1}"], "count": 1,
                              "warnings": []}),
+    "krita_import_png": ({"id": "P", "png": "a.png"}, "import_png",
+                         {"doc": "doc-1", "dry_run": False, "layer": "{1}", "png": "/out/a.png",
+                          "mode": "replace", "clear_outside": False,
+                          "changed": {"x": 0, "y": 0, "w": 4, "h": 3},
+                          "bounds": {"x": 0, "y": 0, "w": 4, "h": 3}, "warnings": []}),
     "krita_list_layers": ({}, "list_layers",
                           {"root": "/", "layers": [{"id": "{1}", "name": "a", "children": []}],
                            "counts": {"paintlayer": 1, "total": 1}}),
@@ -289,7 +295,7 @@ DOC_TOOLS = {"krita_save", "krita_get_canvas", "krita_stroke", "krita_fill",
              "krita_draw_shape", "krita_clear", "krita_get_color_at",
              "krita_get_document_info", "krita_close_document", "krita_list_layers",
              "krita_create_layers", "krita_update_layers", "krita_move_layers",
-             "krita_delete_layers"}
+             "krita_delete_layers", "krita_import_png"}
 # close_document has no active-document default.
 REQUIRED_DOC_TOOLS = {"krita_close_document"}
 OPTIONAL_DOC_TOOLS = DOC_TOOLS - REQUIRED_DOC_TOOLS
@@ -695,3 +701,49 @@ def test_delete_layers_summary(fake_call):
                          "warnings": [{"code": "not_undoable", "message": "too big"}]}
     assert server.krita_delete_layers(["A"])["summary"] == (
         "Deleted 1 layer in doc-2 (1 warning: too big)")
+
+
+# P3.3: import_png.
+
+def test_import_png_params(fake_call):
+    server.krita_import_png("P", "a.png")
+    assert fake_call.calls[0] == ("import_png", {"id": "P", "png": "a.png", "x": 0, "y": 0,
+                                                 "mode": "replace"}, None)
+    server.krita_import_png("G/P", "~/b.png", x=-3, y=7, mode="over", doc="doc-2",
+                            dry_run=True, timeout_s=60)
+    assert fake_call.calls[1] == ("import_png", {"id": "G/P", "png": "~/b.png", "x": -3, "y": 7,
+                                                 "mode": "over", "doc": "doc-2",
+                                                 "dry_run": True}, 60)
+    server.krita_import_png("P", "a.png", clear_outside=True)
+    assert fake_call.calls[2][1]["clear_outside"] is True
+
+
+def test_import_png_schema_and_typos():
+    params = _tools()["krita_import_png"].parameters
+    assert set(params["properties"]) == {"id", "png", "x", "y", "mode", "clear_outside", "doc",
+                                         "dry_run", "timeout_s"}
+    assert sorted(params["required"]) == ["id", "png"]
+    assert params["properties"]["mode"]["enum"] == ["replace", "over"]
+    description = " ".join(_tools()["krita_import_png"].description.split())
+    assert "outside it are untouched unless clear_outside" in description
+    assert "8-bit RGBA" in description and "paint layer" in description
+    for args in ({"id": "P", "png": "a.png", "mode": "under"},
+                 {"id": "P", "png": "a.png", "x": 1.5},
+                 {"id": "P"}):
+        assert _call_tool("krita_import_png", args).is_error, args
+
+
+def test_import_png_summary(fake_call):
+    fake_call.payload = {"doc": "doc-2", "dry_run": False, "layer": "{1}", "png": "/out/a.png",
+                         "mode": "replace", "clear_outside": True,
+                         "changed": {"x": 2, "y": 3, "w": 40, "h": 30}, "bounds": None,
+                         "warnings": [{"code": "not_undoable", "message": "too big"}]}
+    assert server.krita_import_png("P", "a.png", clear_outside=True)["summary"] == (
+        "Imported a.png into layer {1} (replace, clear outside), changing 40x30 at (2, 3) "
+        "in doc-2 (1 warning: too big)")
+    fake_call.payload = {"doc": "doc-2", "dry_run": True, "layer": "{1}", "png": "/out/a.png",
+                         "mode": "over", "clear_outside": False,
+                         "would_change": {"x": 0, "y": 0, "w": 4, "h": 4}, "warnings": []}
+    assert server.krita_import_png("P", "a.png", mode="over", dry_run=True)["summary"] == (
+        "Would import a.png into layer {1} (over), changing 4x4 at (0, 0) in doc-2 "
+        "(dry run, nothing changed)")

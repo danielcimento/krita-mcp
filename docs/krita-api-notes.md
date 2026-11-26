@@ -370,6 +370,22 @@ are fast enough that per-pixel Python loops are never justified.
 - Fast whole-buffer tricks without numpy: `data[3::4]` extracts alpha,
   `bytes.translate(table)` maps values through a 256-entry table, and
   `bytearray[3::4] = ...` writes a channel back.
+- `QPainter` source-over onto a `Format_ARGB32_Premultiplied` image is
+  imprecise for partial alpha: against the exact formula, colours were off
+  by up to 3.3 levels at result alpha 128–254 and 51 at alpha 1–7. On a
+  `Format_RGBA64_Premultiplied` image every channel is within one level
+  at every alpha (max 0.9), at about 1.4× the time [verified 2026-11-25,
+  P3.1, Qt 5.15.7 / PyQt 5.15.11]. Premultiplying also zeroes the colour
+  of alpha-0 pixels, so keep those from the original bytes.
+  `pixels.composite_over` does both.
+- At 5800×8400 [verified 2026-11-25, P3.1]: `pixels.opaque_bounds`
+  (row pass by `lstrip`/`rstrip` of zero alpha bytes, column pass by
+  OR-ing the rows as big ints) takes 30–90 ms; `count_alpha` 35 ms;
+  `composite_over` (16-bit, in 4 MP strips) 0.7 s.
+- `QImage.save(path, "PNG", quality)`: Qt 5.15 sets zlib level
+  `(100 - quality) * 9 // 91`; quality -1 sets none (zlib default 6).
+  A 2048² image: level 0 16.8 MB in 88 ms, default 50 KB in 157 ms,
+  level 9 45 KB in 172 ms [verified 2026-11-25, P3.1].
 
 ## Selections
 
