@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phases 1–4 done (all P0; acceptance 1–6 pass live, 2026-11-25). Phases 5–6 (P1, P2) built: P5.1–P5.10, P6.1–P6.2; their live tests are written, not yet run. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | **All phases done** (P1.1–P6.2). Full live suite passed on 2026-11-25: P0 acceptance 1–6, and the Phase 5–6 live tests, the latter after two GUI-only fixes (export retry; journal freed before close). Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -336,6 +336,12 @@ tools.
   fade through alpha 1–7 over more than 4 px. Count connected groups of stray
   pixels and flag only small ones (a configurable size), with
   run-length union-find over rows, no per-pixel loop.
+
+*Exit (2026-11-25):* all Phase 5 live tests pass. The first run found two
+GUI-only problems the headless suite can't see: exports refused while the
+image was busy after a save (now waited for and retried), and Krita dying
+after a closed document's journal freed detached nodes (journal now
+dropped before closing). See krita-api-notes § Crash hazards.
 
 ### Phase 6: P2
 

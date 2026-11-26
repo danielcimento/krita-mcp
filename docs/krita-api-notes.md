@@ -56,6 +56,9 @@ so the HTTP bridge dies with it.
   Since then `close_document` drops the journal *before* closing, and the
   journals of documents closed by hand are kept alive for the session
   (`batch._GRAVEYARD`, pixel snapshots released) instead of being freed.
+  With that change the full live suite ran clean, including the
+  sequence that had crashed (delete, close, then a new command). That
+  supports the cause but doesn't prove it: there was no crash report.
 - **`exportImage` / `saveAs` / `save` refuse while the image is busy**
   [verified 2026-11-25, live]: in the GUI, `exportDocumentSync` returns
   False at once (0 ms) when it can't take the image's barrier lock or the
