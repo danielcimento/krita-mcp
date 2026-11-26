@@ -231,14 +231,26 @@ def test_limit_overrides(cfg, out, home):
     write(cfg, {"limits": {"max_canvas_pixels": 1000}, "journal": {"max_actions": 5, "max_bytes": 10}})
     s = load(cfg, out, home)
     assert dict(s.limits) == {"max_canvas_dim": 16384, "max_canvas_pixels": 1000}
-    assert dict(s.journal) == {"max_actions": 5, "max_bytes": 10}
+    assert dict(s.journal) == {"max_actions": 5, "max_bytes": 10, "max_disk_bytes": 4294967296}
     assert s.errors == ()
 
 
-@pytest.mark.parametrize("section", ["limits", "journal"])
+def test_journal_defaults():
+    assert config.DEFAULT_JOURNAL == {"max_actions": 20, "max_bytes": 1073741824,
+                                      "max_disk_bytes": 4294967296}  # 1 GB in memory, 4 GB spilled (D6)
+
+
+def test_journal_max_disk_bytes_override(cfg, out, home):
+    write(cfg, {"journal": {"max_disk_bytes": 1 << 40}})
+    s = load(cfg, out, home)
+    assert dict(s.journal) == {**config.DEFAULT_JOURNAL, "max_disk_bytes": 1 << 40}
+    assert s.errors == ()
+
+
+@pytest.mark.parametrize("section,key", [("limits", "max_canvas_dim"), ("journal", "max_actions"),
+                                         ("journal", "max_disk_bytes")])
 @pytest.mark.parametrize("bad", [0, -1, True, False, "100", 1.5, None, [1]])
-def test_invalid_override_keeps_default(cfg, out, home, section, bad):
-    key = next(iter(getattr(config, f"DEFAULT_{section.upper()}")))
+def test_invalid_override_keeps_default(cfg, out, home, section, key, bad):
     write(cfg, {section: {key: bad}})
     s = load(cfg, out, home)
     assert dict(getattr(s, section)) == getattr(config, f"DEFAULT_{section.upper()}")
@@ -271,15 +283,23 @@ def test_defaults_are_not_mutated(cfg, out, home):
 
 def test_lint_defaults():
     assert config.DEFAULT_LINT == {"additive_mode": "either", "stray_alpha_below": 8,
-                                   "stray_alpha_distance": 4}
+                                   "stray_alpha_distance": 4, "stray_speck_max_px": 64}
+    assert config.LINT_INT_RANGES["stray_speck_max_px"] == (1, 1_000_000)
 
 
 @pytest.mark.parametrize("mode", ["either", "add", "linear_dodge"])
 def test_lint_overrides(cfg, out, home, mode):
-    write(cfg, {"lint": {"additive_mode": mode, "stray_alpha_below": 255, "stray_alpha_distance": 1}})
+    write(cfg, {"lint": {"additive_mode": mode, "stray_alpha_below": 255, "stray_alpha_distance": 1,
+                         "stray_speck_max_px": 1}})
     s = load(cfg, out, home)
-    assert dict(s.lint) == {"additive_mode": mode, "stray_alpha_below": 255, "stray_alpha_distance": 1}
+    assert dict(s.lint) == {"additive_mode": mode, "stray_alpha_below": 255, "stray_alpha_distance": 1,
+                            "stray_speck_max_px": 1}
     assert s.errors == ()
+
+
+def test_lint_speck_max_px_upper_bound(cfg, out, home):
+    write(cfg, {"lint": {"stray_speck_max_px": 1_000_000}})
+    assert load(cfg, out, home).lint["stray_speck_max_px"] == 1_000_000
 
 
 def test_lint_partial_override_keeps_other_defaults(cfg, out, home):
@@ -303,6 +323,8 @@ def test_lint_bad_additive_mode_keeps_default(cfg, out, home, bad):
     ("stray_alpha_below", 8.0), ("stray_alpha_below", "8"),
     ("stray_alpha_distance", 0), ("stray_alpha_distance", 65), ("stray_alpha_distance", -4),
     ("stray_alpha_distance", None),
+    ("stray_speck_max_px", 0), ("stray_speck_max_px", 1_000_001), ("stray_speck_max_px", -1),
+    ("stray_speck_max_px", 64.0), ("stray_speck_max_px", True), ("stray_speck_max_px", "64"),
 ])
 def test_lint_bad_threshold_keeps_default(cfg, out, home, key, bad):
     write(cfg, {"lint": {key: bad}})

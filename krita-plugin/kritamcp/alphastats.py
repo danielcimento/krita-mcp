@@ -13,13 +13,25 @@ outside the strong mask dilated by ``distance``. "Within" is the kernel
 of Krita's ``Selection.grow(r, r)`` (``kernel_half_widths``), which the
 plugin uses for the dilation; ``dilate_shift`` computes the same kernel
 here, as the fallback when ``grow`` is unavailable or misbehaves.
+
+**Specks** (P5.10): the stray pixels split into 8-connected components;
+those of at most ``stray_speck_max_px`` pixels are specks, the larger
+ones *regions* (soft glows and auras that fade out over more than
+``distance`` px: intended art). Only specks are lint findings.
+``components`` labels them with run-length union-find over rows: O(runs)
+Python iterations, the runs themselves found by ``re`` in C.
 """
 
 import math
+import re
 
-DEFAULT_SETTINGS = {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4}
+DEFAULT_SETTINGS = {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4,
+                    "stray_speck_max_px": 64}
 ADDITIVE_MODES = ("either", "add", "linear_dodge")
 MAX_DISTANCE = 256
+MAX_SPECK_PX = 1_000_000
+MAX_RUNS = 2_000_000  # components() stops past this many runs (a noise field)
+MAX_SAMPLES = 5
 
 # Translate tables over alpha bytes / mask bytes.
 _NONZERO_1 = bytes([0] + [1] * 255)
@@ -67,6 +79,8 @@ def _valid(key, value):
         return False
     if key == "stray_alpha_below":
         return 1 <= value <= 255
+    if key == "stray_speck_max_px":
+        return 1 <= value <= MAX_SPECK_PX
     return 0 <= value <= MAX_DISTANCE  # stray_alpha_distance
 
 
@@ -139,17 +153,167 @@ def stray_count(alpha, w, h, below, distance, dilate=dilate_shift):
     and strong pixels and ``distance > 0``. Returns ``(count, dilated)``,
     ``dilated`` True when ``dilate`` was called.
     """
+    count, _, dilated = _stray(alpha, w, h, below, distance, dilate, want_mask=False)
+    return count, dilated
+
+
+def _stray(alpha, w, h, below, distance, dilate, want_mask):
+    """``stray_count``'s work: ``(count, mask, dilated)``, ``mask`` the
+    stray pixels as 0/1 bytes when ``want_mask``, else None."""
     weak = alpha.translate(weak_table(below))
     n_weak = weak.count(1)
     if n_weak == 0:
-        return 0, False
+        return 0, (bytes(len(alpha)) if want_mask else None), False
     strong = alpha.translate(strong_table(below))
-    if strong.count(1) == 0:
-        return n_weak, False
-    if distance <= 0:
-        return n_weak, False  # a weak pixel is never strong itself
+    if strong.count(1) == 0 or distance <= 0:  # a weak pixel is never strong itself
+        return n_weak, (weak if want_mask else None), False
     grown = dilate(strong, w, h, distance)
     if len(grown) != w * h:
         raise ValueError(f"dilation gave {len(grown)} bytes for {w}x{h}")
+    bits = _and_not(weak, grown)
+    return bits.bit_count(), (bits.to_bytes(len(weak), "big") if want_mask else None), True
+
+
+def _and_not(weak01, grown):
     covered = int.from_bytes(grown.translate(_NONZERO_1), "big")
-    return (int.from_bytes(weak, "big") & ~covered).bit_count(), True
+    return int.from_bytes(weak01, "big") & ~covered
+
+
+def stray_mask(weak01, grown):
+    """The stray pixels, ``weak01 AND NOT grown``, as 0/1 bytes.
+
+    ``weak01`` is a 0/1 mask (``weak_table``), ``grown`` the dilated strong
+    mask (any nonzero byte is covered, so a Selection's 0/255 works), both
+    the same length. A byte-wise AND over big ints: no carries, so every
+    byte stays 0 or 1."""
+    if len(weak01) != len(grown):
+        raise ValueError(f"masks differ in size: {len(weak01)} and {len(grown)} bytes")
+    return _and_not(weak01, grown).to_bytes(len(weak01), "big")
+
+
+def empty_specks():
+    """``stray_specks`` for a layer with no stray pixel."""
+    return {"count": 0, "pixels": 0, "regions": 0, "samples": [], "truncated": False}
+
+
+def stray_stats(alpha, w, h, below, distance, speck_max_px, dilate=dilate_shift, origin=(0, 0)):
+    """One layer's stray-alpha snapshot fields: ``(stray_count,
+    stray_specks, dilated)``, for the ``w * h`` alpha bytes ``alpha``.
+
+    ``stray_count`` and ``dilate`` are as in ``stray_count``.
+    ``stray_specks`` is ``{"count", "pixels", "regions", "samples",
+    "truncated"}`` from ``components(stray, w, h, speck_max_px)``, with
+    the sample rectangles moved by ``origin`` (the layer bounds' top-left,
+    so they are in canvas coordinates).
+    """
+    count, mask, dilated = _stray(alpha, w, h, below, distance, dilate, want_mask=True)
+    if count == 0:
+        return 0, empty_specks(), dilated
+    c = components(mask, w, h, speck_max_px)
+    ox, oy = origin
+    samples = [{"x": r["x"] + ox, "y": r["y"] + oy, "w": r["w"], "h": r["h"]} for r in c["samples"]]
+    return count, {"count": c["specks"], "pixels": c["speck_pixels"], "regions": c["regions"],
+                   "samples": samples, "truncated": c["truncated"]}, dilated
+
+
+_RUN = re.compile(rb"\x01+")
+
+
+def components(mask01, w, h, max_size, max_runs=MAX_RUNS):
+    """The 8-connected components of the 1s in the 0/1 mask ``mask01``
+    (``w * h`` bytes): ``{"specks", "speck_pixels", "regions", "samples",
+    "truncated"}``. A *speck* has at most ``max_size`` pixels; ``regions``
+    counts the larger components. ``samples`` are the bounding boxes
+    (``{x, y, w, h}``, mask coordinates) of up to ``MAX_SAMPLES`` specks,
+    top-most first, then left-most.
+
+    Run-length union-find over rows. Each row's runs of 1s come from one
+    ``re.finditer`` (in C). A run ``[a, b)`` touches a run ``[c, d)`` of
+    the row above iff ``c <= b and a <= d`` (the ranges overlap once
+    widened by one pixel: 8-connectivity). A two-pointer sweep pairs the
+    runs of neighbouring rows, so the Python work is O(runs + rows), never
+    O(pixels). A run joins the component of the first run it touches;
+    touching more merges them (union by size, path compression). Each
+    root keeps its size and bounding box.
+
+    After more than ``max_runs`` runs (a noise field) the scan stops at
+    the end of that row: ``truncated`` is True and the counts cover the
+    rows scanned (components cut off there may be counted as specks).
+    """
+    parent, size = [], []
+    x0s, y0s, x1s, y1s = [], [], [], []  # per label; inclusive x1, y1
+
+    def find(i):
+        root = i
+        while parent[root] != root:
+            root = parent[root]
+        while parent[i] != root:
+            parent[i], i = root, parent[i]
+        return root
+
+    prev = []  # the previous row's runs: (start, end, label)
+    runs = 0
+    truncated = False
+    finditer = _RUN.finditer
+    for y in range(h):
+        row = mask01[y * w:(y + 1) * w]
+        if 1 not in row:
+            prev = []
+            continue
+        cur = []
+        j, n_prev = 0, len(prev)
+        for m in finditer(row):
+            a, b = m.span()
+            while j < n_prev and prev[j][1] < a:
+                j += 1  # ends left of this run's widened range, so of every later run's too
+            root = -1
+            k = j
+            while k < n_prev and prev[k][0] <= b:
+                r = find(prev[k][2])
+                if root < 0:
+                    root = r
+                elif r != root:
+                    if size[r] > size[root]:
+                        r, root = root, r
+                    parent[r] = root
+                    size[root] += size[r]
+                    x0s[root] = min(x0s[root], x0s[r])
+                    y0s[root] = min(y0s[root], y0s[r])
+                    x1s[root] = max(x1s[root], x1s[r])
+                k += 1
+            if root < 0:
+                root = len(parent)
+                parent.append(root)
+                size.append(b - a)
+                x0s.append(a)
+                y0s.append(y)
+                x1s.append(b - 1)
+                y1s.append(y)
+            else:
+                size[root] += b - a
+                if a < x0s[root]:
+                    x0s[root] = a
+                if b - 1 > x1s[root]:
+                    x1s[root] = b - 1
+                y1s[root] = y
+            cur.append((a, b, root))
+        runs += len(cur)
+        prev = cur
+        if runs > max_runs:
+            truncated = True
+            break
+
+    specks, speck_pixels, regions = [], 0, 0
+    for i, p in enumerate(parent):
+        if p != i:
+            continue
+        if size[i] <= max_size:
+            specks.append(i)
+            speck_pixels += size[i]
+        else:
+            regions += 1
+    specks.sort(key=lambda i: (y0s[i], x0s[i]))
+    samples = [{"x": x0s[i], "y": y0s[i], "w": x1s[i] - x0s[i] + 1, "h": y1s[i] - y0s[i] + 1}
+               for i in specks[:MAX_SAMPLES]]
+    return {"specks": len(specks), "speck_pixels": speck_pixels, "regions": regions,
+            "samples": samples, "truncated": truncated}

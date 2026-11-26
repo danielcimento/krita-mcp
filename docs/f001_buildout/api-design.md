@@ -930,7 +930,8 @@ even resolved), resolves `doc`, collects a snapshot with the config's
 ```json
 {"doc": "doc-2", "findings": [...], "counts": {"error": 3, "warning": 1, "info": 0},
  "rules_run": ["node-type", "layer-style", ...],
- "settings": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4},
+ "settings": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4,
+              "stray_speck_max_px": 64},
  "pixel_stats": true}
 ```
 
@@ -954,7 +955,8 @@ returns `{"doc", "snapshot"}`.
 ```json
 {"document": {"width": 64, "height": 64, "color_model": "RGBA", "color_depth": "U8",
               "color_profile": "sRGB-elle-V2-srgbtrc.icc", "pixel_stats": true},
- "settings": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4},
+ "settings": {"additive_mode": "either", "stray_alpha_below": 8, "stray_alpha_distance": 4,
+              "stray_speck_max_px": 64},
  "nodes": [{"id": "{…}", "name": "Blur", "path": "Blur", "type": "filterlayer",
             "parent": null, "depth": 1, "order": 0, "visible": true, "opacity": 1.0,
             "blend_mode": "copy", "inherit_alpha": false, "alpha_locked": false,
@@ -988,6 +990,30 @@ returns `{"doc", "snapshot"}`.
   big-int row shifts (rows padded by `d` columns so nothing wraps); the two
   agree exactly. Layers with no weak pixel, or no strong one, skip the
   dilation.
+- `stray_specks` *(P5.10, 2026-11-25)*, next to `stray_count` (which stays
+  the total): `{"count", "pixels", "regions", "samples", "truncated"}`.
+  The stray pixels (`alphastats.stray_mask`: weak AND NOT grown, 0/1
+  bytes) split into 8-connected components (`alphastats.components`);
+  `count` is the number of *specks*, components of at most
+  `stray_speck_max_px` pixels, `pixels` their total, `regions` the number
+  of larger components (soft glows and auras: intended art, not
+  flagged), `samples` the bounding boxes of up to 5 specks in canvas
+  coordinates (top-most first, then left-most; `{x, y, w, h}`).
+  `truncated` is true when the layer has more than 2,000,000 runs of stray
+  pixels (a noise field): the scan stops there, and the counts cover the
+  rows scanned. A layer with no stray pixel has `{"count": 0, "pixels": 0,
+  "regions": 0, "samples": [], "truncated": false}`.
+  `alphastats.stray_stats(alpha, w, h, below, distance, speck_max_px,
+  dilate, origin)` returns `stray_count`, `stray_specks` and whether it
+  dilated, in one call for the collector.
+- Components: run-length union-find over rows. Each row's runs of 1s come
+  from one `re.finditer(rb"\x01+")` (in C); a run `[a, b)` touches a run
+  `[c, d)` of the row above iff `c <= b and a <= d` (8-connectivity); a
+  two-pointer sweep pairs neighbouring rows' runs, so the Python work is
+  O(runs + rows), never O(pixels). Union by size with path compression;
+  each root keeps its size and bounding box. A 1000×1000 mask of 12 %
+  noise plus a solid block takes about 0.05 s; 50 % noise (≈250k runs)
+  about 0.1 s.
 - Cost: the headless Mao rebuild (185 paint layers, 5800×8400) takes
   about 1.2 s, the slowest layer (the full-canvas guide image) about 0.3 s;
   the fallback is as fast.
@@ -1023,7 +1049,7 @@ style is a finding, and so on.
 | `side-token` | warning | Within one parent, stripping side tokens makes names collide (`Eyebrow` next to `Eyebrow L`): flag the ones without a token (`related_ids`: the sided siblings). Also flags non-standard tokens such as `_L`, `Left`, `(L)` or a lowercase ` l`, with the standard spelling in the message |
 | `empty-layer` | warning | A paint layer with no pixel where `alpha > 0` |
 | `out-of-canvas` | warning | A paint layer's `opaque_bounds` reaches outside `(0, 0, width, height)` |
-| `stray-alpha` | warning | A paint layer has pixels with `0 < alpha < 8` further than 4 px from any pixel with `alpha ≥ 8`. Both thresholds are configurable. Anti-aliased edges don't count |
+| `stray-alpha` | warning | A paint layer has stray **specks**: 8-connected groups of at most `lint.stray_speck_max_px` (default 64) stray pixels, a stray pixel being one with `0 < alpha < 8` further than 4 px from any pixel with `alpha ≥ 8`. Larger groups of stray pixels (soft glows and auras fading out over more than 4 px) don't count, nor do anti-aliased edges. All three thresholds are configurable. A layer too fragmented to analyse (`stray_specks.truncated`) is a finding of its own. *(P5.10, 2026-11-25: was any stray pixel, which flagged 48 of Mao's layers, mostly intended glows; decided with the user.)* |
 | `color-space` | error | The document is not `RGBA` / `U8`, or its profile name doesn't contain `sRGB`. One document-level finding |
 
 `conventions` set: opt-in.
@@ -1036,6 +1062,50 @@ style is a finding, and so on.
 | `pose-visibility` | warning | Among sibling groups named `<X> A`, `<X> B`, …, `A` is hidden or another one is visible |
 | `reference-hidden` | warning | A bracketed reference group is visible |
 | `mask-suffix` | info | A layer referenced as a clipping base has no ` Mask` suffix. It only fires together with `inherit-alpha` |
+
+*(P5.9, 2026-11-25)* Settled from CONVENTIONS § Structure and § Naming
+(`lint.py`; reference group contents are skipped as by every rule):
+
+- `nesting-depth`: a **paint layer** with more than 3 group ancestors
+  (`depth` > 4; CONVENTIONS' `Head/Eyes/Eyeballs` is 3 groups). One
+  finding per paint layer; groups and other node types are exempt.
+- `name-case` (`lint.name_case_problems`), paint layers and groups only:
+  words separated by single spaces, no leading/trailing space, no `_`.
+  Each word, and each part of a hyphenated word, must start (after an
+  opening bracket or quote) with an uppercase letter or a digit. Allowed:
+  side tokens `L`/`R`, variant letters `A`/`B`, numbers and number-led
+  words (`2`, `3D`), acronyms and inner capitals (`FX`, `McKay`), words
+  without letters or digits (`&`, `[`, `]`, so `[ Guide ]` passes), and
+  lowercase minor words (`a an and as at but by for from in into nor of
+  on onto or per the to via vs with`) except as the first or last word
+  (so `Back of Head` passes and `Arm L a` doesn't). Uncased letters
+  (Japanese) are reported as not English. The message lists the problems
+  and, when raising first letters and replacing `_`/extra whitespace fixes
+  them, the suggested name.
+- `blend-suffix`, paint layers only: the suffix is the last word of a
+  name of two or more words, recognised in any case. `multiply` wants
+  ` Multiply`; `add` and `linear_dodge` want ` Add` (D17). Findings: the
+  suffix missing; a suffix for the other mode; the suffix on a layer in
+  another mode (normal, screen…; the fix names `multiply`, or the Add
+  spelling `lint.additive_mode` requires, `add` for `"either"`); the right
+  suffix in the wrong case (`multiply`).
+- `pose-visibility`: sibling **groups** whose names end in a space and one
+  capital other than `L`/`R` (`lint.pose_parts`), grouped by the rest of
+  the name. Only families of two or more that include `A` are checked:
+  `A` hidden, or any other member visible (own `visible` flags; siblings
+  share their ancestors). `related_ids`: the rest of the family. Paint
+  layers named like poses, families without `A` and lone `<X> A` groups
+  are not checked.
+- `reference-hidden`: a reference group whose own `visible` is true, even
+  inside a hidden group. Nested reference groups are contents, so skipped.
+- `mask-suffix` (`lint.clipping_bases`): the base of an `inherit_alpha`
+  node is the nearest sibling below it (same parent; masks are not
+  siblings) that doesn't inherit alpha itself, so a stack of clipped
+  layers shares one base, as in the clipping-mask idiom the art uses
+  (Krita clips to the whole stack below within the group, which is that
+  base). The base, a layer or group, fires when its last word isn't
+  ` Mask`; `related_ids` are the clipped layers. An `inherit_alpha` node
+  with nothing below it has no base.
 
 Side tokens, settled in P4.2 from CONVENTIONS § Naming (`<Thing> <Side>
 <Variant/Index>`, ` L` / ` R` as separate words, the character's side):
@@ -1058,8 +1128,11 @@ Other settled details: `duplicate-name` is case-sensitive and counts every
 node, masks and groups included. `color-space` needs `"sRGB"` in the
 profile name, case-sensitively, so `Rec2020-elle-V4-srgbtrc.icc` (sRGB
 curve, wide gamut) is a finding. `out-of-canvas` gives the overhang per
-side (`3 px left, 6 px below`); `stray-alpha` gives the count and both
-thresholds from `settings`.
+side (`3 px left, 6 px below`); `stray-alpha` gives the number of specks,
+their pixels, the thresholds from `settings` and up to 3 sample rectangles
+(`(x, y) wxh`, canvas coordinates). On a snapshot without `stray_specks`
+(a collector from before P5.10) it falls back to `stray_count > 0` with
+the old message (the count and both thresholds).
 
 Rules are pure functions in `lint.py` over a snapshot (D14):
 `snapshot -> [finding]`. Adding a rule means adding a function and a test,
