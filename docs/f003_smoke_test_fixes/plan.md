@@ -7,7 +7,7 @@
 | Tool contract changes | [api-changes.md](api-changes.md) (deltas against [../f001_buildout/api-design.md](../f001_buildout/api-design.md)) |
 | Evidence | Smoke test 2026-11-25, `live2d-workspace` branch `smoke-test/2026-11-25`, `smoke-out/REPORT.md` (untracked) |
 | Base | `local-fixes` @ a6549d4 (plugin 0.2.0, protocol 2) |
-| Status | **Implemented; live run pending.** Unit and headless suites pass, Mao fixtures included (see Results). `make test-live` needs Krita restarted on this checkout (protocol 3) |
+| Status | **Done.** Unit, headless (Mao fixtures included) and live suites pass (see Results); live run 2026-11-26 with `KRITA_MCP_MAO_ORA`, 25/25 after updating `test_lint_mao` from F001's 17 duplicate names to K6's 11 |
 
 ## Scope
 
@@ -57,7 +57,7 @@ Status: ☐ open · ◐ in progress · ☑ done.
 | T10 | `diff_documents` quantifies pixel changes (count, bounds, max channel difference, alpha-0-only count) for the composite and each layer; `ignore_alpha0_rgb` | K4 | ☑ |
 | T11 | Bulk results: `list_layers` (`fields` default, `summary_only`, `path`, `limit`/`offset`), `export_layers` (`verbose`), `lint` (`group_by`, `limit`, `offset`), `create_layers` (`verbose`) | K3 | ☑ |
 | T12 | Size check: replay the smoke test's calls with the tools' defaults on the Mao `.kra`, every result ≤ 8 KB | K3 | ☑ |
-| T13 | Protocol 3 / plugin 0.3.0; README, architecture, krita-api-notes; regression run (unit, headless, Mao, live) | all | ◐ live run waits for a Krita restart |
+| T13 | Protocol 3 / plugin 0.3.0; README, architecture, krita-api-notes; regression run (unit, headless, Mao, live) | all | ☑ |
 
 ## Results
 
@@ -73,7 +73,7 @@ Measured headless on `mao_pro_layered.kra` (5800×8400, 222 nodes),
 | K3 every smoke-test call ≤ 8 KB by default | Largest: `lint(rules=all)` 7.1 KB, `list_layers` 6.2 KB, `update_layers` (22 renames) 2.9 KB; the rest under 1.2 KB (was 66 KB / 72 KB) | `test_smoke_sizes` |
 | K4 the 3.3 situation is quantified | 316 visible pixels, max difference 1, plus 2,859 alpha-0 pixels, each with bounds (the smoke test's 2,870 included 11 that E2 now keeps) | `MaoKraRoundTripTest._without_origins` |
 | K5 rebuild in one call, no document-level differences | `create_layers(manifest, new_document=true)`: `document_changes` {} | `test_smoke_sizes`, `MaoKraRoundTripTest` |
-| K6 exactly 11 duplicate-name errors, all A/B pairs | 11, each with `suggested_names`; applying them in one `update_layers` call clears the rule | `test_smoke_sizes`, `test_mao_headless.MaoLintTest` |
+| K6 exactly 11 duplicate-name errors, all A/B pairs | 11, each with `suggested_names`; applying them in one `update_layers` call clears the rule | `test_smoke_sizes`, `test_mao_headless.MaoLintTest`, live `test_acceptance.test_lint_mao` |
 | K7 stray-alpha pixel count and bounds; colour on draw calls | Present on every finding; `draw_shape` / `stroke` / `fill` take `color` | `test_smoke_sizes`, `test_f003_tools` |
 
 Regression checks from the work order: covered by the existing suites,

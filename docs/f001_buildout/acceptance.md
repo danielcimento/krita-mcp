@@ -178,7 +178,9 @@ which opens a copy of the committed fixture from the scratch dir.
 `test_lint_mao` (with `KRITA_MCP_MAO_ORA`) is the Mao secondary check:
 exactly 17 `duplicate-name` findings once `new_canvas`'s `Background` is
 deleted; headless it also gives 48 `stray-alpha` findings and nothing else
-(2026-11-25).
+(2026-11-25). Since F003 K6 (groups and layers are separate namespaces)
+it is **11**, all A/B pose pairs; the live run on 2026-11-26 gave 11
+`duplicate-name` and 33 `stray-alpha`.
 
 ### 5. Allowlist · `test_allowlist`
 

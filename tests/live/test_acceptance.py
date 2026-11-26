@@ -432,8 +432,10 @@ def test_lint_fixture(call, scratch, docs_to_close):
 
 def test_lint_mao(call, mao_dir, docs_to_close):
     """Acceptance § Fixtures, secondary check: the rebuilt Mao (without
-    new_canvas's Background) has exactly 17 duplicate-name findings. The
-    other rules' counts are reported, not asserted."""
+    new_canvas's Background) has exactly 11 duplicate-name findings, all
+    A/B pose pairs with pose-suffix suggested_names (F003 K6: a group may
+    share its name with a layer, so F001's 17 dropped the 6 group-vs-layer
+    clashes). The other rules' counts are reported, not asserted."""
     ora, work = mao_dir
     doc, background, _, _, _ = _rebuild_mao(call, ora, work, docs_to_close)
     call("delete_layers", doc=doc, ids=[background])
@@ -441,7 +443,11 @@ def test_lint_mao(call, mao_dir, docs_to_close):
     print(f"lint: {result['elapsed_ms']} ms; {result['summary']}")
     per_rule = collections.Counter(f["rule"] for f in result["findings"])
     print(f"lint per rule: {dict(sorted(per_rule.items()))}")
-    assert per_rule["duplicate-name"] == 17
+    assert per_rule["duplicate-name"] == 11
+    dups = [f for f in result["findings"] if f["rule"] == "duplicate-name"]
+    assert all(len(f["related_ids"]) == 2 for f in dups)
+    assert all(sorted(s["name"][-1] for s in f["suggested_names"]) == ["A", "B"]
+               for f in dups), [f["message"] for f in dups]
 
 
 # --- 5. Allowlist -------------------------------------------------------------
