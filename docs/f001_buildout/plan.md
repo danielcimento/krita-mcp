@@ -268,11 +268,11 @@ doesn't need Mao.
 
 ### Phase 4: Lint (P0)
 
-- **P4.1 Snapshot collector.** In `commands/analysis.py`: tree, properties,
+- [x] **P4.1 Snapshot collector.** In `commands/analysis.py`: tree, properties,
   `has_layer_style`, document color info, and per-paint-layer alpha
   stats (`pixel_count`, `opaque_bounds`, the stray-alpha count from
   `Selection.grow` per Q10, with a tile-based fallback).
-- **P4.2 `lint.py` default rules.** The ten rules in
+- [x] **P4.2 `lint.py` default rules.** The ten rules in
   [api-design.md § Lint rules](api-design.md#lint-rules), each a pure
   function with a hand-written-snapshot unit test, including the
   acceptance-test-4 scenario as a snapshot.
