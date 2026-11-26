@@ -240,6 +240,59 @@ To document in the tool docs and README:
   leaves partial entries on Krita's undo stack (a re-insert does, a
   rename doesn't).
 
+Settled in P5.1 (2026-11-25), `kritamcp/batch.py`, `commands/history.py`:
+
+- **Redo-capable inverses.** Applying an inverse returns its own reverse,
+  an inverse of the same protocol (`node_ids`, `nbytes`, `check(doc)`):
+  `RemoveNode` ↔ `ReinsertNode` (removing captures the node's place and
+  subtree, so an undone create redoes with the same ids), `RestoreProps`
+  returns the values it overwrote, `MoveBack` the forward move,
+  `RestorePixels` the pixels it overwrote (read over the same rectangles
+  first). `batch.rollback` ignores the return value. Each journal has an
+  undo and a redo stack; `undo` applies the newest undo entry (inverses
+  newest first) and pushes the reverses as one redo entry, `redo`
+  mirrors it, and any new push clears the redo stack.
+- **Preconditions.** `check(doc)` runs just before each inverse, against
+  the state the inverses before it left; a reason (a layer gone, a
+  re-insert's layer already back or its parent gone) is `conflict`
+  naming the entry and the reason. **The entry stays on the stack**, so
+  a user who put the layer back can retry. If an inverse fails after its
+  check (Krita refused, a spill file is missing), the steps already
+  applied are reversed again with the ops they returned, and the error
+  keeps the inverse's `CommandError` code (else `krita_error`), with
+  `details.applied` / `rolled_forward` / `rollback_errors`; the entry
+  stays too. Only when that roll-forward fails as well is the journal
+  cleared, since its entries no longer match the document.
+- **Caps.** `max_actions` applies to each stack; `max_bytes` (memory) and
+  `max_disk_bytes` (spill files, counted uncompressed; default 4 GB,
+  read defensively from `config.current().journal`) cover both stacks
+  together. Over the memory cap, pixel snapshots are spilled, the
+  entries farthest from the present (the bottoms of the two stacks)
+  first; still over a cap, the farthest entries are dropped. Detached
+  layers can't be spilled and count against the memory cap. An entry
+  that can't fit alone is not stored and its stack is cleared:
+  `not_undoable` on the tool's result (or `not_redoable` on an undo
+  whose reverse is too big).
+- **Spill files, not PNGs under a state directory.** Pixel snapshots are
+  internal state, so they are written as raw bytes compressed with
+  `zlib` level 1, one file per patch, in a per-process
+  `tempfile.mkdtemp(prefix="kmcp-journal-<pid>-")`. A file is deleted
+  when its entry is applied, evicted, cleared or forgotten (the registry
+  prunes a closed document's handle and forgets its journal; nothing is
+  called on the entry's nodes), and the directory at process exit
+  (`atexit`). kritarunner skips `atexit`, so making a spill dir also
+  removes the ones whose pid no longer runs.
+- **Painting tools** (stroke, fill, draw_shape, clear) push one
+  `RestorePixels` entry per call over the rectangle they write (`clear`:
+  the canvas, or for `"transparent"` the canvas ∪ the layer's bounds);
+  their results only gain `warnings` when the call is not undoable.
+- **`ui_undo` / `ui_redo`** take `doc`: when it isn't the active
+  document, its view (`Krita.instance().views()`, `view.document() ==
+  doc`) is shown with `window.showView(view)` (and `window.activate()`
+  if needed) first; a document with no view is `conflict` (always so
+  headless). Without `doc`, the active document's view. The result
+  carries the "only partly covers agent edits" warning.
+
 ## D7. Allowed roots come from config
 
 **Decided.**

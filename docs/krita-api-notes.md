@@ -528,5 +528,16 @@ Consequences:
   which write with `setPixelData`.
 - `Krita.instance().action("edit_undo").trigger()` acts on the *active
   view's* document.
+- Headless, `Krita.instance().views()` is empty, so `ui_undo(doc)` is
+  always `conflict` there [verified 2026-11-25, P5.1,
+  `tests/krita/test_history.py`]. Making another document's view active
+  with `Window.showView(view)` (then `Window.activate()`) before
+  triggering is [to verify] in the GUI (`tests/live/test_history.py`
+  only covers the active document).
+- The agent journal's inverses (P5.1) re-apply a removed node with its
+  subtree and its exact pixels: undo then redo of a create, delete, move,
+  update, `import_png` and the painting tools gives back the same
+  `list_layers` (ids included), per-layer pixels past the canvas edge,
+  and projection [verified 2026-11-25, headless, `test_history.py`].
 - The F001 design uses an undo journal kept by the plugin instead. See
   [f001_buildout/decisions.md § D6](f001_buildout/decisions.md#d6-undo-granularity).

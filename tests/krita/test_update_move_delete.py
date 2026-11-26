@@ -2,9 +2,10 @@
 through dispatch.execute.
 
 Every call passes ``doc`` (headless there is no active document) and every
-document is closed by ``scratch_document``. Undo is checked the way
-``krita_undo`` (P5.1) will do it: pop the call's journal entry and run its
-inverses through ``batch.rollback`` with the live document.
+document is closed by ``scratch_document``. Undo is checked by popping the
+call's journal entry and running its inverses through ``batch.rollback``
+with the live document; ``undo`` / ``redo`` themselves are covered in
+test_history.py.
 """
 
 import unittest

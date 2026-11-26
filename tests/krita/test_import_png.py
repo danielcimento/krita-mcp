@@ -2,9 +2,9 @@
 
 Every call passes ``doc`` (headless there is no active document) and every
 document is closed by ``scratch_document``. PNGs live in a temp dir made an
-allowed root through a temp config file. Undo is checked the way
-``krita_undo`` (P5.1) will do it: pop the call's journal entry and run its
-inverses through ``batch.rollback`` with the live document.
+allowed root through a temp config file. Most undo checks pop the call's
+journal entry and run its inverses through ``batch.rollback`` with the live
+document; ``undo`` itself is covered in test_history.py.
 """
 
 import contextlib
@@ -216,19 +216,36 @@ class ImportPngTest(ImportPngBase):
             self.assertEqual(read(self.node(doc, nid)), before)
             self.assertEqual(len(batch.JOURNALS.get(handle)), 0)
 
-    def test_over_journal_cap_warns_not_undoable(self):
+    def test_over_memory_cap_spills_then_over_disk_cap_warns(self):
         png = self.png("h.png", pattern(8, 8), 8, 8)
         with scratch_document(32, 24, name="kmcp-import-cap") as doc:
             with temp_config({"allowed_dirs": [self.root], "journal": {"max_bytes": 100}}):
                 handle, nid = self.setup_doc(doc)
                 batch.JOURNALS.forget(handle)  # a fresh journal with the small cap
+                journal = batch.JOURNALS.get(handle)
+                before = read(self.node(doc, nid))
                 self.assertOk(run("update_layers", doc=handle,
                                   changes=[{"id": "P", "visible": True}]))
-                self.assertEqual(len(batch.JOURNALS.get(handle)), 1)
+                # 256 bytes of old pixels: over the memory cap, so spilled to disk.
+                result = self.assertOk(run("import_png", doc=handle, id="P", png=png))
+                self.assertEqual(result["warnings"], [])
+                self.assertEqual(len(journal), 2)
+                self.assertEqual((journal.memory_bytes, journal.disk_bytes), (0, 8 * 8 * 4))
+                (spilled,) = journal.spill_files()
+                self.assertTrue(os.path.isfile(spilled))
+                self.assertEqual(self.assertOk(run("undo", doc=handle))["undone"]["label"],
+                                 "import_png")
+                self.assertEqual(read(self.node(doc, nid)), before)
+                self.assertFalse(os.path.exists(spilled))
+
+                # Over the disk cap too (set on the journal: the config key
+                # comes separately): not undoable, the journal is cleared.
+                journal.max_disk_bytes = 100
                 result = self.assertOk(run("import_png", doc=handle, id="P", png=png))
             self.assertEqual([w["code"] for w in result["warnings"]], ["not_undoable"])
             self.assertEqual(result["warnings"][0]["nbytes"], 8 * 8 * 4)
-            self.assertEqual(len(batch.JOURNALS.get(handle)), 0)  # cleared
+            self.assertEqual((len(journal), journal.redo_count), (0, 0))  # cleared
+            self.assertEqual(journal.spill_files(), [])
             batch.JOURNALS.forget(handle)
 
     def test_mid_apply_failure_restores_the_layer(self):

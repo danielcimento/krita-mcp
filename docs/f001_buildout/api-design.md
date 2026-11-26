@@ -12,7 +12,7 @@ The contract for every tool after the buildout. The rationale is in
 
 | Param | Type | Meaning |
 |---|---|---|
-| `doc` | string, optional | Document handle (`doc-3`), or the absolute path of an open document. Defaults to the active document (D3). Every tool that acts on one document takes it; tools that act on app or UI state (`health`, `set_color`, `set_brush`, `list_brushes`, `ui_undo`/`ui_redo`) don't. Details (P1.6, 2026-11-24): a path (absolute or `~`) is compared after `realpath` with each open document's `fileName()`; it only identifies an open document, so it isn't checked against the allowed roots. Several matches are `ambiguous` (`details.matches` lists their handles). With no `doc` and no active document (always so headless), `not_found`. Results of document tools include `doc` |
+| `doc` | string, optional | Document handle (`doc-3`), or the absolute path of an open document. Defaults to the active document (D3). Every tool that acts on one document takes it; tools that act on app or UI state (`health`, `set_color`, `set_brush`, `list_brushes`) don't. `ui_undo`/`ui_redo` take it to pick the view they act on (P5.1, D6). Details (P1.6, 2026-11-24): a path (absolute or `~`) is compared after `realpath` with each open document's `fileName()`; it only identifies an open document, so it isn't checked against the allowed roots. Several matches are `ambiguous` (`details.matches` lists their handles). With no `doc` and no active document (always so headless), `not_found`. Results of document tools include `doc` |
 | `timeout_s` | number, optional | Overrides the command's default timeout (30 s for queries, 300 s for file I/O), up to 900 (D9). Every tool except `krita_health`. Sent as `params.timeout_s`; the plugin checks 0 < t ≤ 900 (else `bad_request`) and strips it before the handler. On expiry: `timeout` with `details: {action, timeout_s, started}` |
 | `dry_run` | bool, optional | On mutating batch tools: validate only (D11) |
 
@@ -463,7 +463,8 @@ Settled in P2.5 (2026-11-25), `kritamcp/commands/layers.py`:
 - **Result.** `{doc, dry_run: false, deleted: [ids, subtree members
   included, top to bottom], count, warnings}`; `dry_run` returns
   `would_delete` and `count`. A delete whose `nbytes` is over the
-  journal's byte cap still happens, but can't be undone: `warnings` has
+  journal's memory cap still happens, but can't be undone (detached
+  layers can't be spilled to disk, P5.1): `warnings` has
   `{code: "not_undoable", nbytes}` and the journal is cleared (D11).
   Deleting the active layer is fine (headless `activeNode()` is always
   `None`). Default timeout 300 s.
@@ -713,8 +714,10 @@ mutating):*
   looked up by id in the live document at call time. One journal entry
   per call (`batch.run` with one plan; a failure mid-write restores the
   old pixels and reports `details.applied` / `rolled_back` like the other
-  batch tools). An entry over the journal's byte cap is not stored, the
-  journal is cleared and the result warns `not_undoable` with `nbytes`,
+  batch tools). Over the journal's memory cap the old pixels are spilled
+  to a temp file (P5.1, D6); an entry over the disk cap too is not
+  stored, the journal is cleared and the result warns `not_undoable`
+  with `nbytes`,
   as `delete_layers` does.
 
 ### `krita_render(doc?, path, region?, scale=1.0, only?, hide?, background?, png_level?)` · P0
@@ -1097,6 +1100,8 @@ of both bounds). The two documents must be the same size for pixel diffs.
 | `krita_set_color` | Stored plugin-side (D15) and also set on the active view when there is one; works without a view. Returns `color` (normalized `#rrggbb`) and `view_updated`. An invalid color is `bad_request`. Painting uses the stored color, else the view's foreground, else black. **No `doc`**: the color is plugin-global state that applies to every document, which is what lets painting work in a document with no view (D15). Done in P1.6 |
 | `krita_set_brush` | `size` and `opacity` are stored plugin-side (the stroke defaults) and `size` is also set on the view if there is one; a `preset` needs a view (`conflict` without one, and nothing is stored). Returns the stored `preset` (matched name or null), `size`, `opacity` and `view_updated`. No `doc`, like `set_color`. Done in P1.6 |
 | `krita_list_brushes` | Structured results only |
-| `krita_stroke`, `krita_fill`, `krita_draw_shape`, `krita_clear` | Accept `doc`, `layer`. `layer` defaults to the document's active node; anything but a paint layer (including an active group or mask) is `conflict` with `details: {doc, layer, type}`. Headless there is never an active node, so `layer` is required there (`not_found` otherwise). No view needed. Results include `doc` and `layer` (id). `clear` takes `"transparent"`, which zeroes the layer over the union of its bounds and the canvas; a color fills the canvas rect. Done in P1.6 |
+| `krita_stroke`, `krita_fill`, `krita_draw_shape`, `krita_clear` | Accept `doc`, `layer`. `layer` defaults to the document's active node; anything but a paint layer (including an active group or mask) is `conflict` with `details: {doc, layer, type}`. Headless there is never an active node, so `layer` is required there (`not_found` otherwise). No view needed. Results include `doc` and `layer` (id). `clear` takes `"transparent"`, which zeroes the layer over the union of its bounds and the canvas; a color fills the canvas rect. Done in P1.6. Since P5.1 each call is one agent journal entry (a `RestorePixels` of the rectangle it writes), so `krita_undo` reverts it; the result gains `warnings: [{code: "not_undoable", nbytes}]` only when the snapshot is over the journal's caps |
 | `krita_get_color_at` | Accepts `doc`, `layer` (sample one layer instead of the composite): a paint layer gives its own pixel, a group its projection, other types `conflict`. `0 <= x < width`, `0 <= y < height` of the document, else `bad_request` naming the size. Results include `doc` and `layer` (id, or null for the composite). Done in P1.6 |
-| `krita_undo` / `krita_redo` | Become the agent journal (D6). The UI-stack triggers move to `krita_ui_undo` / `krita_ui_redo`. Until then (P5.1) they take no `doc`: they act on the active view's document |
+| `krita_undo(doc?)` / `krita_redo(doc?)` | The agent journal (D6), done in P5.1: one call applies one journal entry, i.e. reverts (re-applies) one agent tool call: `create_layers`, `update_layers`, `move_layers`, `delete_layers`, `import_png`, `stroke`, `fill`, `draw_shape`, `clear`. Returns `{doc, undone \| redone: {label, layers: [ids touched]}, remaining: {undo, redo}, warnings}`. Empty stack: `conflict` ("nothing to undo in doc-N"). An entry whose layers are gone (deleted by hand, say) is `conflict` with nothing changed, and stays on the stack; a Krita failure midway is rolled forward again and keeps its code (`krita_error`), see D6. A new agent edit clears the redo stack. `warnings` has `not_redoable` / `not_undoable` when the reverse entry is over the caps. Mutating, default timeout 300 s |
+| `krita_journal(doc?)` | New in P5.1: the journal's stacks, read-only: `{doc, undo: [{label, layer_count, nbytes, disk_bytes, on_disk}], redo: [same], memory_bytes, disk_bytes, limits: {max_actions, max_bytes, max_disk_bytes}}`, the next entry to apply first |
+| `krita_ui_undo(doc?)` / `krita_ui_redo(doc?)` | New in P5.1: the old `edit_undo` / `edit_redo` action triggers on Krita's own undo stack, aimed at the doc's view: a `doc` that isn't the active document gets its view shown first; a document with no view is `conflict` (always so headless). Returns `{doc, action, activated_view, warnings: [{code: "partial_ui_undo", message}]}`, the D6 caveat that Krita's undo only partly covers agent edits |

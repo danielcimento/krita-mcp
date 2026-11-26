@@ -20,6 +20,9 @@ EXPECTED_TOOLS = {
     "krita_get_canvas",
     "krita_undo",
     "krita_redo",
+    "krita_journal",
+    "krita_ui_undo",
+    "krita_ui_redo",
     "krita_clear",
     "krita_save",
     "krita_get_color_at",
@@ -55,8 +58,27 @@ CASES = {
     "krita_get_canvas": ({}, "get_canvas", {"path": "/out/canvas.png", "width": 4, "height": 3,
                                             "region": {"x": 0, "y": 0, "w": 4, "h": 3},
                                             "scale": 1.0, "bytes": 90}),
-    "krita_undo": ({}, "undo", {}),
-    "krita_redo": ({}, "redo", {}),
+    "krita_undo": ({}, "undo", {"doc": "doc-1",
+                                "undone": {"label": "stroke", "layers": ["{1}"]},
+                                "remaining": {"undo": 2, "redo": 1}, "warnings": []}),
+    "krita_redo": ({}, "redo", {"doc": "doc-1",
+                                "redone": {"label": "stroke", "layers": ["{1}"]},
+                                "remaining": {"undo": 3, "redo": 0}, "warnings": []}),
+    "krita_journal": ({}, "journal",
+                      {"doc": "doc-1",
+                       "undo": [{"label": "stroke", "layer_count": 1, "nbytes": 64,
+                                 "disk_bytes": 0, "on_disk": False}],
+                       "redo": [], "memory_bytes": 64, "disk_bytes": 0,
+                       "limits": {"max_actions": 20, "max_bytes": 1073741824,
+                                  "max_disk_bytes": 4294967296}}),
+    "krita_ui_undo": ({}, "ui_undo", {"doc": "doc-1", "action": "edit_undo",
+                                      "activated_view": False,
+                                      "warnings": [{"code": "partial_ui_undo",
+                                                    "message": "Krita's own undo only partly"}]}),
+    "krita_ui_redo": ({}, "ui_redo", {"doc": "doc-1", "action": "edit_redo",
+                                      "activated_view": False,
+                                      "warnings": [{"code": "partial_ui_undo",
+                                                    "message": "Krita's own undo only partly"}]}),
     "krita_clear": ({}, "clear", {"color": "#1a1a2e"}),
     "krita_save": ({"path": "a.png"}, "save",
                    {"path": "/out/a.png", "format": "png", "bytes": 2048,
@@ -314,7 +336,8 @@ DOC_TOOLS = {"krita_save", "krita_get_canvas", "krita_stroke", "krita_fill",
              "krita_get_document_info", "krita_close_document", "krita_list_layers",
              "krita_create_layers", "krita_update_layers", "krita_move_layers",
              "krita_delete_layers", "krita_import_png", "krita_export_layers",
-             "krita_render", "krita_lint"}
+             "krita_render", "krita_lint", "krita_undo", "krita_redo", "krita_journal",
+             "krita_ui_undo", "krita_ui_redo"}
 # close_document has no active-document default.
 REQUIRED_DOC_TOOLS = {"krita_close_document"}
 OPTIONAL_DOC_TOOLS = DOC_TOOLS - REQUIRED_DOC_TOOLS
@@ -979,3 +1002,57 @@ def test_readme_tool_tables_list_every_tool():
     for row in rows:
         listed.update(re.findall(r"`(krita_[a-z_]+)`", row.split("|")[1]))
     assert listed == EXPECTED_TOOLS
+
+
+# --- P5.1: agent journal undo / redo, Krita's UI undo ------------------------
+
+def test_undo_redo_send_doc_and_summarize(fake_call):
+    fake_call.payload = CASES["krita_undo"][2]
+    result = server.krita_undo(doc="doc-1")
+    assert fake_call.calls[-1] == ("undo", {"doc": "doc-1"}, None)
+    assert result["summary"] == "Undid stroke (1 layer) in doc-1; 2 to undo, 1 to redo"
+    fake_call.payload = CASES["krita_redo"][2]
+    result = server.krita_redo()
+    assert fake_call.calls[-1] == ("redo", {}, None)
+    assert result["summary"] == "Redid stroke (1 layer) in doc-1; 3 to undo, 0 to redo"
+
+
+def test_undo_summary_notes_warnings(fake_call):
+    fake_call.payload = {**CASES["krita_undo"][2],
+                         "warnings": [{"code": "not_redoable", "message": "too big"}]}
+    assert server.krita_undo()["summary"].endswith("(1 warning: too big)")
+
+
+def test_journal_summary(fake_call):
+    fake_call.payload = CASES["krita_journal"][2]
+    assert server.krita_journal(doc="doc-1")["summary"] == \
+        "Agent journal in doc-1: 1 to undo (next: stroke), 0 to redo"
+
+
+def test_ui_undo_summary_carries_the_warning(fake_call):
+    fake_call.payload = CASES["krita_ui_undo"][2]
+    result = server.krita_ui_undo(doc="doc-1")
+    assert fake_call.calls[-1] == ("ui_undo", {"doc": "doc-1"}, None)
+    assert result["summary"].startswith("Triggered Krita's Edit > Undo in doc-1 (1 warning: ")
+    assert result["warnings"][0]["code"] == "partial_ui_undo"
+    fake_call.payload = CASES["krita_ui_redo"][2]
+    assert server.krita_ui_redo()["summary"].startswith("Triggered Krita's Edit > Redo")
+
+
+def test_undo_docstrings_explain_the_two_kinds():
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    for name in ("krita_undo", "krita_redo"):
+        text = " ".join(tools[name].description.split())
+        assert "only knows agent edits" in text, name
+        assert "krita_ui_" in text, name
+    assert "by hand" in tools["krita_undo"].description
+    for name in ("krita_ui_undo", "krita_ui_redo"):
+        text = " ".join(tools[name].description.split())
+        assert "only partly covers agent edits" in text, name
+
+
+@pytest.mark.parametrize("name", ["krita_stroke", "krita_fill", "krita_draw_shape", "krita_clear"])
+def test_paint_summaries_note_not_undoable(fake_call, name):
+    kwargs, _, payload = CASES[name]
+    fake_call.payload = {**payload, "warnings": [{"code": "not_undoable", "message": "too big"}]}
+    assert getattr(server, name)(**kwargs)["summary"].endswith("(1 warning: too big)")

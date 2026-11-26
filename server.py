@@ -641,10 +641,10 @@ def krita_delete_layers(ids: list[str], doc: Optional[str] = None, dry_run: bool
 
     Returns {doc, deleted: [ids, subtree members included, top to bottom],
     count, warnings}; with dry_run, {doc, would_delete, count} and nothing
-    changes. One successful call is one agent undo step, which puts the
-    layers back with the same ids, pixels and properties (the deleted
-    layers are kept in memory for that; a delete too big for the undo
-    journal's byte cap warns "not_undoable").
+    changes. One successful call is one agent undo step (krita_undo), which
+    puts the layers back with the same ids, pixels and properties (the
+    deleted layers are kept in memory for that; a delete too big for the
+    undo journal's memory cap warns "not_undoable").
 
     Args:
         ids: The layers to delete, 1 to 2000 refs
@@ -707,9 +707,10 @@ def krita_import_png(id: str, png: str, x: int = 0, y: int = 0,
     changed: {x, y, w, h} (the rectangle written; with clear_outside it
     also covers the old content), bounds: the layer's new bounds or null,
     warnings}; with dry_run, would_change instead of changed, and nothing
-    changes. One call is one agent undo step, which restores the old pixels
-    of the changed rectangle (kept in memory; an import too big for the
-    undo journal's byte cap warns "not_undoable").
+    changes. One call is one agent undo step (krita_undo), which restores
+    the old pixels of the changed rectangle (kept in memory, or in a temp
+    file beyond the journal's memory cap; an import too big for its disk
+    cap too warns "not_undoable").
 
     Args:
         id: The paint layer: a layer UUID, a name path such as "Head/Eyes",
@@ -1103,6 +1104,9 @@ def krita_stroke(points: list[list[int]], pressure: float = 1.0,
     """
     Paint a stroke through a series of points with the current color.
 
+    One call is one agent undo step (krita_undo restores the old pixels;
+    a write too big for the undo journal's caps warns "not_undoable").
+
     Args:
         points: List of [x, y] coordinate pairs, e.g., [[100, 100], [150, 120], [200, 150]]
         pressure: Brush pressure (0.0 to 1.0, affects stroke thickness/opacity)
@@ -1123,7 +1127,7 @@ def krita_stroke(points: list[list[int]], pressure: float = 1.0,
         "pressure": pressure
     }, doc=doc, layer=layer), timeout_s=timeout_s)
     return _done(result, f"Stroke painted with {result.get('points_count', len(points))} points"
-                         + _in(result))
+                         + _in(result) + _warnings_note(result.get("warnings")))
 
 
 @mcp.tool()
@@ -1131,6 +1135,9 @@ def krita_fill(x: int, y: int, radius: int = 50, doc: Optional[str] = None,
                layer: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
     """
     Fill an area with current color (paints a filled circle at the point).
+
+    One call is one agent undo step (krita_undo restores the old pixels;
+    a write too big for the undo journal's caps warns "not_undoable").
 
     Args:
         x: X coordinate
@@ -1147,7 +1154,8 @@ def krita_fill(x: int, y: int, radius: int = 50, doc: Optional[str] = None,
     """
     result = client.call("fill", _with({"x": x, "y": y, "radius": radius}, doc=doc, layer=layer),
                          timeout_s=timeout_s)
-    return _done(result, f"Filled circle at ({x}, {y}) with radius {radius}" + _in(result))
+    return _done(result, f"Filled circle at ({x}, {y}) with radius {radius}" + _in(result)
+                 + _warnings_note(result.get("warnings")))
 
 
 @mcp.tool()
@@ -1167,6 +1175,9 @@ def krita_draw_shape(
 ) -> dict:
     """
     Draw a shape on the canvas with the current color.
+
+    One call is one agent undo step (krita_undo restores the old pixels;
+    a write too big for the undo journal's caps warns "not_undoable").
 
     Args:
         shape: Type of shape - "rectangle", "ellipse", or "line"
@@ -1202,7 +1213,8 @@ def krita_draw_shape(
         params["y2"] = y2
 
     result = client.call("draw_shape", _with(params, doc=doc, layer=layer), timeout_s=timeout_s)
-    return _done(result, f"Drew {result.get('shape', shape)} at ({x}, {y})" + _in(result))
+    return _done(result, f"Drew {result.get('shape', shape)} at ({x}, {y})" + _in(result)
+                 + _warnings_note(result.get("warnings")))
 
 
 @mcp.tool()
@@ -1231,28 +1243,156 @@ def krita_get_canvas(filename: str = "canvas.png", doc: Optional[str] = None,
                                          what_no_doc="Saved the canvas"))
 
 
+def _journal_summary(result: dict, verb: str, done_key: str) -> str:
+    done = result.get(done_key) or {}
+    remaining = result.get("remaining") or {}
+    layers = done.get("layers") or []
+    summary = (f"{verb} {done.get('label', 'the last agent action')}"
+               + (f" ({_count(len(layers), 'layer')})" if layers else "")
+               + _in(result)
+               + f"; {remaining.get('undo', 0)} to undo, {remaining.get('redo', 0)} to redo"
+               + _warnings_note(result.get("warnings")))
+    return summary
+
+
 @mcp.tool()
-def krita_undo(timeout_s: Optional[float] = None) -> dict:
+def krita_undo(doc: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
     """
-    Undo the last action.
+    Undo the newest agent tool call on a document: one call reverts one
+    whole tool call (a create_layers batch, an update, a move, a delete,
+    an import_png, a stroke, fill, draw_shape or clear), restoring layer
+    ids, properties, order and pixels exactly.
+
+    This is the plugin's own agent journal, not Krita's Edit > Undo. It
+    only knows agent edits: edits made by hand in Krita's UI aren't
+    recorded, so undoing an agent action after painting by hand on the
+    same layer overwrites those strokes in that rectangle. An entry whose
+    layers were deleted (or moved out of reach) by hand is refused with
+    "conflict" and stays on the stack; nothing is changed. Empty journal:
+    "conflict". The journal keeps the last 20 calls (configurable) per
+    document and is dropped when the document closes. For Krita's own
+    undo stack, use krita_ui_undo.
+
+    Returns {doc, undone: {label (the tool), layers (ids touched)},
+    remaining: {undo, redo}, warnings}.
 
     Args:
-        timeout_s: Seconds to wait for Krita, up to 900; default per command
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
     """
-    result = client.call("undo", {}, timeout_s=timeout_s)
-    return _done(result, "Undone")
+    result = client.call("undo", _with({}, doc=doc), timeout_s=timeout_s)
+    return _done(result, _journal_summary(result, "Undid", "undone"))
 
 
 @mcp.tool()
-def krita_redo(timeout_s: Optional[float] = None) -> dict:
+def krita_redo(doc: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
     """
-    Redo the last undone action.
+    Redo the newest agent tool call undone with krita_undo on a document,
+    exactly as it was. Any new agent edit to the document clears the redo
+    stack. Like krita_undo it only knows agent edits, refuses entries whose
+    layers are gone ("conflict", nothing changed), and fails with
+    "conflict" when there is nothing to redo. For Krita's own redo, use
+    krita_ui_redo.
+
+    Returns {doc, redone: {label, layers}, remaining: {undo, redo},
+    warnings}.
 
     Args:
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
+    """
+    result = client.call("redo", _with({}, doc=doc), timeout_s=timeout_s)
+    return _done(result, _journal_summary(result, "Redid", "redone"))
+
+
+@mcp.tool()
+def krita_journal(doc: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
+    """
+    List a document's agent undo journal (read-only): what krita_undo and
+    krita_redo would revert or re-apply, next first.
+
+    Returns {doc, undo: [{label, layer_count, nbytes, disk_bytes,
+    on_disk}], redo: [same], memory_bytes, disk_bytes, limits:
+    {max_actions, max_bytes, max_disk_bytes}}. Pixel snapshots beyond the
+    memory cap are kept in temporary files (on_disk).
+
+    Args:
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
         timeout_s: Seconds to wait for Krita, up to 900; default per command
     """
-    result = client.call("redo", {}, timeout_s=timeout_s)
-    return _done(result, "Redone")
+    result = client.call("journal", _with({}, doc=doc), timeout_s=timeout_s)
+    undo, redo = result.get("undo") or [], result.get("redo") or []
+    summary = f"Agent journal{_in(result)}: {len(undo)} to undo"
+    if undo:
+        summary += f" (next: {undo[0].get('label')})"
+    summary += f", {len(redo)} to redo"
+    if redo:
+        summary += f" (next: {redo[0].get('label')})"
+    return _done(result, summary)
+
+
+@mcp.tool()
+def krita_ui_undo(doc: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
+    """
+    Krita's own Edit > Undo on the document's view: it acts on Krita's
+    undo stack, which only partly covers agent edits. Property changes,
+    pixel writes (import_png and the painting tools) and moves made by
+    agent tools are not on it, so this may skip them or revert an
+    unrelated earlier step; to revert agent tool calls use krita_undo.
+    It is for edits made by hand in the UI, and doesn't change the agent
+    journal.
+
+    With doc, that document's view is made the active one first; a
+    document with no view in a Krita window (always so without a GUI)
+    fails with "conflict". Without doc, the active view.
+
+    Returns {doc, action, activated_view, warnings}; the warning repeats
+    the caveat above.
+
+    Args:
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        timeout_s: Seconds to wait for Krita, up to 900; default per command
+    """
+    result = client.call("ui_undo", _with({}, doc=doc), timeout_s=timeout_s)
+    return _done(result, "Triggered Krita's Edit > Undo" + _in(result)
+                 + _warnings_note(result.get("warnings")))
+
+
+@mcp.tool()
+def krita_ui_redo(doc: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
+    """
+    Krita's own Edit > Redo on the document's view: it acts on Krita's
+    undo stack, which only partly covers agent edits. Property changes,
+    pixel writes (import_png and the painting tools) and moves made by
+    agent tools are not on it, so this may skip them or revert an
+    unrelated earlier step; to revert agent tool calls use krita_redo.
+    It is for edits made by hand in the UI, and doesn't change the agent
+    journal.
+
+    With doc, that document's view is made the active one first; a
+    document with no view in a Krita window (always so without a GUI)
+    fails with "conflict". Without doc, the active view.
+
+    Returns {doc, action, activated_view, warnings}; the warning repeats
+    the caveat above.
+
+    Args:
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        timeout_s: Seconds to wait for Krita, up to 900; default per command
+    """
+    result = client.call("ui_redo", _with({}, doc=doc), timeout_s=timeout_s)
+    return _done(result, "Triggered Krita's Edit > Redo" + _in(result)
+                 + _warnings_note(result.get("warnings")))
 
 
 @mcp.tool()
@@ -1260,6 +1400,9 @@ def krita_clear(color: str = "#1a1a2e", doc: Optional[str] = None,
                 layer: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
     """
     Clear a paint layer to a solid color over the whole canvas, or erase it.
+
+    One call is one agent undo step (krita_undo restores the old pixels;
+    a write too big for the undo journal's caps warns "not_undoable").
 
     Args:
         color: Color to fill the layer's canvas area with (default dark
@@ -1276,7 +1419,8 @@ def krita_clear(color: str = "#1a1a2e", doc: Optional[str] = None,
     """
     result = client.call("clear", _with({"color": color}, doc=doc, layer=layer),
                          timeout_s=timeout_s)
-    return _done(result, f"Layer{_in(result)} cleared to {result.get('color', color)}")
+    return _done(result, f"Layer{_in(result)} cleared to {result.get('color', color)}"
+                 + _warnings_note(result.get("warnings")))
 
 
 @mcp.tool()

@@ -5,6 +5,9 @@ inverse that restores the old value through the ctx it is called with.
 """
 
 import json
+import os
+import subprocess
+import sys
 
 import pytest
 
@@ -366,3 +369,356 @@ def test_journals_take_limits_from_config(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "current", lambda: settings)
     j = batch.Journals().get("doc-1")
     assert (j.max_actions, j.max_bytes) == (3, 500)
+
+
+# --- P5.1: undo / redo stacks, caps, spill ----------------------------------
+#
+# The fake document is a dict. Each fake inverse returns the op that
+# reverses it (the redo of an undo), as the real ones do.
+
+class SetKey:
+    """Set doc[key] = value (``_MISSING`` deletes); returns the SetKey that
+    puts the previous value back. ``check`` refuses keys listed in
+    doc["gone"]; ``fail`` raises when applied."""
+
+    def __init__(self, key, value, nbytes=0, fail=None):
+        self.key, self.value, self.nbytes, self.fail = key, value, nbytes, fail
+
+    @property
+    def node_ids(self):
+        return (self.key,)
+
+    def check(self, doc):
+        return f"{self.key} is gone" if self.key in doc.get("gone", ()) else None
+
+    def __call__(self, doc):
+        if self.fail:
+            raise self.fail
+        old = doc.get(self.key, _MISSING)
+        if self.value is _MISSING:
+            doc.pop(self.key, None)
+        else:
+            doc[self.key] = self.value
+        return SetKey(self.key, old, self.nbytes)
+
+
+class SetPixels:
+    """Like SetKey, but the value is pixel bytes held in a ``batch.Blob``."""
+
+    def __init__(self, key, data):
+        self.key = key
+        self.blob = data if isinstance(data, batch.Blob) else batch.Blob(data)
+        self.nbytes = self.blob.nbytes
+
+    node_ids = property(lambda self: (self.key,))
+    blobs = property(lambda self: (self.blob,))
+
+    def check(self, doc):
+        return None
+
+    def __call__(self, doc):
+        old = doc[self.key]
+        doc[self.key] = self.blob.load()
+        return SetPixels(self.key, old)
+
+
+def tool_set(journal, doc, label, changes):
+    """What a tool does: apply ``changes`` ({key: value}) and push one
+    entry of SetKey inverses. Returns push's result."""
+    inverses = [SetKey(k, _MISSING if v is _MISSING else v)(doc) for k, v in changes.items()]
+    return journal.push(label, inverses, sum(batch.nbytes_of(i) for i in inverses))
+
+
+def tool_paint(journal, doc, key, data):
+    old = doc[key]
+    doc[key] = data
+    inv = SetPixels(key, old)
+    return journal.push(f"paint {key}", [inv], inv.nbytes)
+
+
+def test_undo_redo_round_trip():
+    j, doc = batch.Journal(20, 10**6), {}
+    tool_set(j, doc, "one", {"a": 1})
+    tool_set(j, doc, "two", {"a": 2, "b": 3})
+    states = [{}, {"a": 1}, {"a": 2, "b": 3}]
+    assert doc == states[2] and (len(j), j.redo_count) == (2, 0)
+    entry, reverse, kept = j.undo(doc)
+    assert (entry.label, kept) == ("two", True)
+    assert entry.node_ids() == ["a", "b"] and reverse.label == "two"
+    assert doc == states[1] and (len(j), j.redo_count) == (1, 1)
+    j.undo(doc)
+    assert doc == states[0] and (len(j), j.redo_count) == (0, 2)
+    with pytest.raises(CommandError) as e:
+        j.undo(doc, where=" in doc-1")
+    assert e.value.code == "conflict" and e.value.message == "nothing to undo in doc-1"
+    assert j.redo(doc)[0].label == "one" and doc == states[1]
+    assert j.redo(doc)[0].label == "two" and doc == states[2]
+    assert (len(j), j.redo_count) == (2, 0)
+    with pytest.raises(CommandError) as e:
+        j.redo(doc)
+    assert e.value.code == "conflict"
+    j.undo(doc)
+    j.undo(doc)
+    assert doc == states[0]  # and again, from the redone entries
+
+
+def test_push_clears_redo():
+    j, doc = batch.Journal(20, 10**6), {}
+    tool_set(j, doc, "one", {"a": 1})
+    tool_set(j, doc, "two", {"a": 2})
+    j.undo(doc)
+    assert j.redo_count == 1
+    tool_set(j, doc, "three", {"c": 1})
+    assert j.redo_count == 0 and [e.label for e in j.entries()] == ["three", "one"]
+    with pytest.raises(CommandError):
+        j.redo(doc)
+
+
+def test_count_cap_per_stack():
+    j, doc = batch.Journal(3, 10**6), {}
+    for n in range(5):
+        tool_set(j, doc, f"a{n}", {"k": n})
+    assert [e.label for e in j.entries()] == ["a4", "a3", "a2"]
+    for _ in range(3):
+        j.undo(doc)
+    assert doc == {"k": 1} and (len(j), j.redo_count) == (0, 3)
+
+
+def test_byte_cap_covers_both_stacks_and_drops_the_farthest():
+    j, doc = batch.Journal(20, 100), {"k": 0}
+    for n in range(2):
+        j.push(f"a{n}", [SetKey("k", n, nbytes=40)], 40)
+    j.undo(doc)  # its reverse (40 bytes) goes onto redo: 80 in all
+    assert (len(j), j.redo_count, j.total_bytes) == (1, 1, 80)
+    j.push("b", [SetKey("k", 9, nbytes=40)], 40)  # clears redo: a0, b
+    assert (len(j), j.redo_count, j.total_bytes) == (2, 0, 80)
+    j.push("c", [SetKey("k", 9, nbytes=40)], 40)  # 120 > 100: a0 goes
+    assert [e.label for e in j.entries()] == ["c", "b"]
+
+
+def test_blob_spill_load_discard(tmp_path):
+    data = bytes(range(256)) * 10
+    blob = batch.Blob(data)
+    assert blob.in_memory and blob.path is None and blob.nbytes == len(data)
+    blob.spill(str(tmp_path))
+    assert not blob.in_memory and blob.path.startswith(str(tmp_path))
+    assert os.path.getsize(blob.path) < len(data)  # compressed
+    assert blob.load() == data and blob.load() == data  # loading keeps the file
+    path = blob.path
+    blob.discard()
+    assert not os.path.exists(path) and blob.path is None
+    with pytest.raises(OSError):
+        blob.load()
+    blob.discard()  # twice: fine
+
+
+def test_pixels_spill_to_disk_oldest_first_and_undo_exactly(tmp_path):
+    j, doc = batch.Journal(20, 100, spill_dir=str(tmp_path)), {"p": b"\0" * 60}
+    frames = [bytes([n]) * 60 for n in range(1, 4)]
+    for frame in frames:
+        assert tool_paint(j, doc, "p", frame) is True
+    assert j.total_bytes == 180 and j.memory_bytes <= 100
+    # The newest stays in memory; the older ones are on disk.
+    assert [e.disk_bytes for e in j.entries()] == [0, 60, 60]
+    files = j.spill_files()
+    assert len(files) == 2 and all(os.path.exists(f) for f in files)
+    assert sorted(os.listdir(tmp_path)) == sorted(os.path.basename(f) for f in files)
+    for want in (frames[1], frames[0], b"\0" * 60):
+        j.undo(doc)
+        assert doc["p"] == want
+        assert j.memory_bytes <= 100
+    # Applied entries' files are gone; the redo entries may spill in turn.
+    assert set(os.listdir(tmp_path)) == {os.path.basename(f) for f in j.spill_files()}
+    for want in frames:
+        j.redo(doc)
+        assert doc["p"] == want
+    j.clear()
+    assert os.listdir(tmp_path) == [] and j.memory_bytes == 0 and j.disk_bytes == 0
+
+
+def test_disk_cap_drops_the_oldest(tmp_path):
+    j = batch.Journal(20, 50, max_disk_bytes=130, spill_dir=str(tmp_path))
+    doc = {"p": b"\0" * 60}
+    for n in range(1, 5):
+        tool_paint(j, doc, "p", bytes([n]) * 60)
+    # 60 in memory is over 50: everything spills; 130 on disk holds two.
+    assert j.memory_bytes == 0 and j.disk_bytes == 120
+    assert [e.label for e in j.entries()] == ["paint p", "paint p"]
+    assert len(os.listdir(tmp_path)) == 2
+
+
+def test_entry_too_big_for_every_cap_is_refused(tmp_path):
+    j = batch.Journal(20, 50, max_disk_bytes=50, spill_dir=str(tmp_path))
+    doc = {"p": b"\0" * 40, "q": b"\0" * 60}
+    assert tool_paint(j, doc, "p", b"\1" * 40) is True
+    assert tool_paint(j, doc, "q", b"\1" * 60) is False  # 60 > 50 and > 50
+    assert len(j) == 0 and os.listdir(tmp_path) == []
+    # Detached layers (no blobs) can't spill: only the memory cap counts.
+    assert j.push("delete", [SetKey("x", 1, nbytes=51)], 51) is False
+    assert j.push("delete", [SetKey("x", 1, nbytes=50)], 50) is True
+
+
+def test_reverse_too_big_drops_the_redo_stack():
+    class Grows(SetKey):  # its reverse holds more than it does (an undone create)
+        def __call__(self, doc):
+            back = super().__call__(doc)
+            back.nbytes = 500
+            return back
+
+    j, doc = batch.Journal(20, 100), {}
+    tool_set(j, doc, "one", {"a": 1})
+    j.undo(doc)
+    assert j.redo_count == 1
+    j.push("create", [Grows("b", _MISSING)], 0)
+    doc["b"] = 1
+    entry, reverse, kept = j.undo(doc)
+    assert (kept, reverse.nbytes) == (False, 500)
+    assert "b" not in doc and (len(j), j.redo_count) == (0, 0)
+
+
+def test_failed_check_changes_nothing():
+    j, doc = batch.Journal(20, 10**6), {}
+    tool_set(j, doc, "one", {"a": 1})
+    tool_set(j, doc, "two", {"b": 2, "c": 3})
+    doc["gone"] = ["c"]  # checked first: newest inverse first
+    before = dict(doc)
+    with pytest.raises(CommandError) as e:
+        j.undo(doc)
+    assert e.value.code == "conflict"
+    assert "c is gone" in e.value.message and "nothing was changed" in e.value.message
+    assert e.value.details == {"label": "two", "step": 1, "applied": 0, "rolled_forward": 0,
+                               "rollback_errors": [], "layers": ["c"]}
+    assert doc == before and (len(j), j.redo_count) == (2, 0)
+    del doc["gone"]
+    j.undo(doc)  # the entry stayed: fixed, it can be retried
+    assert doc == {"a": 1}
+
+
+def test_later_failed_check_rolls_forward():
+    j, doc = batch.Journal(20, 10**6), {}
+    tool_set(j, doc, "two", {"b": 2, "c": 3})
+    doc["gone"] = ["b"]  # c (newest) applies, then b's check fails
+    before = dict(doc)
+    with pytest.raises(CommandError) as e:
+        j.undo(doc)
+    assert e.value.code == "conflict"
+    assert (e.value.details["applied"], e.value.details["rolled_forward"]) == (1, 1)
+    assert doc == before and len(j) == 1
+
+
+def test_mid_apply_failure_rolls_forward_and_keeps_the_entry():
+    j, doc = batch.Journal(20, 10**6), {"a": 0, "b": 0, "c": 0}
+    entry_invs = [SetKey("a", 0), SetKey("b", 0, fail=RuntimeError("Krita said no")),
+                  SetKey("c", 0)]
+    doc.update(a=1, b=1, c=1)
+    j.push("three", entry_invs)
+    with pytest.raises(CommandError) as e:
+        j.undo(doc)
+    assert e.value.code == "krita_error" and "Krita said no" in e.value.message
+    assert e.value.details["step"] == 1 and e.value.details["applied"] == 1
+    assert e.value.details["rolled_forward"] == 1 and e.value.details["rollback_errors"] == []
+    assert doc == {"a": 1, "b": 1, "c": 1} and (len(j), j.redo_count) == (1, 0)
+
+
+def test_mid_apply_command_error_keeps_its_code():
+    j, doc = batch.Journal(20, 10**6), {}
+    j.push("x", [SetKey("a", 0, fail=CommandError("conflict", "busy", {"why": 1}))])
+    with pytest.raises(CommandError) as e:
+        j.undo(doc)
+    assert e.value.code == "conflict" and e.value.details["cause"] == {"why": 1}
+
+
+def test_failed_roll_forward_clears_the_journal():
+    class BadBack(SetKey):
+        def __call__(self, doc):
+            super().__call__(doc)
+            return SetKey(self.key, 0, fail=RuntimeError("can't go back"))
+
+    j, doc = batch.Journal(20, 10**6), {}
+    tool_set(j, doc, "older", {"z": 1})
+    j.push("bad", [SetKey("a", 0, fail=RuntimeError("boom")), BadBack("b", 0)])
+    with pytest.raises(CommandError) as e:
+        j.undo(doc)
+    assert e.value.details["journal_cleared"] is True
+    assert len(e.value.details["rollback_errors"]) == 1
+    assert "partly changed" in e.value.message and "journal was cleared" in e.value.message
+    assert (len(j), j.redo_count) == (0, 0)
+
+
+def test_apply_entry_without_check_and_none_reverse():
+    doc = {}
+    entry = batch.JournalEntry("x", (lambda d: d.setdefault("a", 1) and None,), 0)
+    assert batch.apply_entry(entry, doc) == [] and doc == {"a": 1}
+
+
+def test_rollback_ignores_returned_reverses():
+    doc = {"a": 1}
+    assert batch.rollback([SetKey("a", 5)], doc) == (1, [])
+    assert doc == {"a": 5}
+
+
+def test_forget_deletes_spill_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "current", lambda: config.load(config_file="/nonexistent", env={}))
+    js = batch.Journals(spill_dir=str(tmp_path))
+    j = js.get("doc-1")
+    j.max_bytes = 10
+    doc = {"p": b"\0" * 64}
+    tool_paint(j, doc, "p", b"\1" * 64)
+    assert j.disk_bytes == 64 and len(os.listdir(tmp_path)) == 1
+    js.forget("doc-1")
+    assert os.listdir(tmp_path) == [] and "doc-1" not in js
+
+
+def test_journals_read_max_disk_bytes_defensively(monkeypatch):
+    class S:
+        journal = {"max_actions": 4, "max_bytes": 64}
+
+    monkeypatch.setattr(config, "current", lambda: S)
+    assert batch.Journals().get("doc-1").max_disk_bytes == batch.DEFAULT_MAX_DISK_BYTES == 4 << 30
+    S.journal = {"max_actions": 4, "max_bytes": 64, "max_disk_bytes": 1000}
+    assert batch.Journals().get("doc-1").max_disk_bytes == 1000
+    S.journal = {"max_actions": 4, "max_bytes": 64, "max_disk_bytes": -1}
+    assert batch.Journals().get("doc-1").max_disk_bytes == batch.DEFAULT_MAX_DISK_BYTES
+
+
+def test_process_spill_dir():
+    d = batch.process_spill_dir()
+    assert os.path.isdir(d)
+    assert os.path.basename(d).startswith(f"{batch.SPILL_PREFIX}{os.getpid()}-")
+    assert batch.process_spill_dir() == d
+
+
+def test_sweep_stale_removes_only_dead_processes_dirs(tmp_path):
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()  # its pid is now (almost certainly) free
+    dead = tmp_path / f"{batch.SPILL_PREFIX}{proc.pid}-abc"
+    mine = tmp_path / f"{batch.SPILL_PREFIX}{os.getpid()}-abc"
+    alive = tmp_path / f"{batch.SPILL_PREFIX}1-abc"  # launchd / init
+    no_pid = tmp_path / f"{batch.SPILL_PREFIX}x1y2"
+    other = tmp_path / "unrelated-123-abc"
+    for d in (dead, mine, alive, no_pid, other):
+        d.mkdir()
+        (d / "f.z").write_bytes(b"x")
+    a_file = tmp_path / f"{batch.SPILL_PREFIX}{proc.pid}-file"
+    a_file.write_bytes(b"x")
+    batch.sweep_stale(str(tmp_path))
+    assert not dead.exists()
+    assert mine.exists() and alive.exists() and no_pid.exists() and other.exists()
+    assert a_file.exists()
+    batch.sweep_stale(str(tmp_path / "missing"))  # no such dir: fine
+
+
+def test_describe_lists_next_first(tmp_path):
+    j, doc = batch.Journal(20, 70, spill_dir=str(tmp_path)), {"p": b"\0" * 40}
+    tool_paint(j, doc, "p", b"\1" * 40)
+    tool_set(j, doc, "props", {"a": 1})
+    tool_paint(j, doc, "p", b"\2" * 40)
+    j.undo(doc)
+    d = j.describe()
+    assert [r["label"] for r in d["undo"]] == ["props", "paint p"]
+    assert [r["label"] for r in d["redo"]] == ["paint p"]
+    assert d["undo"][1] == {"label": "paint p", "layer_count": 1, "nbytes": 40,
+                            "disk_bytes": 40, "on_disk": True}
+    assert d["memory_bytes"] == 40 and d["disk_bytes"] == 40
+    assert d["limits"] == {"max_actions": 20, "max_bytes": 70,
+                           "max_disk_bytes": batch.DEFAULT_MAX_DISK_BYTES}

@@ -130,7 +130,24 @@ If using a virtual environment:
 
 | Tool | Description |
 |------|-------------|
-| `krita_undo` / `krita_redo` | Undo / redo the active document's last action |
+| `krita_undo` / `krita_redo` | Undo / redo one agent tool call on a document, from the plugin's agent journal (exact: ids, properties, order, pixels) |
+| `krita_journal` | List a document's agent undo and redo stacks |
+| `krita_ui_undo` / `krita_ui_redo` | Krita's own Edit → Undo / Redo on the document's view (only partly covers agent edits) |
+
+**Two kinds of undo.** `krita_undo` / `krita_redo` use the plugin's agent
+journal: one call reverts (or re-applies) one whole agent tool call, a
+`create_layers` batch, an update, a move, a delete, an `import_png`, a
+stroke or a clear, with the same layer ids, properties, order and pixels.
+The journal keeps the last 20 calls per document (`journal` in the config
+file), holds pixel snapshots in memory up to `max_bytes` and in temporary
+files beyond that, and is dropped when the document closes. It only knows
+agent edits: undoing an agent action after painting by hand on the same
+layer overwrites those strokes in that rectangle, and an entry whose
+layers were deleted by hand is refused. Krita's own undo stack
+(`krita_ui_undo`, Edit → Undo) only partly covers agent edits: property
+changes, pixel writes and moves made by agent tools aren't on it, so it may
+skip them or revert an unrelated earlier step. Applying a journal entry
+uses the same Krita calls, so it leaves partial steps on Krita's stack too.
 
 Tools that act on a document take an optional `doc`: a handle such as
 `doc-3` (returned by `krita_new_canvas` and `krita_open_file`), or the
@@ -212,6 +229,14 @@ Every key is optional:
 - **Limits.** `max_canvas_dim` (per side) and `max_canvas_pixels` (total)
   bound `new_canvas`; over either gives a `too_large` error. Each value
   must be a positive integer, or its default is kept.
+- **Journal.** The agent undo journal (`krita_undo`) per document:
+  `max_actions` entries (default 20) on each of the undo and redo stacks,
+  `max_bytes` of memory (default 1 GB) and `max_disk_bytes` (default 4 GB)
+  of temporary files for the pixel snapshots that don't fit in memory
+  (zlib-compressed, in a `kmcp-journal-*` dir under the system temp dir,
+  removed when Krita quits). Both byte caps cover the undo and redo stacks
+  together. Deleted layers are kept in memory only. A call too big for the
+  caps still happens but warns `not_undoable`.
 - **Lint.** `krita_lint`'s settings: `additive_mode` (`"either"`, or
   `"add"` / `"linear_dodge"` to require one spelling of the Add blend
   mode), and the stray-alpha thresholds: pixels with alpha below

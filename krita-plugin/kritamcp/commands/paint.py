@@ -4,18 +4,24 @@ Painting tools take ``doc`` (D3) and ``layer`` (D4, default the document's
 active node) and need no view. The foreground color and brush size and
 opacity are kept here, plugin-side (D15), and mirrored to the active view
 when there is one.
+
+Each painting call (stroke, fill, draw_shape, clear) reads the rectangle it
+writes before writing it and pushes that snapshot onto the document's agent
+journal as a ``RestorePixels`` (D6), so ``krita_undo`` reverts one call.
 """
 
 from krita import Krita, ManagedColor
 from PyQt5.QtCore import QRect
 from PyQt5.QtGui import QColor
 
-from .. import nodes, registry
+from .. import batch, nodes, registry
+from .. import pixels as pixelbuf
 from ..config import COORD, MAX_BRUSH_SIZE, MAX_LIMIT, MAX_STROKE_POINTS
 from ..dispatch import LONG_TIMEOUT, command
 from ..errors import CommandError
 from ..params import float_param, int_param
 from ._active import get_active_view
+from .pixels import RestorePixels
 
 # Brush state, set by set_brush and used as the stroke defaults.
 current_brush_size = 20
@@ -71,6 +77,22 @@ def _paint_target(params):
             f"Layer '{node.name()}' is a {kind}, not a paint layer; pass a paint layer as 'layer'",
             {"doc": handle, "layer": nid, "type": kind})
     return handle, doc, node
+
+
+def _record(handle, label, layer, rect, old):
+    """Push one journal entry that writes ``old`` (the layer's bytes over
+    ``rect`` read before the call wrote it) back. Returns the result's extra
+    fields: ``{}``, or ``{"warnings": [not_undoable]}`` when the snapshot
+    is over the journal's caps (the journal is then cleared)."""
+    inverse = RestorePixels(nodes.node_id(layer), [(rect, old)])
+    if batch.JOURNALS.get(handle).push(label, [inverse], inverse.nbytes):
+        return {}
+    return {"warnings": [{
+        "code": "not_undoable",
+        "message": f"The old pixels take {inverse.nbytes} bytes, over the undo journal's memory "
+                   f"and disk caps: this {label} can't be undone, and the agent undo journal "
+                   "was cleared",
+        "nbytes": inverse.nbytes}]}
 
 
 @command("set_color")
@@ -167,9 +189,9 @@ def cmd_stroke(params):
     if w <= 0 or h <= 0:
         raise CommandError("bad_request", "Stroke out of bounds")
 
-    # Get existing pixel data for the affected region
-    existing = layer.pixelData(min_x, min_y, w, h)
-    pixels = bytearray(existing)
+    # Get existing pixel data for the affected region (also the undo snapshot)
+    old = pixelbuf.as_bytes(layer.pixelData(min_x, min_y, w, h))
+    pixels = bytearray(old)
 
     import math
 
@@ -240,9 +262,10 @@ def cmd_stroke(params):
 
     layer.setPixelData(bytes(pixels), min_x, min_y, w, h)
     doc.refreshProjection()
+    extra = _record(handle, "stroke", layer, (min_x, min_y, w, h), old)
 
     return {"points_count": len(points), "hardness": hardness,
-            "doc": handle, "layer": nodes.node_id(layer)}
+            "doc": handle, "layer": nodes.node_id(layer), **extra}
 
 
 @command("fill", mutating=True)
@@ -267,9 +290,9 @@ def cmd_fill(params):
     if w <= 0 or h <= 0:
         raise CommandError("bad_request", "Fill area out of bounds")
 
-    # Get existing pixel data
-    existing = layer.pixelData(x1, y1, w, h)
-    pixels = bytearray(existing)
+    # Get existing pixel data (also the undo snapshot)
+    old = pixelbuf.as_bytes(layer.pixelData(x1, y1, w, h))
+    pixels = bytearray(old)
 
     # Draw circle
     for py in range(h):
@@ -286,8 +309,10 @@ def cmd_fill(params):
 
     layer.setPixelData(bytes(pixels), x1, y1, w, h)
     doc.refreshProjection()
+    extra = _record(handle, "fill", layer, (x1, y1, w, h), old)
 
-    return {"x": x, "y": y, "radius": radius, "doc": handle, "layer": nodes.node_id(layer)}
+    return {"x": x, "y": y, "radius": radius, "doc": handle, "layer": nodes.node_id(layer),
+            **extra}
 
 
 @command("draw_shape", mutating=True)
@@ -302,6 +327,7 @@ def cmd_draw_shape(params):
 
     handle, doc, layer = _paint_target(params)
     r, g, b = _paint_rgb()
+    written = None  # (rect, old bytes) of the write, for the journal
 
     if shape == "line":
         # Draw line using pixel data
@@ -318,8 +344,9 @@ def cmd_draw_shape(params):
         h = y2_bound - y1_bound
 
         if w > 0 and h > 0:
-            existing = layer.pixelData(x1_bound, y1_bound, w, h)
-            pixels = bytearray(existing)
+            old = pixelbuf.as_bytes(layer.pixelData(x1_bound, y1_bound, w, h))
+            written = ((x1_bound, y1_bound, w, h), old)
+            pixels = bytearray(old)
 
             # Draw line with thickness
             dist = max(abs(x2 - x), abs(y2 - y))
@@ -353,6 +380,7 @@ def cmd_draw_shape(params):
         h = y2 - y1
 
         if w > 0 and h > 0:
+            written = ((x1, y1, w, h), pixelbuf.as_bytes(layer.pixelData(x1, y1, w, h)))
             pixel_data = bytes((b, g, r, 255)) * (w * h)
             layer.setPixelData(pixel_data, x1, y1, w, h)
     elif shape == "ellipse" and fill:
@@ -370,8 +398,9 @@ def cmd_draw_shape(params):
         h = y2 - y1
 
         if w > 0 and h > 0:
-            existing = layer.pixelData(x1, y1, w, h)
-            pixels = bytearray(existing)
+            old = pixelbuf.as_bytes(layer.pixelData(x1, y1, w, h))
+            written = ((x1, y1, w, h), old)
+            pixels = bytearray(old)
 
             for py in range(h):
                 for px in range(w):
@@ -390,8 +419,9 @@ def cmd_draw_shape(params):
         raise CommandError("bad_request", f"Shape '{shape}' with current options not supported")
 
     doc.refreshProjection()
+    extra = _record(handle, "draw_shape", layer, *written) if written else {}
 
-    return {"shape": shape, "doc": handle, "layer": nodes.node_id(layer)}
+    return {"shape": shape, "doc": handle, "layer": nodes.node_id(layer), **extra}
 
 
 # clear writes a full-canvas buffer, so it gets the long timeout.
@@ -411,17 +441,20 @@ def cmd_clear(params):
         # (0, 0, 0, 0) rect gives the canvas.
         rect = canvas.united(layer.bounds())
         x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
+        old = pixelbuf.as_bytes(layer.pixelData(x, y, w, h))
         layer.setPixelData(bytes(w * h * 4), x, y, w, h)
         result_color = "transparent"
     else:
-        w, h = canvas.width(), canvas.height()
+        x, y, w, h = 0, 0, canvas.width(), canvas.height()
+        old = pixelbuf.as_bytes(layer.pixelData(x, y, w, h))
         pixel = bytes((color.blue(), color.green(), color.red(), 255))
         layer.setPixelData(pixel * (w * h), 0, 0, w, h)
         result_color = color.name()
 
     doc.refreshProjection()
+    extra = _record(handle, "clear", layer, (x, y, w, h), old)
 
-    return {"color": result_color, "doc": handle, "layer": nodes.node_id(layer)}
+    return {"color": result_color, "doc": handle, "layer": nodes.node_id(layer), **extra}
 
 
 @command("get_color_at")

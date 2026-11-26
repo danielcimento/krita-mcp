@@ -3,8 +3,14 @@ create_layers, update_layers, move_layers, delete_layers.
 
 Node wrappers come from one ``nodes.tree`` walk (or live lookups) per
 command and are never kept after it (they are only valid while the
-document is open). The exception is a delete's inverse, which keeps the
-detached nodes it re-inserts (D6, batch.py).
+document is open). The exception is a ``ReinsertNode`` (a delete's
+inverse, or the redo of an undone create), which keeps the detached nodes
+it re-inserts (D6, batch.py).
+
+Every inverse follows batch.py's protocol (P5.1): applying it returns its
+own reverse (``RemoveNode`` <-> ``ReinsertNode``, ``RestoreProps`` with the
+values it overwrote, ``MoveBack`` with the forward move), and ``check(doc)``
+names what is missing before it is applied.
 """
 
 import dataclasses
@@ -238,10 +244,24 @@ def _remove_node(doc, nid):
     return True
 
 
+def _gone(doc, nid, what="Layer"):
+    """A ``check`` reason when node ``nid`` is not in ``doc``, else None."""
+    if nodes.node_by_id(doc, nid) is None:
+        return f"{what} {nid} is not in the document (any more)"
+    return None
+
+
+def _parent_gone(doc, pid):
+    return None if pid == refs.ROOT else _gone(doc, pid, "Parent layer")
+
+
 class RemoveNode:
     """The inverse of creating a node: ``RemoveNode(id)(doc)`` removes it
-    from the live document passed at call time (batch.py: never a captured
-    wrapper). ``node_ids`` lets undo check the node still exists."""
+    (with its subtree) from the live document passed at call time
+    (batch.py: never a captured wrapper) and returns the ``ReinsertNode``
+    that puts it back where it was. ``node_ids`` lets undo check the node
+    still exists. A node that isn't there is left alone (None returned),
+    for rollbacks; undo refuses that case first through ``check``."""
 
     __slots__ = ("node_id",)
 
@@ -252,8 +272,14 @@ class RemoveNode:
     def node_ids(self):
         return (self.node_id,)
 
+    def check(self, doc):
+        return _gone(doc, self.node_id)
+
     def __call__(self, doc):
-        _remove_node(doc, self.node_id)
+        node = nodes.node_by_id(doc, self.node_id)
+        if node is None:
+            return None
+        return _take_out(node, self.node_id)
 
     def __repr__(self):
         return f"RemoveNode({self.node_id})"
@@ -495,7 +521,7 @@ def _rename_warnings(index, plans):
 class RestoreProps:
     """The inverse of a property update: set the old values of exactly the
     fields the update set, on the node looked up in the document passed at
-    call time."""
+    call time. Returns the ``RestoreProps`` of the values it overwrote."""
 
     __slots__ = ("node_id", "props")
 
@@ -506,25 +532,37 @@ class RestoreProps:
     def node_ids(self):
         return (self.node_id,)
 
+    def check(self, doc):
+        return _gone(doc, self.node_id)
+
     def __call__(self, doc):
-        _set_props(_live(doc, self.node_id), self.props)
+        node = _live(doc, self.node_id)
+        current = _read_props(node, self.props)
+        _set_props_or_restore(node, self.props, current, self.node_id)
+        return RestoreProps(self.node_id, current)
 
     def __repr__(self):
         return f"RestoreProps({self.node_id}, {self.props!r})"
 
 
+def _set_props_or_restore(node, props, old, nid):
+    """Set ``props``; if that fails, put ``old`` back and re-raise (the
+    failing item cleans up after itself, batch.py)."""
+    try:
+        _set_props(node, props)
+    except Exception:
+        try:
+            _set_props(node, old)
+        except Exception:
+            print(f"[KritaMCP] could not restore the properties of layer {nid}:")
+            traceback.print_exc()
+        raise
+
+
 def _update_one(doc, plan):
     node = _live(doc, plan.nid)
     old = _read_props(node, plan.props)
-    try:
-        _set_props(node, plan.props)
-    except Exception:
-        try:  # the failing item cleans up after itself (batch.py)
-            _set_props(node, old)
-        except Exception:
-            print(f"[KritaMCP] update_layers: could not restore layer {plan.nid}:")
-            traceback.print_exc()
-        raise
+    _set_props_or_restore(node, plan.props, old, plan.nid)
     return {"id": plan.nid, "changed": list(plan.props)}, RestoreProps(plan.nid, old)
 
 
@@ -710,8 +748,17 @@ class MoveBack:
     def node_ids(self):
         return (self.node_id,)
 
+    def check(self, doc):
+        return _gone(doc, self.node_id) or _parent_gone(doc, self.parent_id)
+
     def __call__(self, doc):
+        """Move it back; return the ``MoveBack`` to where it was."""
+        node = _live(doc, self.node_id)
+        parent = node.parentNode()
+        anchor, index = _below(parent, self.node_id)
+        back = MoveBack(self.node_id, _id_of_parent(parent), anchor, index)
         _relocate(doc, self.node_id, self.parent_id, self.anchor, self.index)
+        return back
 
     def __repr__(self):
         return f"MoveBack({self.node_id}, {self.parent_id}, {self.anchor}, {self.index})"
@@ -889,13 +936,20 @@ class ReinsertNode:
         self.parent_id, self.anchor, self.index = parent_id, anchor, index
         self.node_ids, self.nbytes = tuple(node_ids), nbytes
 
+    def check(self, doc):
+        if nodes.node_by_id(doc, self.node_ids[0]) is not None:
+            return f"Layer {self.node_ids[0]} is already in the document"
+        return _parent_gone(doc, self.parent_id)
+
     def __call__(self, doc):
+        """Re-insert; return the ``RemoveNode`` that takes it out again."""
         if nodes.node_by_id(doc, self.node_ids[0]) is not None:
             raise CommandError("conflict", f"Layer {self.node_ids[0]} is already in the document",
                                {"id": self.node_ids[0]})
         parent = _parent_node(doc, self.parent_id)
         above, bottom = _position(parent, self.anchor, self.index)
         _insert(parent, self.node, self.layout, above, bottom)
+        return RemoveNode(self.node_ids[0])
 
     def __repr__(self):
         return f"ReinsertNode({self.node_ids[0]}, {len(self.node_ids)} nodes, {self.parent_id})"
@@ -937,15 +991,38 @@ def _fold(index, nids):
     return sorted(tops, key=index.order)
 
 
-def _delete_one(doc, plan):
-    node = _live(doc, plan.nid)
+def _id_of_parent(parent):
+    """The id of an attached node's ``parentNode()``, or ``refs.ROOT``."""
+    return refs.ROOT if parent.parentNode() is None else nodes.node_id(parent)
+
+
+def _subtree_ids(node, layout):
+    """Ids of ``node`` and its captured subtree, depth-first, top to bottom
+    (like ``subtree``). The nodes must still be attached."""
+    out, stack = [], [(node, layout)]
+    while stack:
+        n, sub = stack.pop()
+        out.append(nodes.node_id(n))
+        stack.extend(sub)  # bottom to top: the top child pops first
+    return out
+
+
+def _take_out(node, nid):
+    """Remove the attached ``node`` (and with it its subtree); return the
+    ``ReinsertNode`` that puts it back where it was."""
     parent = node.parentNode()
-    anchor, old_index = _below(parent, plan.nid)
+    anchor, old_index = _below(parent, nid)
     layout = _capture(node)
+    ids = _subtree_ids(node, layout)
     nbytes = _paint_bytes(node, layout)
+    parent_id = _id_of_parent(parent)
     if not node.remove():
-        raise CommandError("krita_error", f"Krita refused to remove layer {plan.nid}")
-    return plan.ids, ReinsertNode(node, layout, plan.parent, anchor, old_index, plan.ids, nbytes)
+        raise CommandError("krita_error", f"Krita refused to remove layer {nid}")
+    return ReinsertNode(node, layout, parent_id, anchor, old_index, ids, nbytes)
+
+
+def _delete_one(doc, plan):
+    return plan.ids, _take_out(_live(doc, plan.nid), plan.nid)
 
 
 @command("delete_layers", timeout=LONG_TIMEOUT, mutating=True)
@@ -971,8 +1048,8 @@ def cmd_delete_layers(params):
         warnings.append({
             "code": "not_undoable",
             "message": f"The deleted layers take about {outcome.nbytes} bytes, over the undo "
-                       "journal's byte cap: this delete can't be undone, and the agent undo "
-                       "journal was cleared",
+                       "journal's memory cap (deleted layers can't be spilled to disk): this "
+                       "delete can't be undone, and the agent undo journal was cleared",
             "nbytes": outcome.nbytes})
     deleted = [i for r in outcome.results for i in r]
     return {"doc": handle, "dry_run": False, "deleted": deleted, "count": len(deleted),

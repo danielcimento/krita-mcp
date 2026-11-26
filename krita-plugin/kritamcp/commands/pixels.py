@@ -54,23 +54,54 @@ class RestorePixels:
     ``(rect, bytes)`` patch (snapshots taken before the write, so overlaps
     agree) on the layer with ``node_id``, looked up in the document passed
     at call time (batch.py: never a captured wrapper). ``nbytes``: the
-    snapshot size, for the journal's byte cap."""
+    snapshot size, for the journal's caps; the patches are ``batch.Blob``s
+    (``blobs``), which the journal may spill to disk.
+
+    Applying it first reads the layer's current pixels over the same
+    rectangles and returns them as a new ``RestorePixels`` (the redo). If a
+    write fails, the pixels read are written back before re-raising."""
 
     __slots__ = ("node_id", "patches", "nbytes")
 
     def __init__(self, nid, patches):
         self.node_id = nid
-        self.patches = tuple((tuple(rect), data) for rect, data in patches)
-        self.nbytes = sum(len(data) for _, data in self.patches)
+        self.patches = tuple((tuple(rect), data if isinstance(data, batch.Blob)
+                              else batch.Blob(data)) for rect, data in patches)
+        self.nbytes = sum(blob.nbytes for _, blob in self.patches)
 
     @property
     def node_ids(self):
         return (self.node_id,)
 
+    @property
+    def blobs(self):
+        return tuple(blob for _, blob in self.patches)
+
+    def check(self, doc):
+        node = nodes.node_by_id(doc, self.node_id)
+        if node is None:
+            return f"Layer {self.node_id} is not in the document (any more)"
+        if node.type() != PAINT:
+            return f"Layer {self.node_id} is a {node.type()}, not a paint layer"
+        return None
+
     def __call__(self, doc):
         node = _live(doc, self.node_id)
-        for rect, data in self.patches:
-            _write(node, data, rect, f"layer {self.node_id} (restoring old pixels)")
+        datas = [blob.load() for _, blob in self.patches]  # a missing spill file changes nothing
+        current = [(rect, pixels.as_bytes(node.pixelData(*rect))) for rect, _ in self.patches]
+        what = f"layer {self.node_id} (restoring old pixels)"
+        try:
+            for (rect, _), data in zip(self.patches, datas):
+                _write(node, data, rect, what)
+        except Exception:
+            try:
+                for rect, data in current:
+                    _write(node, data, rect, what)
+            except Exception:
+                print(f"[KritaMCP] could not put back the pixels of layer {self.node_id}:")
+                traceback.print_exc()
+            raise
+        return RestorePixels(self.node_id, current)
 
     def __repr__(self):
         rects = ", ".join(f"{r[2]}x{r[3]}@({r[0]},{r[1]})" for r, _ in self.patches)
@@ -165,12 +196,12 @@ def _apply(doc, plan):
     if (w, h) != tuple(plan.size):
         raise CommandError("conflict", f"{plan.png} changed since validation "
                            f"({plan.size[0]}x{plan.size[1]}, now {w}x{h})")
-    inverse = RestorePixels(plan.nid, [(r, pixels.as_bytes(node.pixelData(*r)))
-                                       for r in plan.snapshot_rects()])
+    snapshots = [(r, pixels.as_bytes(node.pixelData(*r))) for r in plan.snapshot_rects()]
+    inverse = RestorePixels(plan.nid, snapshots)
     what = f"layer {plan.nid}"
     try:
         if plan.mode == "over":
-            ((_, existing),) = inverse.patches  # "over" snapshots just the PNG's rect
+            ((_, existing),) = snapshots  # "over" snapshots just the PNG's rect
             data = pixels.composite_over(existing, data, w, h)
         elif plan.clear_outside and plan.old_bounds is not None:
             _write(node, bytes(4 * _area(plan.old_bounds)), plan.old_bounds, what)
@@ -206,8 +237,8 @@ def cmd_import_png(params):
         warnings.append({
             "code": "not_undoable",
             "message": f"The old pixels take {outcome.nbytes} bytes, over the undo journal's "
-                       "byte cap: this import can't be undone, and the agent undo journal was "
-                       "cleared",
+                       "memory and disk caps: this import can't be undone, and the agent undo "
+                       "journal was cleared",
             "nbytes": outcome.nbytes})
     changed = outcome.results[0]
     bounds = _bounds(_live(doc, plan.nid))

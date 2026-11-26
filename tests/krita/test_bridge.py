@@ -173,7 +173,8 @@ class HandlerAuthTest(BridgeTestBase):
         self.assertEqual(body["commands"], sorted(body["commands"]))
         self.assertEqual(body["commands"], sorted(EXPECTED_REGISTRY))
         self.assertEqual(body["timeouts"]["save"], dispatch.LONG_TIMEOUT)
-        self.assertEqual(body["timeouts"]["undo"], dispatch.QUERY_TIMEOUT)
+        self.assertEqual(body["timeouts"]["undo"], dispatch.LONG_TIMEOUT)
+        self.assertEqual(body["timeouts"]["list_layers"], dispatch.QUERY_TIMEOUT)
         self.assertIn("new_canvas", body["mutating"])
         self.assertNotIn("set_color", body["mutating"])
 

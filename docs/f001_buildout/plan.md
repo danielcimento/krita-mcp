@@ -310,7 +310,7 @@ tool table and docs, and run the full acceptance suite once on Mao.
 The order puts the part-separation workflow first, then convenience
 tools.
 
-- [ ] **P5.1 Agent journal undo (D6).** `krita_undo` / `krita_redo` work on
+- [x] **P5.1 Agent journal undo (D6).** `krita_undo` / `krita_redo` work on
   the journal, and the old triggers move to `krita_ui_undo` / `krita_ui_redo`.
   Pixel snapshots for mutating pixel tools: `import_png` from P3 and
   everything below. Memory and disk caps. Live test: create, update, move,
