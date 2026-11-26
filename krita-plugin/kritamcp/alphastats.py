@@ -317,3 +317,122 @@ def components(mask01, w, h, max_size, max_runs=MAX_RUNS):
                for i in specks[:MAX_SAMPLES]]
     return {"specks": len(specks), "speck_pixels": speck_pixels, "regions": regions,
             "samples": samples, "truncated": truncated}
+
+
+# --- layer_stats and trim_layers (P5.3) -----------------------------------
+
+DEFAULT_BUCKETS = (0, 1, 8, 32, 128, 255)
+MIN_BUCKETS, MAX_BUCKETS = 2, 16
+
+
+def check_buckets(buckets):
+    """``buckets`` as a list of histogram edges: 2 to 16 whole numbers,
+    strictly increasing, each 0-255 (None: ``DEFAULT_BUCKETS``). Raises
+    ``ValueError`` with the reason otherwise (the command turns it into
+    ``bad_request``)."""
+    if buckets is None:
+        return list(DEFAULT_BUCKETS)
+    if not isinstance(buckets, (list, tuple)):
+        raise ValueError(f"must be a list of alpha values, got {type(buckets).__name__}")
+    if not MIN_BUCKETS <= len(buckets) <= MAX_BUCKETS:
+        raise ValueError(f"must have {MIN_BUCKETS} to {MAX_BUCKETS} edges, got {len(buckets)}")
+    for v in buckets:
+        if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 255:
+            raise ValueError(f"edges must be whole numbers from 0 to 255, got {v!r}")
+    if any(b <= a for a, b in zip(buckets, buckets[1:])):
+        raise ValueError(f"edges must be strictly increasing, got {list(buckets)}")
+    return list(buckets)
+
+
+def bucket_table(edges):
+    """Translate table: alpha -> bucket index (``histogram``), and
+    ``len(edges)`` for alpha below ``edges[0]`` (in no bucket)."""
+    table = bytearray([len(edges)] * 256)
+    bounds = list(edges[1:]) + [256]
+    for i, (lo, hi) in enumerate(zip(edges, bounds)):
+        table[lo:hi] = bytes([i]) * (hi - lo)
+    return bytes(table)
+
+
+def histogram(alpha, edges):
+    """``{"edges", "counts"}``: ``counts[i]`` is the number of alpha bytes
+    with ``edges[i] <= alpha < edges[i + 1]``; the last bucket is
+    ``edges[-1] <= alpha <= 255``. So ``len(counts) == len(edges)``, and
+    alpha values below ``edges[0]`` are in no bucket. One ``translate`` to
+    bucket indexes, then one ``count`` per bucket."""
+    idx = alpha.translate(bucket_table(edges))
+    return {"edges": list(edges), "counts": [idx.count(i) for i in range(len(edges))]}
+
+
+def beyond_canvas(opaque_bounds, canvas_w, canvas_h):
+    """How far the rectangle ``opaque_bounds`` (``{x, y, w, h}``, canvas
+    coordinates) reaches past each canvas edge: ``{"left", "top", "right",
+    "bottom"}`` in pixels (0 on a side it doesn't cross), or None when it
+    is None or inside the canvas. ``opaque_bounds`` is tight, so a side's
+    overhang means a pixel lies that far out."""
+    if opaque_bounds is None:
+        return None
+    r = opaque_bounds
+    over = {"left": max(0, -r["x"]), "top": max(0, -r["y"]),
+            "right": max(0, r["x"] + r["w"] - canvas_w),
+            "bottom": max(0, r["y"] + r["h"] - canvas_h)}
+    return over if any(over.values()) else None
+
+
+def count_inside(alpha, w, h, origin, canvas_w, canvas_h):
+    """The number of nonzero alpha bytes of a ``w * h`` mask placed with
+    its top-left at ``origin`` (canvas coordinates) that lie on the
+    ``canvas_w * canvas_h`` canvas. One ``count`` per row of the overlap."""
+    ox, oy = origin
+    x0, x1 = max(0, -ox), min(w, canvas_w - ox)
+    y0, y1 = max(0, -oy), min(h, canvas_h - oy)
+    if x0 >= x1 or y0 >= y1:
+        return 0
+    n = 0
+    for y in range(y0, y1):
+        row = y * w
+        n += (x1 - x0) - alpha.count(0, row + x0, row + x1)
+    return n
+
+
+def trim_mask(alpha, w, h, threshold, near_px=None, dilate=dilate_shift):
+    """The pixels ``trim_layers`` clears, as 0/1 bytes (``w * h``), and
+    their count: ``0 < alpha < threshold`` (pixels already at alpha 0 are
+    never counted), and with ``near_px`` only those outside the
+    ``alpha >= threshold`` mask dilated by ``near_px`` (``dilate``, the
+    ``Selection.grow`` kernel; with no such pixel every faint one is
+    cleared). This is the stray-alpha test with ``below = threshold`` and
+    ``distance = near_px``."""
+    count, mask, _ = _stray(alpha, w, h, threshold, near_px or 0, dilate, want_mask=True)
+    return mask, count
+
+
+_ONE_00 = bytes([0xFF, 0] + [0xFF] * 254)  # 0/1 mask -> keep (0xFF) / clear (0x00)
+
+
+def zero_pixels(data, mask01, w):
+    """BGRA ``data`` (bytes, rows of ``w`` pixels) with every byte of the
+    pixels where ``mask01`` is 1 set to 0 (colour too, so nothing hidden
+    stays under the cleared alpha); other bytes unchanged. Rows without a
+    hit are copied as they are, fully cleared rows become zeros, and mixed
+    rows are ANDed as big ints with a keep mask (0xFF per kept byte, the
+    pixel mask widened 4x by slice assignment): O(rows) Python steps."""
+    keep = mask01.translate(_ONE_00)
+    out = bytearray(data)
+    stride = 4 * w
+    rows = len(mask01) // w
+    for y in range(rows):
+        p = y * w
+        hits = mask01.count(1, p, p + w)
+        if hits == 0:
+            continue
+        b = y * stride
+        if hits == w:
+            out[b:b + stride] = bytes(stride)
+            continue
+        wide = bytearray(stride)
+        for c in range(4):
+            wide[c::4] = keep[p:p + w]
+        row = int.from_bytes(out[b:b + stride], "little") & int.from_bytes(wide, "little")
+        out[b:b + stride] = row.to_bytes(stride, "little")
+    return bytes(out)

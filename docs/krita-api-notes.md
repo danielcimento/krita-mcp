@@ -283,6 +283,21 @@ are fast enough that per-pixel Python loops are never justified.
     a group's (`<stack>`) mode like a layer's [verified 2026-11-25, P2.7].
   - `setBlendingMode` does not set `modified()` [verified, P2.7].
 - `inheritAlpha()` is Krita's clipping ("alpha inheritance").
+- **`Node.duplicate()` is a detached deep copy** [verified 2026-11-25,
+  P5.2, headless]: not in the document until `addChildNode` (by id it
+  isn't found before), with the **same name** (no ` (copy)` suffix: the
+  Layers docker's Duplicate action names it, the API doesn't), the same
+  opacity, blend mode, visibility, lock, alpha lock, inherit alpha and
+  pass-through, the same pixels (past the canvas edge too), and the
+  **whole subtree**: a group's nested groups and layers and a layer's
+  masks are already its children before it is inserted, and come along
+  with `addChildNode`. Every node of the copy has a **new UUID**. A group
+  comes back as a `GroupLayer`, a mask as its mask class; a mask's copy
+  reads `bounds()` (0, 0, 0, 0) while detached. `setName` on the detached
+  copy works, also when it is locked.
+- `setActiveNode(node)` doesn't crash headless on any node type (paint
+  layer, group, transparency mask); `activeNode()` stays `None`
+  [verified 2026-11-25, P5.2].
 - A node removed with `remove()` can be put back: `addChildNode(node, …)`
   re-inserts the same wrapper with the same UUID, pixels, bounds, opacity
   and parent, and `nodeByUniqueID` returns `None` while it is out

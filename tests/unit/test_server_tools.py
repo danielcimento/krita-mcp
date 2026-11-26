@@ -40,6 +40,10 @@ EXPECTED_TOOLS = {
     "krita_export_layers",
     "krita_render",
     "krita_lint",
+    "krita_duplicate_layer",
+    "krita_set_active_layer",
+    "krita_trim_layers",
+    "krita_layer_stats",
 }
 
 # tool -> (kwargs, plugin action, canned plugin payload)
@@ -133,6 +137,30 @@ CASES = {
                     "rules_run": ["node-type"], "pixel_stats": True,
                     "settings": {"additive_mode": "either", "stray_alpha_below": 8,
                                  "stray_alpha_distance": 4}}),
+    "krita_duplicate_layer": ({"id": "A"}, "duplicate_layer",
+                              {"doc": "doc-1", "dry_run": False, "source": "{1}",
+                               "layer": {"id": "{2}", "name": "A", "path": "A",
+                                         "children": []},
+                               "ids": ["{2}"], "warnings": []}),
+    "krita_set_active_layer": ({"id": "A"}, "set_active_layer",
+                               {"doc": "doc-1", "layer": "{1}", "path": "A",
+                                "type": "paintlayer", "warnings": []}),
+    "krita_trim_layers": ({"ids": ["A"], "alpha_threshold": 8}, "trim_layers",
+                          {"doc": "doc-1", "dry_run": False, "alpha_threshold": 8,
+                           "near_px": None,
+                           "trimmed": [{"id": "{1}", "path": "A", "cleared": 3,
+                                        "bounds_before": {"x": 0, "y": 0, "w": 4, "h": 4},
+                                        "bounds_after": {"x": 0, "y": 0, "w": 2, "h": 2}}],
+                           "totals": {"layers": 1, "changed": 1, "cleared": 3},
+                           "warnings": []}),
+    "krita_layer_stats": ({"ids": ["A"]}, "layer_stats",
+                          {"doc": "doc-1", "canvas": {"w": 4, "h": 4},
+                           "buckets": [0, 1, 8, 32, 128, 255],
+                           "settings": {"stray_alpha_below": 8},
+                           "layers": [{"id": "{1}", "path": "A", "empty": False,
+                                       "beyond_canvas": None,
+                                       "stray_specks": {"count": 0}}],
+                           "skipped": []}),
     "krita_list_layers": ({}, "list_layers",
                           {"root": "/", "layers": [{"id": "{1}", "name": "a", "children": []}],
                            "counts": {"paintlayer": 1, "total": 1}}),
@@ -337,7 +365,8 @@ DOC_TOOLS = {"krita_save", "krita_get_canvas", "krita_stroke", "krita_fill",
              "krita_create_layers", "krita_update_layers", "krita_move_layers",
              "krita_delete_layers", "krita_import_png", "krita_export_layers",
              "krita_render", "krita_lint", "krita_undo", "krita_redo", "krita_journal",
-             "krita_ui_undo", "krita_ui_redo"}
+             "krita_ui_undo", "krita_ui_redo", "krita_duplicate_layer",
+             "krita_set_active_layer", "krita_trim_layers", "krita_layer_stats"}
 # close_document has no active-document default.
 REQUIRED_DOC_TOOLS = {"krita_close_document"}
 OPTIONAL_DOC_TOOLS = DOC_TOOLS - REQUIRED_DOC_TOOLS
@@ -1056,3 +1085,99 @@ def test_paint_summaries_note_not_undoable(fake_call, name):
     kwargs, _, payload = CASES[name]
     fake_call.payload = {**payload, "warnings": [{"code": "not_undoable", "message": "too big"}]}
     assert getattr(server, name)(**kwargs)["summary"].endswith("(1 warning: too big)")
+
+
+# --- P5.2 / P5.3: duplicate_layer, set_active_layer, trim_layers, layer_stats -
+
+def test_duplicate_layer_params_and_summary(fake_call):
+    fake_call.payload = CASES["krita_duplicate_layer"][2]
+    result = server.krita_duplicate_layer("A")
+    assert fake_call.calls[0] == ("duplicate_layer", {"id": "A"}, None)
+    assert result["summary"] == "Duplicated {1} as 'A' ({2}) in doc-1"
+    server.krita_duplicate_layer("A", name="B", parent="/", above="C", doc="doc-2", dry_run=True,
+                                 timeout_s=5)
+    assert fake_call.calls[1] == ("duplicate_layer", {"id": "A", "name": "B", "parent": "/",
+                                                      "above": "C", "doc": "doc-2",
+                                                      "dry_run": True}, 5)
+    fake_call.payload = {"doc": "doc-2", "dry_run": False, "source": "{1}",
+                         "layer": {"id": "{2}", "path": "G/A"}, "ids": ["{2}", "{3}", "{4}"],
+                         "warnings": [{"code": "duplicate_name", "message": "same name"}]}
+    assert server.krita_duplicate_layer("A")["summary"] == (
+        "Duplicated {1} as 'G/A' ({2}), 3 layers with its subtree in doc-2 "
+        "(1 warning: same name)")
+    fake_call.payload = {"doc": "doc-2", "dry_run": True, "source": "{1}",
+                         "would_create": {"name": "A", "count": 1}, "warnings": []}
+    assert server.krita_duplicate_layer("A", dry_run=True)["summary"] == (
+        "Would duplicate {1} as 'A' in doc-2 (dry run, nothing changed)")
+
+
+def test_set_active_layer_params_and_summary(fake_call):
+    fake_call.payload = {"doc": "doc-2", "layer": "{1}", "path": "G/A", "type": "paintlayer",
+                         "warnings": [{"code": "not_active_document",
+                                       "message": "doc-2 is not the active document"}]}
+    result = server.krita_set_active_layer("G/A", doc="doc-2")
+    assert fake_call.calls[0] == ("set_active_layer", {"id": "G/A", "doc": "doc-2"}, None)
+    assert result["summary"] == (
+        "Active layer is now G/A in doc-2 (1 warning: doc-2 is not the active document)")
+    assert "ACTIVE" in _tools()["krita_set_active_layer"].description
+
+
+def test_trim_layers_params_and_summary(fake_call):
+    fake_call.payload = CASES["krita_trim_layers"][2]
+    result = server.krita_trim_layers(["A"], alpha_threshold=8)
+    assert fake_call.calls[0] == ("trim_layers", {"ids": ["A"], "alpha_threshold": 8}, None)
+    assert result["summary"] == "Cleared 3 pixels in 1 of 1 layer (alpha < 8) in doc-1"
+    server.krita_trim_layers(["A", "B"], near_px=2, doc="doc-2", dry_run=True)
+    assert fake_call.calls[1][1] == {"ids": ["A", "B"], "alpha_threshold": 8, "near_px": 2,
+                                     "doc": "doc-2", "dry_run": True}
+    fake_call.payload = {"doc": "doc-2", "dry_run": True, "alpha_threshold": 8, "near_px": 2,
+                         "would_trim": [{}, {}], "totals": {"layers": 2, "changed": 1,
+                                                            "cleared": 1}, "warnings": []}
+    assert server.krita_trim_layers(["A", "B"], 8, 2, dry_run=True)["summary"] == (
+        "Would clear 1 pixel in 1 of 2 layers (alpha < 8, farther than 2 px from stronger "
+        "pixels) in doc-2 (dry run, nothing changed)")
+
+
+def test_layer_stats_params_and_summary(fake_call):
+    fake_call.payload = CASES["krita_layer_stats"][2]
+    result = server.krita_layer_stats(["A"])
+    assert fake_call.calls[0] == ("layer_stats", {"ids": ["A"]}, None)
+    assert result["summary"] == "Stats for 1 paint layer in doc-1"
+    server.krita_layer_stats(["A"], buckets=[0, 128, 255], doc="doc-2")
+    assert fake_call.calls[1][1] == {"ids": ["A"], "buckets": [0, 128, 255], "doc": "doc-2"}
+    fake_call.payload = {"doc": "doc-2", "layers": [
+        {"empty": True, "beyond_canvas": None, "stray_specks": {"count": 0}},
+        {"empty": False, "beyond_canvas": {"left": 2}, "stray_specks": {"count": 3}}],
+        "skipped": [{"id": "{9}"}]}
+    assert server.krita_layer_stats(["A", "B", "G"])["summary"] == (
+        "Stats for 2 paint layers in doc-2 (1 empty, 1 past the canvas, 1 with stray specks, "
+        "1 skipped (not paint layers))")
+
+
+def test_p5_2_p5_3_schemas_and_typos():
+    tools = _tools()
+    expect = {
+        "krita_duplicate_layer": ({"id", "name", "parent", "above", "doc", "dry_run",
+                                   "timeout_s"}, ["id"]),
+        "krita_set_active_layer": ({"id", "doc", "timeout_s"}, ["id"]),
+        "krita_trim_layers": ({"ids", "alpha_threshold", "near_px", "doc", "dry_run",
+                               "timeout_s"}, ["ids"]),
+        "krita_layer_stats": ({"ids", "buckets", "doc", "timeout_s"}, ["ids"]),
+    }
+    for name, (props, required) in expect.items():
+        params = tools[name].parameters
+        assert set(params["properties"]) == props, name
+        assert params["required"] == required, name
+    trim = " ".join(tools["krita_trim_layers"].description.split())
+    assert "all four bytes zeroed" in trim and "clears nothing" in trim
+    stats = " ".join(tools["krita_layer_stats"].description.split())
+    assert "edges[i] <= alpha < edges[i+1]" in stats and "alpha <= 255" in stats
+    for name, args in (("krita_trim_layers", {"ids": ["A"], "alpha_threshold": 0}),
+                       ("krita_trim_layers", {"ids": ["A"], "alpha_threshold": 256}),
+                       ("krita_trim_layers", {"ids": ["A"], "near_px": 0}),
+                       ("krita_trim_layers", {"ids": ["A"], "near_px": 65}),
+                       ("krita_trim_layers", {"ids": "A"}),
+                       ("krita_layer_stats", {"ids": ["A"], "buckets": "0,1"}),
+                       ("krita_duplicate_layer", {"id": "A", "nmae": "B"}),
+                       ("krita_set_active_layer", {})):
+        assert _call_tool(name, args).is_error, (name, args)

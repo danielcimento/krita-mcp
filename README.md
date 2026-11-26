@@ -97,12 +97,15 @@ If using a virtual environment:
 | `krita_update_layers` | Change name, visibility, opacity, blend mode, locks, clipping, pass-through of many layers at once; `dry_run` |
 | `krita_move_layers` | Reorder and reparent layers (`parent`, `above` / `below` / `index`); groups move with their subtree; `dry_run` |
 | `krita_delete_layers` | Delete layers (a group with its subtree) in one call; `dry_run` |
+| `krita_duplicate_layer` | Copy a layer (a group with its subtree, a layer with its masks; new ids) directly above it, or under `parent` / above `above`; `name`, `dry_run` |
+| `krita_set_active_layer` | Select a layer in the Layers docker (what painting without `layer` paints on); UI state, not an undo step |
 
 **Pixels**
 
 | Tool | Description |
 |------|-------------|
 | `krita_import_png` | Write a PNG into a paint layer at `x`/`y`: `replace` (exact) or `over`, optional `clear_outside`; one undo step |
+| `krita_trim_layers` | Clear faint pixels (alpha below `alpha_threshold`, colour zeroed too) in paint layers, optionally only those farther than `near_px` from stronger pixels (keeps anti-aliased edges); `dry_run`, one undo step |
 | `krita_export_layers` | Each paint layer's own pixels as a PNG (cropped to alpha > 0) plus a `manifest.json` that `krita_create_layers` rebuilds the tree from |
 | `krita_render` | Render to a PNG without changing the document: `region`, `scale` (0.25 for fast previews), `only` / `hide` layers, `background`, `png_level` |
 | `krita_get_canvas` | The whole canvas as a PNG in the output dir; a shortcut for a full-canvas `krita_render` |
@@ -113,6 +116,7 @@ If using a virtual environment:
 | Tool | Description |
 |------|-------------|
 | `krita_lint` | Check a document against the Live2D rig rules (node types, layer styles, clipping, blend modes, duplicate names, side tokens, empty / off-canvas layers, stray-alpha specks, colour space); opt-in `"conventions"` set (nesting depth, name case, blend suffixes, pose visibility, hidden references, mask suffixes); `rules`, `severity_min`; findings sorted by stacking order |
+| `krita_layer_stats` | Per paint layer: bounds, opaque bounds, pixel and opaque counts, an alpha histogram (`buckets`), empty, overhang past the canvas, lint's stray-alpha numbers |
 
 **Painting**
 
@@ -136,8 +140,8 @@ If using a virtual environment:
 
 **Two kinds of undo.** `krita_undo` / `krita_redo` use the plugin's agent
 journal: one call reverts (or re-applies) one whole agent tool call, a
-`create_layers` batch, an update, a move, a delete, an `import_png`, a
-stroke or a clear, with the same layer ids, properties, order and pixels.
+`create_layers` batch, an update, a move, a delete, a duplicate, a trim,
+an `import_png`, a stroke or a clear, with the same layer ids, properties, order and pixels.
 The journal keeps the last 20 calls per document (`journal` in the config
 file), holds pixel snapshots in memory up to `max_bytes` and in temporary
 files beyond that, and is dropped when the document closes. It only knows

@@ -1,5 +1,6 @@
 """Layer-tree commands (api-design § Layer tree): list_layers,
-create_layers, update_layers, move_layers, delete_layers.
+create_layers, update_layers, move_layers, delete_layers,
+duplicate_layer, set_active_layer.
 
 Node wrappers come from one ``nodes.tree`` walk (or live lookups) per
 command and are never kept after it (they are only valid while the
@@ -1053,4 +1054,166 @@ def cmd_delete_layers(params):
             "nbytes": outcome.nbytes})
     deleted = [i for r in outcome.results for i in r]
     return {"doc": handle, "dry_run": False, "deleted": deleted, "count": len(deleted),
+            "warnings": warnings}
+
+
+# --- set_active_layer -------------------------------------------------------
+
+def _required_ref(params, key="id"):
+    ref = params.get(key)
+    if ref is None:
+        raise _bad(f"'{key}' is required (a layer ref)", param=key)
+    return ref
+
+
+@command("set_active_layer")
+def cmd_set_active_layer(params):
+    """Make a layer (any type, masks included) the document's active node:
+    UI state, so no journal entry. Painting tools called without ``layer``
+    paint on it, but without ``doc`` they use the active document."""
+    handle, doc = registry.resolve_doc(params)
+    index = nodes.build_index(doc)
+    nid = refs.resolve(index, _required_ref(params), field="id")
+    doc.setActiveNode(_live(doc, nid))
+    warnings = []
+    active = registry.active_live()
+    if active is None or not active == doc:
+        warnings.append({
+            "code": "not_active_document",
+            "message": f"{handle} is not the active document: painting tools called without "
+                       f"'doc' still paint on the active document's active layer; pass "
+                       f"doc={handle!r} (and 'layer') to paint here"})
+    return {"doc": handle, "layer": nid, "path": index.path_of(nid),
+            "type": index.get(nid)["type"], "warnings": warnings}
+
+
+# --- duplicate_layer --------------------------------------------------------
+#
+# Verified headless (krita-api-notes § Nodes, 2026-11-25): Node.duplicate()
+# returns a detached deep copy: the same name (no " (copy)" suffix), the
+# properties, the pixels (past the canvas edge too) and the whole subtree
+# (nested groups, masks), every node with a new UUID. addChildNode inserts
+# it with its subtree.
+
+MASK_TYPES = frozenset({"transparencymask", "filtermask", "transformmask", "colorizemask",
+                        "selectionmask"})
+
+
+@dataclasses.dataclass
+class _Duplicate:
+    source: str
+    name: object    # None: Krita's (the source's name)
+    parent: str     # refs.ROOT or a group id
+    above: object   # None (on top) or the sibling id to go directly above
+
+
+def _plan_duplicate(index, params):
+    source = refs.resolve(index, _required_ref(params), field="id")
+    kind = index.get(source)["type"]
+    if kind in MASK_TYPES:
+        raise CommandError("conflict", f"Layer {index.path_of(source)!r} is a {kind}; "
+                           "duplicate_layer copies layers (duplicating a layer copies its masks)",
+                           {"id": source, "type": kind})
+    name = params.get("name")
+    if name is not None:
+        name = layerprops.check_name(name)
+    if params.get("parent") is not None:
+        parent_ref = params["parent"]
+        parent = refs.resolve(index, parent_ref, allow_root=True, field="parent")
+        if parent != refs.ROOT and index.get(parent)["type"] != GROUP:
+            raise _bad(f"parent {parent_ref!r} is a {index.get(parent)['type']}; only a group "
+                       "or the root '/' can hold layers", param="parent")
+        above = None
+    else:
+        parent, above = index.parent(source), source
+    if params.get("above") is not None:
+        above_ref = params["above"]
+        above = refs.resolve(index, above_ref, field="above")
+        if index.parent(above) != parent:
+            where = "the root '/'" if parent == refs.ROOT else f"group {index.path_of(parent)!r}"
+            raise _bad(f"above {above_ref!r} is not a child of the target parent, {where} "
+                       "(pass 'parent' to put the copy in another group)", param="above")
+    return _Duplicate(source, name, parent, above)
+
+
+def _duplicate_one(doc, plan):
+    """``apply_fn``: copy, rename, insert. A copy that fails after it was
+    inserted is removed again (the failing item cleans up after itself)."""
+    copy = _live(doc, plan.source).duplicate()
+    if copy is None:
+        raise CommandError("krita_error", f"Krita could not duplicate layer {plan.source}")
+    nid = nodes.node_id(copy)
+    if plan.name is not None:
+        copy.setName(plan.name)  # while detached
+    parent = _parent_node(doc, plan.parent)
+    above = None if plan.above is None else _position(parent, plan.above)[0]
+    _add(parent, copy, above)
+    try:
+        if nodes.node_by_id(doc, nid) is None:  # addChildNode can report success and do nothing
+            raise CommandError("krita_error", "Krita did not insert the copy")
+        if plan.name is not None and copy.name() != plan.name:
+            raise CommandError("krita_error", f"Krita did not rename the copy to {plan.name!r}")
+    except Exception:
+        try:
+            _remove_node(doc, nid)
+        except Exception:
+            print(f"[KritaMCP] duplicate_layer: could not remove the half-made copy {nid}:")
+            traceback.print_exc()
+        raise
+    return nid, RemoveNode(nid)
+
+
+def _duplicate_warnings(name, nid, others, copied_names):
+    """``duplicate_name`` for the copy itself when another layer has its
+    name (``others``: their ids), and ``duplicate_names_in_copy`` for the
+    copied subtree, whose layers keep their names (D4: bare-name refs to
+    them become ambiguous)."""
+    warnings = []
+    if others:
+        warnings.append({
+            "code": "duplicate_name",
+            "message": f"The copy is named {name!r}, like {len(others)} other "
+                       f"layer{'s' if len(others) != 1 else ''}; a bare-name ref to it is "
+                       "ambiguous (use its id or a path, or pass 'name')",
+            "id": nid, "name": name, "others": others})
+    if copied_names:
+        warnings.append({
+            "code": "duplicate_names_in_copy",
+            "message": f"The {len(copied_names)} layer(s) inside the copy keep their names, "
+                       "which the original's layers have too; refer to them by id or path",
+            "count": len(copied_names), "names": sorted(set(copied_names))})
+    return warnings
+
+
+@command("duplicate_layer", timeout=LONG_TIMEOUT, mutating=True)
+def cmd_duplicate_layer(params):
+    """Copy a layer (a group with its subtree, a layer with its masks):
+    directly above the source by default, or under ``parent`` / above
+    ``above``. One journal entry; ``dry_run`` validates only."""
+    handle, doc = registry.resolve_doc(params)
+    dry_run = _dry_run(params)
+    index = nodes.build_index(doc)
+    plan = _plan_duplicate(index, params)
+    name = plan.name if plan.name is not None else index.get(plan.source)["name"]
+    inner = subtree(index, plan.source)[1:]
+    if dry_run:
+        warnings = _duplicate_warnings(name, None, index.by_name(name),
+                                       [index.get(i)["name"] for i in inner])
+        return {"doc": handle, "dry_run": True, "source": plan.source,
+                "would_create": {"name": name, "type": index.get(plan.source)["type"],
+                                 "parent": plan.parent, "above": plan.above,
+                                 "count": 1 + len(inner)},
+                "warnings": warnings}
+
+    outcome = batch.run([plan], _duplicate_one, doc, label="duplicate_layer", field="id")
+    doc.refreshProjection()
+    doc.waitForDone()
+    batch.JOURNALS.get(handle).push("duplicate_layer", outcome.inverses)  # no snapshots
+    nid = outcome.results[0]
+    fresh, by_id = nodes.tree(doc)
+    ids = subtree(fresh, nid)
+    warnings = _duplicate_warnings(name, nid, [o for o in fresh.by_name(name) if o != nid],
+                                   [fresh.get(i)["name"] for i in ids[1:]])
+    return {"doc": handle, "dry_run": False, "source": plan.source,
+            "layer": nodes.layer_object(by_id[nid], fresh, nid=nid), "ids": ids,
             "warnings": warnings}

@@ -469,12 +469,43 @@ Settled in P2.5 (2026-11-25), `kritamcp/commands/layers.py`:
   Deleting the active layer is fine (headless `activeNode()` is always
   `None`). Default timeout 300 s.
 
-### `krita_duplicate_layer(doc?, id, name?, parent?, above?)` · P1
+### `krita_duplicate_layer(doc?, id, name?, parent?, above?, dry_run?)` · P1
 
 `Node.duplicate()`. The copy goes directly above the source unless
 `parent`/`above` say otherwise. Returns the new layer object. The default
-name is Krita's (`<name> (copy)`), and the result warns about the
-duplicate-name convention.
+name is Krita's, and the result warns about the duplicate-name convention.
+
+Settled in P5.2 (2026-11-25), `kritamcp/commands/layers.py`:
+
+- **What Krita copies** (krita-api-notes § Nodes, verified headless):
+  `duplicate()` returns a detached deep copy with the **same name** (no
+  ` (copy)` suffix), the properties (visible, opacity, blend mode, locks,
+  clipping, pass-through), the pixels past the canvas edge too, and the
+  whole subtree (nested groups, masks). Every copied node gets a new UUID.
+- **Refs.** `id` is any layer but a mask (a mask is `conflict`: duplicate
+  its layer, which copies its masks); `/` is `bad_request`, an unknown ref
+  `not_found`. `name` follows the `create_layers` rules (`details.param`).
+- **Placement.** Neither `parent` nor `above`: directly above the source,
+  same parent. `parent` (`/` or a group, else `bad_request` with
+  `details.param`): on top of its children. `above`: directly above that
+  sibling, which must be a child of `parent`, or without `parent` of the
+  source's parent (`bad_request`, `details.param: "above"`, otherwise).
+- **Apply.** `duplicate()`, `setName` while detached, `addChildNode` next
+  to the sibling looked up among the parent's children; the copy is then
+  looked up by id (`addChildNode` can report success and do nothing) and
+  removed again if anything after the insert fails. Refresh, one journal
+  entry whose inverse is a `RemoveNode` of the copy (its redo re-inserts
+  the same nodes, same ids). Default timeout 300 s.
+- **Warnings.** `{code: "duplicate_name", message, id, name, others}` when
+  another layer has the copy's name after the call (always, without
+  `name`: the source has it); `{code: "duplicate_names_in_copy", message,
+  count, names}` for the layers inside a copied group or the masks of a
+  copied layer, which keep their names.
+- **Result.** `{doc, dry_run: false, source, layer: <layer object of the
+  copy>, ids: [the copy's subtree, top to bottom], warnings}`. With
+  `dry_run`: `{doc, dry_run: true, source, would_create: {name, type,
+  parent, above, count}, warnings}` (`above` null = on top; the warning's
+  `id` is null), nothing changes.
 
 ### `krita_merge_layers(doc?, ids, name)` · P1
 
@@ -497,6 +528,15 @@ duplicate-name convention.
 `Document.setActiveNode`. When `doc` is not the active document, the
 result says that painting tools with no `doc` will still go to the active
 document.
+
+Settled in P5.2 (2026-11-25), `kritamcp/commands/layers.py`: any layer
+type, masks included (`/` is `bad_request`, a missing `id` too). UI
+state: not `mutating`, no journal entry, default timeout 30 s. Result
+`{doc, layer: id, path, type, warnings}`; the warning is `{code:
+"not_active_document", message}`. Headless `activeNode()` stays `None`
+after it (krita-api-notes § Nodes) and every call warns (there is no
+active document); `tests/live/test_layer_utils.py` checks in the GUI that
+painting with neither `doc` nor `layer` then lands on that layer.
 
 ---
 
@@ -831,7 +871,7 @@ As built (P3.4, 2026-11-25; `commands/render.py`, pure parts in
   QImage → `save_png`, no longer `exportImage`). Result: `doc`, `path`
   plus `render`'s fields.
 
-### `krita_trim_layers(doc?, ids, alpha_threshold=1, near_px=null, dry_run?)` · P1
+### `krita_trim_layers(doc?, ids, alpha_threshold=8, near_px=null, dry_run?)` · P1
 
 Sets pixels with `alpha < alpha_threshold` to fully transparent. With
 `near_px`, only pixels further than `near_px` from any pixel with
@@ -839,12 +879,89 @@ Sets pixels with `alpha < alpha_threshold` to fully transparent. With
 (spike Q10: `Selection.grow`). Returns, per layer, the pixels cleared and
 the old and new bounds.
 
+Settled in P5.3 (2026-11-25), `kritamcp/commands/pixels.py`,
+`kritamcp/alphastats.py` (`trim_mask`, `zero_pixels`):
+
+- **Params.** `ids`: 1–2000 layer refs (`/` `bad_request`, unknown
+  `not_found` with `details.index`, duplicates folded). `alpha_threshold`:
+  a whole number 1–255, default **8** (changed from 1 on 2026-11-25: with
+  1 the tool cleared nothing, since alpha-0 pixels are left alone; 8 is
+  lint's `stray_alpha_below`); `near_px`: null or a whole number 1–64 (else
+  `bad_request`, `details.param`). Every layer must be a paint layer
+  (`conflict`, `details: {index, field, id, type}`) and the document 8-bit
+  RGBA (`conflict`); everything is checked before any layer changes.
+- **Which pixels.** `0 < alpha < alpha_threshold`: pixels already at
+  alpha 0 are left alone (colour under them too) and not counted, so the
+  default threshold 1 clears nothing. With `near_px`, only those outside
+  the `alpha ≥ alpha_threshold` mask dilated by `near_px` (the
+  `stray-alpha` test with `below = alpha_threshold`, `distance =
+  near_px`: `Selection.grow` on a standalone Selection, else the shift
+  fallback; same kernel, "within" includes the axis points at distance
+  `near_px`). A layer with no pixel at or above the threshold loses all
+  its faint pixels. The whole layer is read over its exact `bounds()`, so
+  pixels past the canvas edge are trimmed too.
+- **Clearing.** All four bytes of a cleared pixel become 0, so no colour
+  is left under the cleared alpha. No per-pixel loop: the clear mask (0/1
+  per pixel, `translate` + big-int AND-NOT) is turned into a keep mask
+  (0xFF / 0x00 per pixel, `translate`), and each row is copied (no hit),
+  zeroed (all hit) or, when mixed, ANDed as a big int with the keep mask
+  widened to 4 bytes per pixel by slice assignment. Then one
+  `setPixelData` over the old bounds.
+- **Journal.** One entry: per changed layer a `RestorePixels` of its old
+  bounds (P5.1 protocol: undo restores the pixels exactly, redo reapplies
+  the trim). Layers with nothing to clear are not written and record no
+  inverse; a call that clears nothing adds no entry. Over the journal's
+  caps: `{code: "not_undoable", nbytes}`, as `import_png`. Default timeout
+  300 s.
+- **Result.** `{doc, dry_run: false, alpha_threshold, near_px, trimmed:
+  [{id, path, cleared, bounds_before, bounds_after}], totals: {layers,
+  changed, cleared}, warnings}`, `bounds_after` as Krita reports it after
+  the write (null when nothing is left). With `dry_run`: `would_trim`
+  with the same entries (`bounds_after` computed from the would-be
+  pixels), nothing written, no journal entry.
+
 ### `krita_layer_stats(doc?, ids, buckets=[0,1,8,32,128,255])` · P1
 
 Per layer: `bounds` (Krita), `opaque_bounds` (the tight rectangle around
 `alpha > 0`), `pixel_count` (`alpha > 0`), `opaque_count` (`alpha = 255`),
 `alpha_histogram` (counts per bucket edge), `empty`, and `beyond_canvas`
 (the parts of `opaque_bounds` that lie outside the canvas). These feed lint.
+
+Settled in P5.3 (2026-11-25), `kritamcp/commands/analysis.py`
+(`cmd_layer_stats`, reusing the snapshot's `data_stats`),
+`kritamcp/alphastats.py` (`check_buckets`, `histogram`, `beyond_canvas`,
+`count_inside`):
+
+- **Params.** `ids` as for `trim_layers` (unknown refs are `not_found` up
+  front). `buckets`: 2–16 strictly increasing whole numbers 0–255
+  (`bad_request`, `details.param: "buckets"`). 8-bit RGBA documents only
+  (`conflict`). Reads only; default timeout 300 s.
+- **Per paint layer** (`layers`, in `ids` order): `{id, path, bounds,
+  opaque_bounds, pixel_count, opaque_count, alpha_histogram, empty,
+  beyond_canvas, stray_count, stray_specks}`, read with one `pixelData`
+  over the exact, unclipped `bounds()`. Layers of any other type (and a
+  non-RGBA/U8 layer) go to `skipped: [{id, path, type, reason}]` instead
+  of failing the call.
+- **`alpha_histogram`**: `{edges, counts}` with `len(counts) ==
+  len(edges)`; `counts[i]` counts the pixels inside `bounds` with
+  `edges[i] <= alpha < edges[i+1]`, and the last bucket is `edges[-1] <=
+  alpha <= 255`. The default edges give alpha 0 (transparent pixels
+  inside the bounding rectangle), 1–7, 8–31, 32–127, 128–254 and 255 (=
+  `opaque_count`); alpha below `edges[0]` is in no bucket. One
+  `translate` of the alpha bytes to bucket indexes, one `count` per
+  bucket.
+- **`beyond_canvas`**: null when `opaque_bounds` is null or inside the
+  canvas, else `{left, top, right, bottom, pixels}`: how far
+  `opaque_bounds` reaches past each canvas edge (0 on a side it doesn't
+  cross; it is tight, so a pixel lies that far out) and how many
+  `alpha > 0` pixels lie outside the canvas (one `count` per row of the
+  on-canvas overlap). Same sides as lint's `out-of-canvas`.
+- **`stray_count` / `stray_specks`**: the lint snapshot's numbers with
+  the config's lint settings (returned as `settings`); the test compares
+  them with `lint_snapshot`.
+- **Result.** `{doc, canvas: {w, h}, buckets, settings, layers, skipped}`.
+  An empty layer has `bounds` and `opaque_bounds` null, zero counts and
+  `empty: true`.
 
 ---
 
@@ -1181,6 +1298,6 @@ of both bounds). The two documents must be the same size for pixel diffs.
 | `krita_list_brushes` | Structured results only |
 | `krita_stroke`, `krita_fill`, `krita_draw_shape`, `krita_clear` | Accept `doc`, `layer`. `layer` defaults to the document's active node; anything but a paint layer (including an active group or mask) is `conflict` with `details: {doc, layer, type}`. Headless there is never an active node, so `layer` is required there (`not_found` otherwise). No view needed. Results include `doc` and `layer` (id). `clear` takes `"transparent"`, which zeroes the layer over the union of its bounds and the canvas; a color fills the canvas rect. Done in P1.6. Since P5.1 each call is one agent journal entry (a `RestorePixels` of the rectangle it writes), so `krita_undo` reverts it; the result gains `warnings: [{code: "not_undoable", nbytes}]` only when the snapshot is over the journal's caps |
 | `krita_get_color_at` | Accepts `doc`, `layer` (sample one layer instead of the composite): a paint layer gives its own pixel, a group its projection, other types `conflict`. `0 <= x < width`, `0 <= y < height` of the document, else `bad_request` naming the size. Results include `doc` and `layer` (id, or null for the composite). Done in P1.6 |
-| `krita_undo(doc?)` / `krita_redo(doc?)` | The agent journal (D6), done in P5.1: one call applies one journal entry, i.e. reverts (re-applies) one agent tool call: `create_layers`, `update_layers`, `move_layers`, `delete_layers`, `import_png`, `stroke`, `fill`, `draw_shape`, `clear`. Returns `{doc, undone \| redone: {label, layers: [ids touched]}, remaining: {undo, redo}, warnings}`. Empty stack: `conflict` ("nothing to undo in doc-N"). An entry whose layers are gone (deleted by hand, say) is `conflict` with nothing changed, and stays on the stack; a Krita failure midway is rolled forward again and keeps its code (`krita_error`), see D6. A new agent edit clears the redo stack. `warnings` has `not_redoable` / `not_undoable` when the reverse entry is over the caps. Mutating, default timeout 300 s |
+| `krita_undo(doc?)` / `krita_redo(doc?)` | The agent journal (D6), done in P5.1: one call applies one journal entry, i.e. reverts (re-applies) one agent tool call: `create_layers`, `update_layers`, `move_layers`, `delete_layers`, `duplicate_layer` and `trim_layers` (P5.2, P5.3), `import_png`, `stroke`, `fill`, `draw_shape`, `clear`. Returns `{doc, undone \| redone: {label, layers: [ids touched]}, remaining: {undo, redo}, warnings}`. Empty stack: `conflict` ("nothing to undo in doc-N"). An entry whose layers are gone (deleted by hand, say) is `conflict` with nothing changed, and stays on the stack; a Krita failure midway is rolled forward again and keeps its code (`krita_error`), see D6. A new agent edit clears the redo stack. `warnings` has `not_redoable` / `not_undoable` when the reverse entry is over the caps. Mutating, default timeout 300 s |
 | `krita_journal(doc?)` | New in P5.1: the journal's stacks, read-only: `{doc, undo: [{label, layer_count, nbytes, disk_bytes, on_disk}], redo: [same], memory_bytes, disk_bytes, limits: {max_actions, max_bytes, max_disk_bytes}}`, the next entry to apply first |
 | `krita_ui_undo(doc?)` / `krita_ui_redo(doc?)` | New in P5.1: the old `edit_undo` / `edit_redo` action triggers on Krita's own undo stack, aimed at the doc's view: a `doc` that isn't the active document gets its view shown first; a document with no view is `conflict` (always so headless). Returns `{doc, action, activated_view, warnings: [{code: "partial_ui_undo", message}]}`, the D6 caveat that Krita's undo only partly covers agent edits |

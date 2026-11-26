@@ -380,3 +380,90 @@ def test_stray_stats_without_stray_pixels():
 def test_empty_specks_is_a_fresh_dict():
     a.empty_specks()["samples"].append(1)
     assert a.empty_specks() == {"count": 0, "pixels": 0, "regions": 0, "samples": [], "truncated": False}
+
+
+# --- layer_stats / trim_layers helpers (P5.3) ---------------------------
+
+def test_check_buckets():
+    assert a.check_buckets(None) == [0, 1, 8, 32, 128, 255]
+    assert a.check_buckets([0, 255]) == [0, 255]
+    assert a.check_buckets(tuple(range(16))) == list(range(16))
+    for bad in ([0], list(range(17)), [0, 0], [5, 3], [0, 256], [-1, 4], [0, 1.5], [0, True],
+                "0,1", {"a": 1}):
+        with pytest.raises(ValueError):
+            a.check_buckets(bad)
+
+
+def test_histogram_matches_a_reference_count():
+    rng = random.Random(7)
+    alpha = bytes(rng.randrange(256) for _ in range(5000)) + bytes([0, 1, 7, 8, 254, 255] * 3)
+    for edges in ([0, 1, 8, 32, 128, 255], [0, 255], [10, 20, 200], list(range(0, 256, 17))):
+        got = a.histogram(alpha, edges)
+        uppers = edges[1:] + [256]
+        want = [sum(1 for v in alpha if lo <= v < hi) for lo, hi in zip(edges, uppers)]
+        assert got == {"edges": edges, "counts": want}, edges
+    assert a.histogram(bytes([0, 0, 3, 255]), [0, 1, 8, 32, 128, 255])["counts"] == \
+        [2, 1, 0, 0, 0, 1]
+    assert sum(a.histogram(bytes([1, 2, 9]), [5, 10])["counts"]) == 1  # below edges[0]: none
+
+
+def test_beyond_canvas():
+    assert a.beyond_canvas(None, 10, 10) is None
+    assert a.beyond_canvas(rect(0, 0, 10, 10), 10, 10) is None
+    assert a.beyond_canvas(rect(-2, 3, 4, 9), 10, 10) == {"left": 2, "top": 0, "right": 0,
+                                                          "bottom": 2}
+    assert a.beyond_canvas(rect(8, -1, 5, 1), 10, 10) == {"left": 0, "top": 1, "right": 3,
+                                                          "bottom": 0}
+
+
+def test_count_inside():
+    # a 4x3 mask of ones at (-1, 8) on a 10x10 canvas: columns 0..2, rows 8..9
+    ones = bytes([255]) * 12
+    assert a.count_inside(ones, 4, 3, (-1, 8), 10, 10) == 6
+    assert a.count_inside(ones, 4, 3, (0, 0), 10, 10) == 12
+    assert a.count_inside(ones, 4, 3, (20, 0), 10, 10) == 0
+    mixed = bytes([0, 5, 0, 5, 5, 0, 0, 0, 5, 5, 5, 5])
+    assert a.count_inside(mixed, 4, 3, (-2, -1), 10, 10) == 2  # columns 2-3 of rows 1-2
+
+
+def test_trim_mask_threshold_and_near():
+    alpha_rows = ["9999......",
+                  "93........",
+                  "..........",
+                  ".......2..",
+                  ".........1"]
+    alpha = bytes(int(c) * 20 if c != "." else 0 for row in alpha_rows for c in row)
+    w, h = 10, 5
+    # threshold 100: values 20..80 are faint (cells 1-4), 9 -> 180 strong
+    mask, count = a.trim_mask(alpha, w, h, 100)
+    assert count == 3 and mask.count(1) == 3
+    mask, count = a.trim_mask(alpha, w, h, 100, near_px=2)
+    assert count == 2  # the "3" next to the strong block is kept
+    assert mask[1 * w + 1] == 0 and mask[3 * w + 7] == 1 and mask[4 * w + 9] == 1
+    assert a.trim_mask(bytes(4), 2, 2, 8) == (bytes(4), 0)
+    # no strong pixel: every faint one goes, near_px or not
+    assert a.trim_mask(bytes([0, 3, 5, 0]), 2, 2, 8, near_px=4)[1] == 2
+
+
+def test_zero_pixels():
+    w, h = 3, 3
+    data = bytes(range(1, 37))
+    mask = bytes([0, 1, 0,
+                  1, 1, 1,
+                  0, 0, 0])
+    out = a.zero_pixels(data, mask, w)
+    want = bytearray(data)
+    for i, m in enumerate(mask):
+        if m:
+            want[4 * i:4 * i + 4] = bytes(4)
+    assert out == bytes(want)
+    assert a.zero_pixels(data, bytes(9), w) == data
+    rng = random.Random(3)
+    w, h = 37, 11
+    data = bytes(rng.randrange(256) for _ in range(4 * w * h))
+    mask = bytes(rng.random() < 0.3 for _ in range(w * h))
+    want = bytearray(data)
+    for i, m in enumerate(mask):
+        if m:
+            want[4 * i:4 * i + 4] = bytes(4)
+    assert a.zero_pixels(data, mask, w) == bytes(want)

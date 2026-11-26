@@ -1,4 +1,5 @@
-"""Pixel commands (api-design § Pixels): export_layers, import_png.
+"""Pixel commands (api-design § Pixels): export_layers, import_png,
+trim_layers.
 
 Pixels go through ``kritamcp.pixels`` (D5: QImage, no numpy, 8-bit RGBA
 only). The undo inverse of a pixel write keeps the old pixels of the
@@ -10,9 +11,11 @@ import dataclasses
 import os
 import traceback
 
-from .. import batch, blendmodes, layerprops, manifest, nodes, paths, pixels, refs, registry
+from .. import (alphastats, batch, blendmodes, layerprops, manifest, nodes, paths, pixels, refs,
+               registry)
 from ..dispatch import LONG_TIMEOUT, command
 from ..errors import CommandError
+from . import analysis
 from .documents import doc_name
 from .layers import GROUP, PAINT, _check_coord, _dry_run, _live
 
@@ -244,6 +247,151 @@ def cmd_import_png(params):
     bounds = _bounds(_live(doc, plan.nid))
     return {**head, "dry_run": False, "changed": _rect(*changed),
             "bounds": None if bounds is None else _rect(*bounds), "warnings": warnings}
+
+
+# --- trim_layers -----------------------------------------------------------
+
+MAX_NEAR_PX = 64
+
+
+@dataclasses.dataclass
+class _Trim:
+    nid: str
+    path: str
+    position: int   # in ``ids``
+    bounds: object  # (x, y, w, h) or None, read at validation
+
+
+def _trim_params(params):
+    """``(alpha_threshold, near_px)``: a whole number 1-255 (default 8, lint's
+    ``stray_alpha_below``) and
+    None or a whole number 1-64."""
+    threshold = params.get("alpha_threshold")
+    if threshold is None:
+        threshold = 8  # 1 would clear nothing (alpha-0 pixels are left alone)
+    if isinstance(threshold, bool) or not isinstance(threshold, int) or not 1 <= threshold <= 255:
+        raise CommandError("bad_request", "'alpha_threshold' must be a whole number from 1 to "
+                           f"255 (pixels with a lower alpha are cleared); got {threshold!r}",
+                           {"param": "alpha_threshold"})
+    near_px = params.get("near_px")
+    if near_px is not None and (isinstance(near_px, bool) or not isinstance(near_px, int)
+                                or not 1 <= near_px <= MAX_NEAR_PX):
+        raise CommandError("bad_request", f"'near_px' must be a whole number from 1 to "
+                           f"{MAX_NEAR_PX}, or null; got {near_px!r}", {"param": "near_px"})
+    return threshold, near_px
+
+
+def _trimmed(node, bounds, threshold, near_px):
+    """``(old, new, cleared)`` for the layer's pixels over ``bounds``:
+    ``new`` is None when nothing would be cleared."""
+    x, y, w, h = bounds
+    old = pixels.as_bytes(node.pixelData(x, y, w, h))
+    if len(old) != 4 * w * h:
+        raise CommandError("krita_error",
+                           f"Krita returned {len(old)} bytes for a {w}x{h} layer read")
+    mask, cleared = alphastats.trim_mask(old[3::4], w, h, threshold, near_px, analysis.dilated)
+    if cleared == 0:
+        return old, None, 0
+    return old, alphastats.zero_pixels(old, mask, w), cleared
+
+
+def _bounds_of(data, rect):
+    """The bounds Krita will report for BGRA ``data`` written at ``rect``
+    (alpha > 0; colour under zero alpha doesn't count), or None."""
+    ob = pixels.opaque_bounds(data, rect[2], rect[3])
+    return None if ob is None else (rect[0] + ob[0], rect[1] + ob[1], ob[2], ob[3])
+
+
+def _rect_or_none(r):
+    return None if r is None else _rect(*r)
+
+
+def _trim_entry(plan, cleared, after):
+    return {"id": plan.nid, "path": plan.path, "cleared": cleared,
+            "bounds_before": _rect_or_none(plan.bounds), "bounds_after": _rect_or_none(after)}
+
+
+def _trim_applier(threshold, near_px):
+    def apply_one(doc, plan):
+        if plan.bounds is None:
+            return _trim_entry(plan, 0, None), None
+        node = _live(doc, plan.nid)
+        old, new, cleared = _trimmed(node, plan.bounds, threshold, near_px)
+        if new is None:
+            return _trim_entry(plan, 0, plan.bounds), None
+        inverse = RestorePixels(plan.nid, [(plan.bounds, old)])
+        try:
+            _write(node, new, plan.bounds, f"layer {plan.nid}")
+        except Exception:
+            try:
+                inverse(doc)
+            except Exception:
+                print(f"[KritaMCP] trim_layers: could not restore layer {plan.nid}:")
+                traceback.print_exc()
+            raise
+        return _trim_entry(plan, cleared, _bounds_of(new, plan.bounds)), inverse
+    return apply_one
+
+
+@command("trim_layers", timeout=LONG_TIMEOUT, mutating=True)
+def cmd_trim_layers(params):
+    """Clear the faint pixels (``alpha < alpha_threshold``; with ``near_px``
+    only those farther than that from every pixel at or above the
+    threshold) of paint layers: all four bytes zeroed. All layers are
+    checked first (paint layers only), then trimmed in order; one journal
+    entry; ``dry_run`` counts without writing."""
+    handle, doc = registry.resolve_doc(params)
+    dry_run = _dry_run(params)
+    threshold, near_px = _trim_params(params)
+    pixels.require_rgba8(doc)
+    doc.waitForDone()
+    index, by_id = nodes.tree(doc)
+    plans = []
+    for position, nid in analysis.check_layer_refs(index, params, "trim_layers"):
+        kind = index.get(nid)["type"]
+        if kind != PAINT:
+            raise CommandError("conflict", f"ids[{position}]: layer {index.path_of(nid)!r} is a "
+                               f"{kind}; trim_layers needs paint layers",
+                               {"index": position, "field": "ids", "id": nid, "type": kind})
+        plans.append(_Trim(nid, index.path_of(nid), position, _bounds(by_id[nid])))
+    head = {"doc": handle, "alpha_threshold": threshold, "near_px": near_px}
+
+    if dry_run:
+        entries = []
+        for plan in plans:
+            if plan.bounds is None:
+                entries.append(_trim_entry(plan, 0, None))
+                continue
+            _, new, cleared = _trimmed(by_id[plan.nid], plan.bounds, threshold, near_px)
+            after = plan.bounds if new is None else _bounds_of(new, plan.bounds)
+            entries.append(_trim_entry(plan, cleared, after))
+            del new
+        return {**head, "dry_run": True, "would_trim": entries, "totals": _trim_totals(entries),
+                "warnings": []}
+
+    outcome = batch.run(plans, _trim_applier(threshold, near_px), doc, label="trim_layers",
+                        field="ids", positions=[p.position for p in plans])
+    doc.refreshProjection()
+    doc.waitForDone()
+    warnings = []
+    if not batch.JOURNALS.get(handle).push("trim_layers", outcome.inverses, outcome.nbytes):
+        warnings.append({
+            "code": "not_undoable",
+            "message": f"The old pixels take {outcome.nbytes} bytes, over the undo journal's "
+                       "memory and disk caps: this trim can't be undone, and the agent undo "
+                       "journal was cleared",
+            "nbytes": outcome.nbytes})
+    entries = outcome.results
+    for entry in entries:  # Krita's own bounds after the write
+        if entry["cleared"]:
+            entry["bounds_after"] = _rect_or_none(_bounds(_live(doc, entry["id"])))
+    return {**head, "dry_run": False, "trimmed": entries, "totals": _trim_totals(entries),
+            "warnings": warnings}
+
+
+def _trim_totals(entries):
+    return {"layers": len(entries), "changed": sum(1 for e in entries if e["cleared"]),
+            "cleared": sum(e["cleared"] for e in entries)}
 
 
 # --- export_layers ---------------------------------------------------------

@@ -671,6 +671,100 @@ def krita_delete_layers(ids: list[str], doc: Optional[str] = None, dry_run: bool
     return _done(result, summary)
 
 
+@mcp.tool()
+def krita_duplicate_layer(id: str, name: Optional[str] = None, parent: Optional[str] = None,
+                          above: Optional[str] = None, doc: Optional[str] = None,
+                          dry_run: bool = False, timeout_s: Optional[float] = None) -> dict:
+    """
+    Copy a layer: a paint layer with its pixels (past the canvas edge too),
+    properties and masks; a group with its whole subtree. Every copied node
+    gets a new id. Masks themselves can't be duplicated (conflict):
+    duplicate their layer.
+
+    Placement: by default directly above the source, in the same parent.
+    parent (a group ref, or "/" for the root) puts the copy on top of that
+    group's children; above (a sibling ref) puts it directly above that
+    layer, which must be a child of parent (or, without parent, of the
+    source's parent).
+
+    Naming: Krita keeps the source's name, so by default the copy has the
+    same name as the source; name sets another. A name another layer has
+    is allowed but warned about ({code: "duplicate_name", id, name,
+    others}: a bare-name ref becomes ambiguous). The layers inside a copied
+    group keep their names ({code: "duplicate_names_in_copy", count,
+    names}).
+
+    Returns {doc, source (id), layer (the copy's layer object), ids (the
+    copy and its subtree, top to bottom), warnings}; with dry_run, {doc,
+    source, would_create: {name, type, parent, above, count}, warnings}
+    and nothing changes. One call is one agent undo step (krita_undo
+    removes the copy).
+
+    Args:
+        id: The layer to copy: UUID, name path such as "Head/Eyes", or unique
+            name
+        name: The copy's name; default the source's name
+        parent: Group to put the copy in (layer ref, or "/" for the root);
+                default the source's parent
+        above: Put the copy directly above this sibling (layer ref); default
+               directly above the source, or on top of parent's children
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        dry_run: Only validate and report what would be created
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
+    """
+    params = _with({"id": id}, name=name, parent=parent, above=above, doc=doc,
+                   dry_run=dry_run or None)
+    result = client.call("duplicate_layer", params, timeout_s=timeout_s)
+    where = _in(result) or f" in {doc or 'the active document'}"
+    if result.get("dry_run"):
+        plan = result.get("would_create") or {}
+        count = plan.get("count", 1)
+        summary = (f"Would duplicate {result.get('source', id)} as {plan.get('name')!r}"
+                   + (f" ({_count(count, 'layer')} with its subtree)" if count > 1 else "")
+                   + where + _warnings_note(result.get("warnings"))
+                   + " (dry run, nothing changed)")
+    else:
+        layer = result.get("layer") or {}
+        count = len(result.get("ids") or [1])
+        summary = (f"Duplicated {result.get('source', id)} as {layer.get('path')!r} "
+                   f"({layer.get('id')})"
+                   + (f", {_count(count, 'layer')} with its subtree" if count > 1 else "")
+                   + where + _warnings_note(result.get("warnings")))
+    return _done(result, summary)
+
+
+@mcp.tool()
+def krita_set_active_layer(id: str, doc: Optional[str] = None,
+                           timeout_s: Optional[float] = None) -> dict:
+    """
+    Make a layer the document's active layer (the one selected in the
+    Layers docker): any type, masks included, but not the root. This is UI
+    state, not an agent undo step. Painting tools (stroke, fill,
+    draw_shape, clear) called without layer paint on the active layer of
+    the document they act on, and without doc they act on the ACTIVE
+    document: when doc is not the active document, the result warns
+    ({code: "not_active_document"}) that painting without doc still goes
+    to the active document. Passing doc and layer to the painting tools
+    always works.
+
+    Returns {doc, layer (id), path, type, warnings}.
+
+    Args:
+        id: The layer: UUID, name path such as "Head/Eyes", or unique name
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        timeout_s: Seconds to wait for Krita, up to 900; default 30
+    """
+    result = client.call("set_active_layer", _with({"id": id}, doc=doc), timeout_s=timeout_s)
+    summary = (f"Active layer is now {result.get('path') or result.get('layer') or id}"
+               + (_in(result) or f" in {doc or 'the active document'}")
+               + _warnings_note(result.get("warnings")))
+    return _done(result, summary)
+
+
 def _rect_text(r) -> str:
     if not isinstance(r, dict):
         return "?"
@@ -738,6 +832,69 @@ def krita_import_png(id: str, png: str, x: int = 0, y: int = 0,
     how = result.get("mode", mode) + (", clear outside" if result.get("clear_outside") else "")
     summary = (("Would import " if dry else "Imported ") + f"{name} into layer "
                + f"{result.get('layer', id)} ({how}), changing {_rect_text(rect)}"
+               + (_in(result) or f" in {doc or 'the active document'}")
+               + _warnings_note(result.get("warnings")))
+    if dry:
+        summary += " (dry run, nothing changed)"
+    return _done(result, summary)
+
+
+@mcp.tool()
+def krita_trim_layers(ids: list[str],
+                      alpha_threshold: Annotated[int, Field(ge=1, le=255)] = 8,
+                      near_px: Annotated[Optional[int], Field(ge=1, le=64)] = None,
+                      doc: Optional[str] = None, dry_run: bool = False,
+                      timeout_s: Optional[float] = None) -> dict:
+    """
+    Clear faint pixels in paint layers: every pixel with 0 < alpha <
+    alpha_threshold becomes fully transparent, all four bytes zeroed
+    (colour too, so no hidden colour stays under the cleared alpha). Pixels
+    with alpha >= alpha_threshold are untouched, and so are pixels already
+    at alpha 0 (not counted). The default threshold 1 clears nothing: pass
+    e.g. 8 to remove alpha 1-7 fringes and specks.
+
+    near_px (1-64) keeps anti-aliased edges: only faint pixels farther than
+    near_px from every pixel with alpha >= alpha_threshold are cleared
+    (Krita's Selection.grow kernel, as in lint's stray-alpha rule; a layer
+    with no such pixel loses all its faint ones). Without near_px every
+    faint pixel goes.
+
+    ids are layer refs (UUID, name path, unique name); duplicates are
+    folded. Every layer must be a paint layer (else conflict) and the
+    document 8-bit RGBA; all are checked before anything changes. The
+    whole layer is trimmed, pixels past the canvas edge included.
+
+    Returns {doc, alpha_threshold, near_px, trimmed: [{id, path, cleared
+    (pixel count), bounds_before, bounds_after}], totals: {layers, changed,
+    cleared}, warnings}; with dry_run, would_trim with the same entries
+    and nothing changes. One call is one agent undo step (krita_undo
+    restores the old pixels exactly; a trim too big for the journal's caps
+    warns "not_undoable").
+
+    Args:
+        ids: Paint layers to trim, 1 to 2000 refs
+        alpha_threshold: Pixels with alpha below this (1-255) are cleared;
+                         default 8 (lint's stray_alpha_below)
+        near_px: Keep faint pixels within this many pixels (1-64) of a pixel
+                 at or above the threshold; default null (clear them all)
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        dry_run: Only count what would be cleared
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
+    """
+    params = _with({"ids": list(ids), "alpha_threshold": alpha_threshold}, near_px=near_px,
+                   doc=doc, dry_run=dry_run or None)
+    result = client.call("trim_layers", params, timeout_s=timeout_s)
+    dry = result.get("dry_run")
+    totals = result.get("totals") or {}
+    cleared, changed = totals.get("cleared", 0), totals.get("changed", 0)
+    threshold = result.get("alpha_threshold", alpha_threshold)
+    near = result.get("near_px", near_px)
+    summary = (("Would clear " if dry else "Cleared ") + _count(cleared, "pixel")
+               + f" in {changed} of {_count(totals.get('layers', len(ids)), 'layer')}"
+               + f" (alpha < {threshold}"
+               + (f", farther than {near} px from stronger pixels" if near else "") + ")"
                + (_in(result) or f" in {doc or 'the active document'}")
                + _warnings_note(result.get("warnings")))
     if dry:
@@ -1064,6 +1221,67 @@ def krita_lint(doc: Optional[str] = None, rules: Optional[list[str]] = None,
                    severity_min=severity_min)
     result = client.call("lint", params, timeout_s=timeout_s)
     return _done(result, _lint_summary(result, doc))
+
+
+@mcp.tool()
+def krita_layer_stats(ids: list[str], buckets: Optional[list[int]] = None,
+                      doc: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
+    """
+    Pixel statistics of paint layers, read over each layer's bounds (exact
+    and not clipped to the canvas). Reads only. The document must be 8-bit
+    RGBA. ids are layer refs (UUID, name path, unique name); an unknown ref
+    fails with not_found, and layers that aren't paint layers (groups,
+    masks, filter layers, ...) are listed in skipped with a reason.
+
+    Per layer: bounds (Krita's, {x, y, w, h} or null), opaque_bounds (the
+    tight rectangle around alpha > 0, canvas coordinates), pixel_count
+    (alpha > 0), opaque_count (alpha = 255), empty (no pixel with
+    alpha > 0), alpha_histogram {edges, counts}, beyond_canvas, stray_count
+    and stray_specks.
+    - alpha_histogram: counts[i] is the number of pixels inside bounds with
+      edges[i] <= alpha < edges[i+1]; the last bucket is edges[-1] <=
+      alpha <= 255. With the default edges [0, 1, 8, 32, 128, 255]: alpha
+      0 (transparent pixels inside bounds), 1-7, 8-31, 32-127, 128-254 and
+      255. Alpha below edges[0] is in no bucket.
+    - beyond_canvas: null when opaque_bounds is inside the canvas, else
+      {left, top, right, bottom} (how many pixels opaque_bounds reaches
+      past each canvas edge, 0 where it doesn't) and pixels (the number of
+      alpha > 0 pixels outside the canvas).
+    - stray_count / stray_specks: lint's stray-alpha numbers with the
+      config's lint settings (returned as settings): faint pixels (alpha
+      below stray_alpha_below) farther than stray_alpha_distance from any
+      stronger pixel, and their isolated specks {count, pixels, regions,
+      samples, truncated}.
+
+    Returns {doc, canvas {w, h}, buckets, settings, layers, skipped:
+    [{id, path, type, reason}]}.
+
+    Args:
+        ids: The layers, 1 to 2000 refs
+        buckets: Histogram edges: 2 to 16 strictly increasing whole numbers
+                 0-255; default [0, 1, 8, 32, 128, 255]
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
+    """
+    params = _with({"ids": list(ids)}, buckets=None if buckets is None else list(buckets),
+                   doc=doc)
+    result = client.call("layer_stats", params, timeout_s=timeout_s)
+    layers = result.get("layers") or []
+    skipped = result.get("skipped") or []
+    notes = []
+    for count, what in ((sum(1 for x in layers if x.get("empty")), "empty"),
+                        (sum(1 for x in layers if x.get("beyond_canvas")), "past the canvas"),
+                        (sum(1 for x in layers if (x.get("stray_specks") or {}).get("count")),
+                         "with stray specks"),
+                        (len(skipped), "skipped (not paint layers)")):
+        if count:
+            notes.append(f"{count} {what}")
+    summary = ("Stats for " + _count(len(layers), "paint layer")
+               + (_in(result) or f" in {doc or 'the active document'}")
+               + (f" ({', '.join(notes)})" if notes else ""))
+    return _done(result, summary)
 
 
 @mcp.tool()

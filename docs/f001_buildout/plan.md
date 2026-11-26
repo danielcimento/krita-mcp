@@ -315,9 +315,9 @@ tools.
   Pixel snapshots for mutating pixel tools: `import_png` from P3 and
   everything below. Memory and disk caps. Live test: create, update, move,
   delete, import, then undo × 5 restores the document.
-- [ ] **P5.2 `set_active_layer`, `duplicate_layer`, `close_document`.**
+- [x] **P5.2 `set_active_layer`, `duplicate_layer`, `close_document`.**
   `close_document` done early in P1.7.
-- [ ] **P5.3 `layer_stats`, `trim_layers`.** These reuse the P4.1 stats code.
+- [x] **P5.3 `layer_stats`, `trim_layers`.** These reuse the P4.1 stats code.
 - [ ] **P5.4 `select`.** rect / polygon (rasterized with `QPainter`) /
   alpha_of / invert / none / all, combined with replace / add / subtract /
   intersect, plus grow / shrink / feather.

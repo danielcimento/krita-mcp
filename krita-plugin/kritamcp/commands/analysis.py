@@ -1,5 +1,5 @@
-"""Analysis (api-design § Analysis): the lint snapshot collector and
-``lint`` (D14).
+"""Analysis (api-design § Analysis): the lint snapshot collector,
+``lint`` (D14) and ``layer_stats`` (P5.3).
 
 ``collect_snapshot(doc, settings)`` reads everything the lint rules need
 in one pass, so the rules (``lint.py``) stay pure functions over a dict:
@@ -26,7 +26,7 @@ import time
 
 from krita import Selection
 
-from .. import alphastats, config, lint, nodes, pixels, registry
+from .. import alphastats, batch, config, lint, nodes, pixels, refs, registry
 from ..dispatch import LONG_TIMEOUT, command
 from ..errors import CommandError
 
@@ -91,6 +91,54 @@ def _rect(r):
     return None if r is None else {"x": r[0], "y": r[1], "w": r[2], "h": r[3]}
 
 
+def read_bounds(node, bounds):
+    """The BGRA bytes of ``node`` over ``bounds`` (``{"x", "y", "w", "h"}``),
+    checked for size."""
+    x, y, w, h = bounds["x"], bounds["y"], bounds["w"], bounds["h"]
+    data = pixels.as_bytes(node.pixelData(x, y, w, h))
+    if len(data) != 4 * w * h:
+        raise CommandError("krita_error",
+                           f"Krita returned {len(data)} bytes for a {w}x{h} layer read")
+    return data
+
+
+def dilated(strong01, w, h, r, method="auto"):
+    """``strong01`` (0/1 bytes, ``w * h``) dilated by the radius-``r``
+    ``Selection.grow`` kernel (nonzero bytes = covered): ``grow`` on a
+    standalone Selection, or ``alphastats.dilate_shift`` (``method``
+    ``"shift"``, or ``"auto"`` when grow fails its self-check or raises)."""
+    dilate = _dilate_for(method, r)
+    try:
+        return dilate(strong01, w, h, r)
+    except Exception as e:
+        if method != "auto" or dilate is alphastats.dilate_shift:
+            raise
+        print(f"[KritaMCP] Selection.grow failed on a layer, using the shift fallback: {e!r}")
+        return alphastats.dilate_shift(strong01, w, h, r)
+
+
+def data_stats(data, bounds, settings, method="auto"):
+    """``alpha_stats`` for BGRA ``data`` already read over ``bounds`` (not
+    None)."""
+    x, y, w, h = bounds["x"], bounds["y"], bounds["w"], bounds["h"]
+    count = pixels.count_alpha(data, 1)
+    ob = pixels.opaque_bounds(data, w, h, 1)
+    if ob is not None:
+        ob = (ob[0] + x, ob[1] + y, ob[2], ob[3])
+    alpha = pixels.alpha(data)
+    del data  # frees the BGRA buffer before the dilation when the caller passed a temporary
+    below, distance = settings["stray_alpha_below"], settings["stray_alpha_distance"]
+    speck_max = settings["stray_speck_max_px"]
+
+    def dilate(strong01, dw, dh, r):
+        return dilated(strong01, dw, dh, r, method)
+
+    stray, specks, _ = alphastats.stray_stats(alpha, w, h, below, distance, speck_max,
+                                              dilate, (x, y))
+    return {"pixel_count": count, "opaque_bounds": _rect(ob), "stray_count": stray,
+            "stray_specks": specks}
+
+
 def alpha_stats(node, bounds, settings, method="auto"):
     """``{"pixel_count", "opaque_bounds", "stray_count", "stray_specks"}``
     for one 8-bit RGBA paint layer, read over ``bounds`` (``{"x", "y",
@@ -98,31 +146,7 @@ def alpha_stats(node, bounds, settings, method="auto"):
     if bounds is None:
         return {"pixel_count": 0, "opaque_bounds": None, "stray_count": 0,
                 "stray_specks": alphastats.empty_specks()}
-    x, y, w, h = bounds["x"], bounds["y"], bounds["w"], bounds["h"]
-    data = pixels.as_bytes(node.pixelData(x, y, w, h))
-    if len(data) != 4 * w * h:
-        raise CommandError("krita_error",
-                           f"Krita returned {len(data)} bytes for a {w}x{h} layer read")
-    count = pixels.count_alpha(data, 1)
-    ob = pixels.opaque_bounds(data, w, h, 1)
-    if ob is not None:
-        ob = (ob[0] + x, ob[1] + y, ob[2], ob[3])
-    alpha = pixels.alpha(data)
-    del data
-    below, distance = settings["stray_alpha_below"], settings["stray_alpha_distance"]
-    speck_max = settings["stray_speck_max_px"]
-    dilate = _dilate_for(method, distance)
-    try:
-        stray, specks, _ = alphastats.stray_stats(alpha, w, h, below, distance, speck_max,
-                                                  dilate, (x, y))
-    except Exception as e:
-        if method != "auto" or dilate is alphastats.dilate_shift:
-            raise
-        print(f"[KritaMCP] Selection.grow failed on a layer, using the shift fallback: {e!r}")
-        stray, specks, _ = alphastats.stray_stats(alpha, w, h, below, distance, speck_max,
-                                                  alphastats.dilate_shift, (x, y))
-    return {"pixel_count": count, "opaque_bounds": _rect(ob), "stray_count": stray,
-            "stray_specks": specks}
+    return data_stats(read_bounds(node, bounds), bounds, settings, method)
 
 
 def _is_rgba8(thing):
@@ -195,3 +219,87 @@ def cmd_lint(params):
     return {"doc": handle, "findings": result["findings"], "counts": result["counts"],
             "rules_run": result["rules_run"], "settings": snapshot["settings"],
             "pixel_stats": snapshot["document"]["pixel_stats"]}
+
+
+# --- layer_stats (P5.3) ----------------------------------------------------
+
+def check_layer_refs(index, params, action):
+    """``params["ids"]`` resolved against ``index``: a list of 1-2000 layer
+    refs, ``/`` refused, duplicates dropped (first kept). Errors carry
+    ``details.index`` / ``field`` (``batch.validate_all``)."""
+    def check(i, ref):
+        if ref == refs.ROOT:
+            raise CommandError("bad_request", f"the root '/' is not a layer ({action} takes "
+                               "layer refs)", {"param": "ids"})
+        return refs.resolve(index, ref, field="id")
+    nids = batch.validate_all(params.get("ids"), check, field="ids")
+    seen, out = set(), []
+    for i, nid in enumerate(nids):
+        if nid not in seen:
+            seen.add(nid)
+            out.append((i, nid))
+    return out
+
+
+def _buckets(params):
+    try:
+        return alphastats.check_buckets(params.get("buckets"))
+    except ValueError as e:
+        raise CommandError("bad_request", f"'buckets' {e}", {"param": "buckets"}) from None
+
+
+def _layer_stats(node, nid, index, settings, edges, canvas):
+    bounds = nodes.layer_object(node, index, ("bounds",), nid=nid)["bounds"]
+    out = {"id": nid, "path": index.path_of(nid), "bounds": bounds}
+    if bounds is None:
+        out.update(opaque_bounds=None, pixel_count=0, opaque_count=0,
+                   alpha_histogram={"edges": list(edges), "counts": [0] * len(edges)},
+                   empty=True, beyond_canvas=None, stray_count=0,
+                   stray_specks=alphastats.empty_specks())
+        return out
+    data = read_bounds(node, bounds)
+    stats = data_stats(data, bounds, settings)
+    alpha = pixels.alpha(data)
+    del data
+    beyond = alphastats.beyond_canvas(stats["opaque_bounds"], *canvas)
+    if beyond is not None:
+        inside = alphastats.count_inside(alpha, bounds["w"], bounds["h"],
+                                         (bounds["x"], bounds["y"]), *canvas)
+        beyond["pixels"] = stats["pixel_count"] - inside
+    out.update(opaque_bounds=stats["opaque_bounds"], pixel_count=stats["pixel_count"],
+               opaque_count=alpha.count(255),
+               alpha_histogram=alphastats.histogram(alpha, edges),
+               empty=stats["pixel_count"] == 0, beyond_canvas=beyond,
+               stray_count=stats["stray_count"], stray_specks=stats["stray_specks"])
+    return out
+
+
+@command("layer_stats", timeout=LONG_TIMEOUT)
+def cmd_layer_stats(params):
+    """``krita_layer_stats`` (api-design § krita_layer_stats): per paint
+    layer, bounds, opaque bounds, pixel counts, an alpha histogram, the
+    overhang past the canvas and the stray-alpha numbers (lint's settings).
+    Other layer types are listed in ``skipped``. Reads only."""
+    handle, doc = registry.resolve_doc(params)
+    edges = _buckets(params)
+    pixels.require_rgba8(doc)
+    doc.waitForDone()  # pending strokes or updates land before pixels are read
+    index, by_id = nodes.tree(doc)
+    targets = check_layer_refs(index, params, "layer_stats")
+    settings = lint_settings()
+    canvas = (doc.width(), doc.height())
+    layers, skipped = [], []
+    for _, nid in targets:
+        node, kind = by_id[nid], index.get(nid)["type"]
+        if kind != PAINT:
+            skipped.append({"id": nid, "path": index.path_of(nid), "type": kind,
+                            "reason": "not a paint layer (only paint layers have pixels of "
+                                      "their own; render a group with krita_render)"})
+        elif not _is_rgba8(node):
+            skipped.append({"id": nid, "path": index.path_of(nid), "type": kind,
+                            "reason": f"the layer is {node.colorModel()}/{node.colorDepth()}, "
+                                      "not 8-bit RGBA"})
+        else:
+            layers.append(_layer_stats(node, nid, index, settings, edges, canvas))
+    return {"doc": handle, "canvas": {"w": canvas[0], "h": canvas[1]}, "buckets": edges,
+            "settings": settings, "layers": layers, "skipped": skipped}
