@@ -239,7 +239,8 @@ def test_round_trip(call, scratch, docs_to_close):
     ia, ib = _rgba(ra["path"]), _rgba(rb["path"])
     assert ia.tobytes() == ib.tobytes(), _first_diff(ia, ib)
     assert ia.getchannel("A").getextrema() == (0, 255)  # the comparison is not trivial
-    assert any(px[3] == 0 and px[:3] != (0, 0, 0) for px in ia.getdata())  # colour under alpha 0
+    raw = ia.tobytes()  # colour under alpha 0 is present, so the strict check covers it
+    assert any(raw[i + 3] == 0 and raw[i:i + 3] != b"\0\0\0" for i in range(0, len(raw), 4))
 
     assert _tree(call, b, drop=other["background_layer"]) == _tree(call, a)
 

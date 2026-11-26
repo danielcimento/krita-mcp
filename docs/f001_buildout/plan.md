@@ -7,7 +7,7 @@
 | Decisions | [decisions.md](decisions.md) |
 | API spike | [spike.md](spike.md) |
 | Acceptance procedures | [acceptance.md](acceptance.md) |
-| Status | Phases 1–4 built: all P0 tools done (P4 exit, live acceptance 2 and 4 and the full Mao run, pending). Stop for review before Phase 5. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
+| Status | Phases 1–4 done: **all P0 tools and acceptance tests 1–6 pass** (live, 2026-11-25). Phase 5 next. Hand-off: [handoff-prompt.md](handoff-prompt.md) |
 
 ## Scope
 
@@ -263,6 +263,9 @@ the full `test_handles`, and `test_layer_tree`. The headless
 also runs on a small synthetic document in the normal live suite, so it
 doesn't need Mao.
 
+*Met 2026-11-25:* `test_round_trip` (byte-identical) and `test_round_trip_mao`
+(identical apart from colour under alpha 0, per acceptance.md § 2) passed live.
+
 ### Phase 4: Lint (P0)
 
 - **P4.1 Snapshot collector.** In `commands/analysis.py`: tree, properties,
@@ -299,31 +302,39 @@ doesn't need Mao.
 *Exit:* acceptance test **4** passes. **All P0 done.** Update the README
 tool table and docs, and run the full acceptance suite once on Mao.
 
+*Met 2026-11-25:* the full live suite with `KRITA_MCP_MAO_ORA` passed, 13 of 13
+(acceptance 1–6, Mao round trip and lint, render, layer tree). **All P0 done.**
+
 ### Phase 5: P1
 
 The order puts the part-separation workflow first, then convenience
 tools.
 
-- **P5.1 Agent journal undo (D6).** `krita_undo` / `krita_redo` work on
+- [ ] **P5.1 Agent journal undo (D6).** `krita_undo` / `krita_redo` work on
   the journal, and the old triggers move to `krita_ui_undo` / `krita_ui_redo`.
   Pixel snapshots for mutating pixel tools: `import_png` from P3 and
   everything below. Memory and disk caps. Live test: create, update, move,
   delete, import, then undo × 5 restores the document.
-- **P5.2 `set_active_layer`, `duplicate_layer`, `close_document`.**
+- [ ] **P5.2 `set_active_layer`, `duplicate_layer`, `close_document`.**
   `close_document` done early in P1.7.
-- **P5.3 `layer_stats`, `trim_layers`.** These reuse the P4.1 stats code.
-- **P5.4 `select`.** rect / polygon (rasterized with `QPainter`) /
+- [ ] **P5.3 `layer_stats`, `trim_layers`.** These reuse the P4.1 stats code.
+- [ ] **P5.4 `select`.** rect / polygon (rasterized with `QPainter`) /
   alpha_of / invert / none / all, combined with replace / add / subtract /
   intersect, plus grow / shrink / feather.
-- **P5.5 `selection_to_layer`.** Our own masked copy, unless Q9 shows
+- [ ] **P5.5 `selection_to_layer`.** Our own masked copy, unless Q9 shows
   `Selection.cut` / `paste` do the right thing.
-- **P5.6 `transform_layer`.** Translate, and an exact flip with
+- [ ] **P5.6 `transform_layer`.** Translate, and an exact flip with
   `QImage.mirrored`. Scale and rotate use `scaleNode` / `rotateNode` if Q6
   shows usable pivots, otherwise `QTransform` on the pixels.
-- **P5.7 `merge_layers`.** Group flatten through the projection, and
+- [ ] **P5.7 `merge_layers`.** Group flatten through the projection, and
   multi-layer merge through a temporary group. Opacity handling per Q8.
-- **P5.8 `occlusion_map`.** Builds on `render(only=…)` and the alpha helpers.
-- **P5.9 Lint `conventions` set.** The six extra rules.
+- [ ] **P5.8 `occlusion_map`.** Builds on `render(only=…)` and the alpha helpers.
+- [ ] **P5.9 Lint `conventions` set.** The six extra rules.
+- [ ] **P5.10 `stray-alpha` flags isolated specks only** (decided with the user
+  2026-11-25). As specified it warns on 48 Mao layers, mostly soft glows that
+  fade through alpha 1–7 over more than 4 px. Count connected groups of stray
+  pixels and flag only small ones (a configurable size), with
+  run-length union-find over rows, no per-pixel loop.
 
 ### Phase 6: P2
 
