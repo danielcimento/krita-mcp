@@ -378,6 +378,77 @@ def composite_over(dst, src, w, h):
     return bytes(out)
 
 
+def _alpha8(data, w, h):
+    """A ``Format_Alpha8`` QImage over ``data`` (``w * h`` bytes, no row
+    padding: the explicit ``bytesPerLine`` lets rows be any length). Not a
+    copy: the bytes must outlive the image."""
+    return QImage(data, w, h, w, QImage.Format_Alpha8)
+
+
+def alpha8_bytes(image):
+    """The bytes of a ``Format_Alpha8`` image, one per pixel, without Qt's
+    row padding (Qt pads rows to 4 bytes)."""
+    w, h, stride = image.width(), image.height(), image.bytesPerLine()
+    raw = image.constBits().asstring(image.sizeInBytes())
+    if stride == w:
+        return raw[:w * h]
+    return b"".join(raw[y * stride:y * stride + w] for y in range(h))
+
+
+def _scaled_alpha(alpha_bytes, mask, w, h, mode):
+    """``alpha_bytes`` scaled by ``mask`` (both ``w * h`` bytes) with QPainter
+    ``mode`` (DestinationIn: ``a * s / 255``; DestinationOut: ``a * (255 -
+    s) / 255``), on a 16-bit premultiplied working image."""
+    work = _alpha8(alpha_bytes, w, h).convertToFormat(QImage.Format_RGBA64_Premultiplied)
+    source = _alpha8(mask, w, h)
+    painter = QPainter(work)
+    try:
+        painter.setCompositionMode(mode)
+        painter.drawImage(0, 0, source)
+    finally:
+        painter.end()
+    return alpha8_bytes(work.convertToFormat(QImage.Format_Alpha8))
+
+
+def mask_alpha(data, mask, w, h, keep=True):
+    """BGRA ``data`` with each pixel's alpha scaled by the selection value
+    in ``mask`` (one byte per pixel, ``w * h``): ``keep`` gives
+    ``round(alpha * s / 255)`` (the part inside the selection), otherwise
+    ``round(alpha * (255 - s) / 255)`` (what a cut leaves). Colours are
+    unchanged (non-premultiplied). Returns ``(bytes, new_alpha)``.
+
+    Only the alpha bytes go through ``QPainter`` (``CompositionMode_DestinationIn``
+    / ``DestinationOut`` with the mask as a ``Format_Alpha8`` image), on a
+    ``Format_RGBA64_Premultiplied`` working image in strips of rows. That is
+    exact: all 65536 (alpha, s) pairs give the rounded product (Qt 5.15.7,
+    tests/krita/test_selection.py); an 8-bit working image (``Format_Alpha8``
+    or ``Format_ARGB32_Premultiplied``) is off by one for 24 of them. The
+    colour bytes never pass through a premultiplied image, so they stay bit
+    for bit. ``s = 255`` keeps the alpha (``keep``) or clears it, ``s = 0``
+    the reverse. Zeroing the colour under a cleared alpha is the caller's
+    choice (``alphastats.zero_pixels``)."""
+    _require_little_endian()
+    data = _buffer(data, w, h)
+    mask = as_bytes(mask)
+    if len(mask) != w * h:
+        raise ValueError(f"mask is {len(mask)} bytes; {w}x{h} needs {w * h}")
+    mode = (QPainter.CompositionMode_DestinationIn if keep
+            else QPainter.CompositionMode_DestinationOut)
+    alpha_bytes = data[3::4]
+    rows = max(1, _STRIP_PIXELS // w)
+    parts = []
+    for y in range(0, h, rows):
+        n = min(rows, h - y)
+        part = slice(y * w, (y + n) * w)
+        parts.append(_scaled_alpha(alpha_bytes[part], mask[part], w, n, mode))
+    new_alpha = b"".join(parts)
+    if len(new_alpha) != w * h:
+        raise CommandError("krita_error", f"Masking gave {len(new_alpha)} alpha bytes for {w}x{h}")
+    out = bytearray(data)
+    out[3::4] = new_alpha
+    return bytes(out), new_alpha
+
+
 def require_rgba8(doc):
     """Raise ``conflict`` unless ``doc`` is 8-bit RGBA, the only color
     space the pixel tools support (D5)."""

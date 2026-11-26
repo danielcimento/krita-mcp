@@ -111,6 +111,13 @@ If using a virtual environment:
 | `krita_get_canvas` | The whole canvas as a PNG in the output dir; a shortcut for a full-canvas `krita_render` |
 | `krita_get_color_at` | Eyedropper: the colour at a pixel, of the composite or of one layer |
 
+**Selections**
+
+| Tool | Description |
+|------|-------------|
+| `krita_select` | Set the selection: `rect`, `polygon` (antialiased or not), `alpha_of` a layer, `invert`, `none`, `all`; `op` replace / add / subtract / intersect; then `grow`, `shrink`, `feather`. Not an agent undo step |
+| `krita_selection_to_layer` | Cut (or copy) a paint layer's pixels inside the selection to a new layer at the same position, alpha scaled by the selection (soft edges from feathering); never touches the clipboard; `dry_run`, one undo step |
+
 **Analysis**
 
 | Tool | Description |

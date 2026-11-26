@@ -44,6 +44,8 @@ EXPECTED_TOOLS = {
     "krita_set_active_layer",
     "krita_trim_layers",
     "krita_layer_stats",
+    "krita_select",
+    "krita_selection_to_layer",
 }
 
 # tool -> (kwargs, plugin action, canned plugin payload)
@@ -161,6 +163,16 @@ CASES = {
                                        "beyond_canvas": None,
                                        "stray_specks": {"count": 0}}],
                            "skipped": []}),
+    "krita_select": ({"mode": "rect", "x": 2, "y": 3, "w": 4, "h": 5}, "select",
+                     {"doc": "doc-1", "mode": "rect", "op": "replace",
+                      "bounds": {"x": 2, "y": 3, "w": 4, "h": 5}, "pixel_count": 20,
+                      "warnings": []}),
+    "krita_selection_to_layer": ({"source": "S", "name": "Part"}, "selection_to_layer",
+                                 {"doc": "doc-1", "dry_run": False, "source": "{1}",
+                                  "layer": {"id": "{2}", "name": "Part", "path": "Part",
+                                            "children": []},
+                                  "cut_rect": {"x": 2, "y": 3, "w": 4, "h": 5}, "cut": True,
+                                  "copied": 20, "warnings": []}),
     "krita_list_layers": ({}, "list_layers",
                           {"root": "/", "layers": [{"id": "{1}", "name": "a", "children": []}],
                            "counts": {"paintlayer": 1, "total": 1}}),
@@ -366,12 +378,13 @@ DOC_TOOLS = {"krita_save", "krita_get_canvas", "krita_stroke", "krita_fill",
              "krita_delete_layers", "krita_import_png", "krita_export_layers",
              "krita_render", "krita_lint", "krita_undo", "krita_redo", "krita_journal",
              "krita_ui_undo", "krita_ui_redo", "krita_duplicate_layer",
-             "krita_set_active_layer", "krita_trim_layers", "krita_layer_stats"}
+             "krita_set_active_layer", "krita_trim_layers", "krita_layer_stats",
+             "krita_select", "krita_selection_to_layer"}
 # close_document has no active-document default.
 REQUIRED_DOC_TOOLS = {"krita_close_document"}
 OPTIONAL_DOC_TOOLS = DOC_TOOLS - REQUIRED_DOC_TOOLS
 LAYER_TOOLS = {"krita_stroke", "krita_fill", "krita_draw_shape", "krita_clear",
-               "krita_get_color_at"}
+               "krita_get_color_at", "krita_select"}
 
 
 def test_doc_and_layer_in_schemas():
@@ -1180,4 +1193,82 @@ def test_p5_2_p5_3_schemas_and_typos():
                        ("krita_layer_stats", {"ids": ["A"], "buckets": "0,1"}),
                        ("krita_duplicate_layer", {"id": "A", "nmae": "B"}),
                        ("krita_set_active_layer", {})):
+        assert _call_tool(name, args).is_error, (name, args)
+
+
+# --- P5.4 / P5.5: select, selection_to_layer ------------------------------------
+
+def test_select_params_and_summaries(fake_call):
+    fake_call.payload = CASES["krita_select"][2]
+    result = server.krita_select("rect", x=2, y=3, w=4, h=5)
+    assert fake_call.calls[0] == ("select", {"mode": "rect", "op": "replace", "x": 2, "y": 3,
+                                             "w": 4, "h": 5}, None)
+    assert result["summary"] == "Selected 20 pixels in 4x5 at (2, 3) in doc-1 (rect, replace)"
+    # Mode-specific defaults (antialias, threshold) are only sent when given,
+    # so the plugin's per-mode key check sees what the caller passed.
+    server.krita_select("polygon", points=[[0, 0], [5, 0], [0, 5.5]], op="add", feather=2,
+                        doc="doc-2", timeout_s=4)
+    assert fake_call.calls[1] == ("select", {"mode": "polygon", "op": "add",
+                                             "points": [[0, 0], [5, 0], [0, 5.5]], "feather": 2,
+                                             "doc": "doc-2"}, 4)
+    server.krita_select("alpha_of", layer="A", threshold=8, antialias=False, grow=1, shrink=2)
+    assert fake_call.calls[2][1] == {"mode": "alpha_of", "op": "replace", "layer": "A",
+                                     "threshold": 8, "antialias": False, "grow": 1, "shrink": 2}
+    fake_call.payload = {"doc": "doc-2", "mode": "none", "op": "replace", "bounds": None,
+                         "pixel_count": 0, "warnings": []}
+    assert server.krita_select("none")["summary"] == "Selection cleared in doc-2"
+    fake_call.payload = {"doc": "doc-2", "mode": "rect", "op": "intersect", "bounds": None,
+                         "pixel_count": 0, "warnings": [{"code": "empty_selection",
+                                                         "message": "nothing"}]}
+    assert server.krita_select("rect", op="intersect", x=0, y=0, w=1, h=1)["summary"] == (
+        "Nothing selected in doc-2 (rect, intersect); the document has no selection now")
+
+
+def test_selection_to_layer_params_and_summaries(fake_call):
+    fake_call.payload = CASES["krita_selection_to_layer"][2]
+    result = server.krita_selection_to_layer("S", "Part")
+    assert fake_call.calls[0] == ("selection_to_layer", {"source": "S", "name": "Part",
+                                                         "cut": True}, None)
+    assert result["summary"] == ("Cut 20 pixels (4x5 at (2, 3)) of {1} to new layer 'Part' "
+                                 "({2}) in doc-1")
+    server.krita_selection_to_layer("S", "Part", parent="/", above="X", cut=False,
+                                    doc="doc-2", dry_run=True, timeout_s=9)
+    assert fake_call.calls[1] == ("selection_to_layer", {"source": "S", "name": "Part",
+                                                         "cut": False, "parent": "/",
+                                                         "above": "X", "doc": "doc-2",
+                                                         "dry_run": True}, 9)
+    fake_call.payload = {"doc": "doc-2", "dry_run": True, "source": "{1}", "cut": False,
+                         "cut_rect": {"x": 0, "y": 0, "w": 2, "h": 2},
+                         "would_create": {"name": "Part"}, "warnings": []}
+    assert server.krita_selection_to_layer("S", "Part", cut=False, dry_run=True)["summary"] == (
+        "Would copy the selection (2x2 at (0, 0)) of {1} to a new layer 'Part' in doc-2 "
+        "(dry run, nothing changed)")
+
+
+def test_selection_schemas_and_typos():
+    tools = _tools()
+    params = tools["krita_select"].parameters
+    assert set(params["properties"]) == {"mode", "op", "x", "y", "w", "h", "points", "antialias",
+                                         "layer", "threshold", "grow", "shrink", "feather",
+                                         "doc", "timeout_s"}
+    assert params["required"] == ["mode"]
+    params = tools["krita_selection_to_layer"].parameters
+    assert set(params["properties"]) == {"source", "name", "parent", "above", "cut", "doc",
+                                         "dry_run", "timeout_s"}
+    assert params["required"] == ["source", "name"]
+    select = " ".join(tools["krita_select"].description.split())
+    assert "krita_undo doesn't undo a select" in select and "winding" in select
+    s2l = " ".join(tools["krita_selection_to_layer"].description.split())
+    assert "clipboard" in s2l and "alpha * s / 255" in s2l
+    for name, args in (("krita_select", {"mode": "lasso"}),
+                       ("krita_select", {"mode": "rect", "op": "xor"}),
+                       ("krita_select", {"mode": "rect", "w": 0}),
+                       ("krita_select", {"mode": "all", "grow": 0}),
+                       ("krita_select", {"mode": "all", "feather": 501}),
+                       ("krita_select", {"mode": "alpha_of", "threshold": 0}),
+                       ("krita_select", {"mode": "polygon", "points": [[0, 0], [1, 1]]}),
+                       ("krita_select", {"mode": "polygon", "points": [[0, 0], [1, 1], [2]]}),
+                       ("krita_select", {"mode": "rect", "colour": 1}),
+                       ("krita_selection_to_layer", {"source": "S"}),
+                       ("krita_selection_to_layer", {"source": "S", "name": "P", "mode": 1})):
         assert _call_tool(name, args).is_error, (name, args)

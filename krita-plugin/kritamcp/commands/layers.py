@@ -1117,6 +1117,17 @@ def _plan_duplicate(index, params):
     name = params.get("name")
     if name is not None:
         name = layerprops.check_name(name)
+    parent, above = placement(index, params, source)
+    return _Duplicate(source, name, parent, above)
+
+
+def placement(index, params, source, what="the copy"):
+    """``(parent, above)`` for a new layer made from ``source`` (the
+    ``duplicate_layer`` / ``selection_to_layer`` rule): neither ``parent``
+    nor ``above`` in ``params``: directly above the source, in its parent;
+    ``parent`` (``/`` or a group): on top of its children; ``above``:
+    directly above that sibling, a child of ``parent`` or, without it, of
+    the source's parent. ``above`` None means on top."""
     if params.get("parent") is not None:
         parent_ref = params["parent"]
         parent = refs.resolve(index, parent_ref, allow_root=True, field="parent")
@@ -1132,8 +1143,8 @@ def _plan_duplicate(index, params):
         if index.parent(above) != parent:
             where = "the root '/'" if parent == refs.ROOT else f"group {index.path_of(parent)!r}"
             raise _bad(f"above {above_ref!r} is not a child of the target parent, {where} "
-                       "(pass 'parent' to put the copy in another group)", param="above")
-    return _Duplicate(source, name, parent, above)
+                       f"(pass 'parent' to put {what} in another group)", param="above")
+    return parent, above
 
 
 def _duplicate_one(doc, plan):

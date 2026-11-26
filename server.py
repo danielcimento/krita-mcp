@@ -1123,6 +1123,186 @@ def krita_render(path: str, region: Optional[Rect] = None,
     return _done(result, _render_summary(result, path))
 
 
+# --- Selections (api-design § Selections and part separation) ----------------
+
+SelectMode = Literal["rect", "polygon", "alpha_of", "invert", "none", "all"]
+SelectOp = Literal["replace", "add", "subtract", "intersect"]
+Radius = Annotated[Optional[int], Field(ge=1, le=500)]
+Point = Annotated[list[float], Field(min_length=2, max_length=2)]
+
+
+def _select_summary(result: dict, mode: str, doc: Optional[str]) -> str:
+    where = _in(result) or f" in {doc or 'the active document'}"
+    mode = result.get("mode", mode)
+    count, bounds = result.get("pixel_count"), result.get("bounds")
+    if mode == "none":
+        return f"Selection cleared{where}"
+    if not count or not bounds:
+        return (f"Nothing selected{where} ({mode}, {result.get('op', 'replace')}); the "
+                "document has no selection now")
+    return (f"Selected {_count(count, 'pixel')} in {_rect_text(bounds)}{where} "
+            f"({mode}, {result.get('op', 'replace')})")
+
+
+@mcp.tool()
+def krita_select(mode: SelectMode, op: SelectOp = "replace",
+                 x: Optional[int] = None, y: Optional[int] = None,
+                 w: Annotated[Optional[int], Field(ge=1)] = None,
+                 h: Annotated[Optional[int], Field(ge=1)] = None,
+                 points: Annotated[Optional[list[Point]],
+                                   Field(min_length=3, max_length=10000)] = None,
+                 antialias: Optional[bool] = None, layer: Optional[str] = None,
+                 threshold: Annotated[Optional[int], Field(ge=1, le=255)] = None,
+                 grow: Radius = None, shrink: Radius = None, feather: Radius = None,
+                 doc: Optional[str] = None, timeout_s: Optional[float] = None) -> dict:
+    """
+    Set the document's selection (what Krita's selection tools set, shown as
+    marching ants; krita_selection_to_layer cuts it into a new layer).
+    Coordinates are canvas pixels, origin top-left; selections may extend
+    past the canvas.
+
+    Modes, each with its own parameters (others fail with "bad_request"):
+    - "rect": x, y, w, h. The pixels x..x+w-1, y..y+h-1.
+    - "polygon": points, 3 to 10000 [x, y] (numbers; pixel corners, so
+      [[2, 3], [6, 3], [6, 8], [2, 8]] is the rect x=2, y=3, w=4, h=5),
+      antialias (default true: edge pixels get partial values; false:
+      every pixel is fully in or out). Filled with the non-zero winding
+      rule: overlapping loops stay selected (a pentagram's centre too).
+    - "alpha_of": layer, threshold (1-255, default 1): the pixels where the
+      layer's alpha >= threshold, fully selected. A paint layer's own
+      pixels; a group (or other layer) its projection; masks fail
+      ("conflict"). The document must be 8-bit RGBA.
+    - "invert": the canvas pixels not selected (255 - value); anything past
+      the canvas is dropped. With no selection, the whole canvas.
+    - "none": deselect.
+    - "all": the whole canvas.
+
+    op combines the new selection with the current one: "replace"
+    (default), "add" (values summed, capped at full), "subtract" (the new
+    one's values taken off), "intersect" (the smaller value). For 0/full
+    selections that is union, difference and intersection; subtract or
+    intersect with no current selection selects nothing. "invert" and
+    "none" take only "replace".
+
+    Then, in this order: grow (dilate by that many pixels, 1-500), shrink
+    (erode; the canvas edge doesn't stop it: outside the selection counts
+    as unselected), feather (blur the edge over that radius: soft, partial
+    values that krita_selection_to_layer turns into soft alpha). "none"
+    takes none of them.
+
+    Returns {doc, mode, op, bounds: {x, y, w, h} or null, pixel_count
+    (pixels selected at all, value > 0), warnings}; a result that selects
+    nothing deselects ({code: "empty_selection"}, bounds null). The same
+    bounds show up as krita_get_document_info's selection.
+
+    Selections are not agent edits: krita_undo doesn't undo a select (it
+    is not in the agent journal); select again, or mode="none".
+
+    Args:
+        mode: "rect", "polygon", "alpha_of", "invert", "none" or "all"
+        op: "replace" (default), "add", "subtract" or "intersect"
+        x: rect: left edge in canvas pixels; may be negative
+        y: rect: top edge in canvas pixels; may be negative
+        w: rect: width in pixels, at least 1
+        h: rect: height in pixels, at least 1
+        points: polygon: [[x, y], ...] vertices in canvas pixels, 3 to 10000
+        antialias: polygon: soft (partial) edge pixels; default true
+        layer: alpha_of: the layer whose alpha to select: its id (UUID), a
+               name path such as "Head/Eyes", or a unique name
+        threshold: alpha_of: minimum alpha (1-255) of a selected pixel;
+                   default 1 (any visible pixel)
+        grow: Grow the result by this many pixels (1-500)
+        shrink: Then shrink it by this many pixels (1-500)
+        feather: Then feather its edge over this radius (1-500)
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        timeout_s: Seconds to wait for Krita, up to 900; default 30
+    """
+    params = _with({"mode": mode, "op": op}, x=x, y=y, w=w, h=h,
+                   points=None if points is None else [list(p) for p in points],
+                   antialias=antialias, layer=layer, threshold=threshold, grow=grow,
+                   shrink=shrink, feather=feather, doc=doc)
+    result = client.call("select", params, timeout_s=timeout_s)
+    return _done(result, _select_summary(result, mode, doc) + _warnings_note(
+        [w for w in result.get("warnings") or [] if not (isinstance(w, dict)
+                                                         and w.get("code") == "empty_selection")]))
+
+
+@mcp.tool()
+def krita_selection_to_layer(source: str, name: str, parent: Optional[str] = None,
+                             above: Optional[str] = None, cut: bool = True,
+                             doc: Optional[str] = None, dry_run: bool = False,
+                             timeout_s: Optional[float] = None) -> dict:
+    """
+    Separate a part: move (cut=true, default) or copy (cut=false) a paint
+    layer's pixels inside the current selection (krita_select) to a new
+    paint layer, at the same canvas position. Never uses Krita's clipboard
+    (the user's clipboard is left alone), and the selection stays as it is.
+
+    Pixels: the new layer gets the source's pixels with alpha scaled by the
+    selection's value (alpha * s / 255, rounded; colours unchanged), so a
+    feathered or antialiased selection gives soft edges; fully selected
+    pixels are copied exactly. With cut, the source keeps alpha *
+    (255 - s) / 255: fully selected pixels become fully transparent (all
+    four bytes zeroed, no hidden colour left), unselected pixels are
+    untouched, bit for bit. Pixels whose alpha ends at 0 have their colour
+    zeroed too. Only the selection's bounds within the source's bounds are
+    read and written (cut_rect).
+
+    The new layer has default properties (normal, opacity 1, visible) and
+    goes directly above the source; parent (a group ref, or "/") puts it on
+    top of that group's children, above (a sibling ref) directly above that
+    layer (a child of parent, or without parent of the source's parent).
+    A name another layer has is allowed but warned about
+    ({code: "duplicate_name"}).
+
+    Fails with "conflict" when there is no selection, the source is not a
+    paint layer, or the selection doesn't overlap the layer; the document
+    must be 8-bit RGBA.
+
+    Returns {doc, source, layer (the new layer object), cut_rect: {x, y,
+    w, h}, cut, copied (pixels with alpha > 0 in the new layer), warnings
+    ("nothing_copied" when that is 0)}; with dry_run, {doc, source,
+    cut_rect, cut, would_create: {name, type, parent, above}, warnings}
+    and nothing changes. One call is one agent undo step: krita_undo
+    removes the new layer and restores the source's pixels.
+
+    Args:
+        source: The paint layer to take pixels from: UUID, name path such as
+                "Head/Eyes", or unique name
+        name: The new layer's name
+        parent: Group to put the new layer in (layer ref, or "/" for the
+                root); default the source's parent
+        above: Put the new layer directly above this sibling (layer ref);
+               default directly above the source
+        cut: Remove the pixels from the source (default true); false copies
+        doc: Document handle such as "doc-3" (new_canvas and open_file return
+             one), or the absolute path of an open document; default the
+             active document
+        dry_run: Only validate and report the rectangle and the new layer
+        timeout_s: Seconds to wait for Krita, up to 900; default 300
+    """
+    params = _with({"source": source, "name": name, "cut": cut}, parent=parent, above=above,
+                   doc=doc, dry_run=dry_run or None)
+    result = client.call("selection_to_layer", params, timeout_s=timeout_s)
+    where = _in(result) or f" in {doc or 'the active document'}"
+    verb = "cut" if result.get("cut", cut) else "copy"
+    rect = _rect_text(result.get("cut_rect"))
+    if result.get("dry_run"):
+        plan = result.get("would_create") or {}
+        summary = (f"Would {verb} the selection ({rect}) of {result.get('source', source)} to a "
+                   f"new layer {plan.get('name', name)!r}{where}"
+                   + _warnings_note(result.get("warnings")) + " (dry run, nothing changed)")
+    else:
+        layer = result.get("layer") or {}
+        done = "Cut" if verb == "cut" else "Copied"
+        summary = (f"{done} {_count(result.get('copied', 0), 'pixel')} ({rect}) of "
+                   f"{result.get('source', source)} to new layer {layer.get('path', name)!r} "
+                   f"({layer.get('id')}){where}" + _warnings_note(result.get("warnings")))
+    return _done(result, summary)
+
+
 # --- Analysis (api-design § Analysis) ----------------------------------------
 
 def _lint_summary(result: dict, doc: Optional[str]) -> str:

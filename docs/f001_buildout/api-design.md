@@ -95,7 +95,8 @@ Done in P1.7: `resolution` is `Document.resolution()`, a whole number
 (Krita rounds: 72.5 dpi reads 73). `layer_counts` and `max_depth` come
 from the tree walk, which skips the global selection mask; top-level
 nodes are depth 1 and an empty document is depth 0. `selection` is
-`{x, y, w, h}` from `Document.selection()`.
+`{x, y, w, h}` from `Document.selection()`, the same rectangle
+`krita_select` returns as `bounds` (P5.4; it may lie past the canvas).
 
 ### `krita_new_canvas(width, height, name?, background?, color_profile?, resolution?)` · P0
 
@@ -982,6 +983,66 @@ Settled in P5.3 (2026-11-25), `kritamcp/commands/analysis.py`
 `grow`/`shrink`/`feather` radii apply after combining. Returns the
 selection's bounds and its pixel count.
 
+Settled in P5.4 (2026-11-25), `kritamcp/commands/selection.py`
+(krita-api-notes § Selections has the Krita facts):
+
+- **Params, strict per mode.** `mode` is required. The keys a call may
+  pass are `doc`, `mode`, `op`, `grow`, `shrink`, `feather` and the
+  mode's own (table above; `null` means "not given"); any other key is
+  `bad_request` with `details.unknown` / `details.valid`, so `antialias`
+  on a rect or `layer` on `all` fails instead of being ignored. Other
+  errors are `bad_request` with `details.param`. `rect`: `x`, `y` whole
+  numbers within ±163840, `w`, `h` whole numbers ≥ 1, all required; over
+  `max_canvas_dim` per side or `max_canvas_pixels` is `too_large`.
+  `polygon`: 3–10000 `[x, y]` pairs of finite numbers (fractions allowed);
+  its bounding box has the same size limits; `antialias` a bool, default
+  true. `alpha_of`: `layer` (any layer but a mask, which is `conflict`;
+  `/` `bad_request`, unknown `not_found`), `threshold` 1–255, default 1;
+  8-bit RGBA only. `grow` / `shrink` / `feather`: whole numbers 1–500.
+  `invert` and `none` take only `op: "replace"`; `none` takes no
+  modifier. Everything is checked before the selection changes.
+- **Modes.** `rect`: the pixels `x … x+w-1`, `y … y+h-1`. `polygon`:
+  rasterized by `QPainter` into a `Format_Alpha8` image over the
+  polygon's bounding box (corners rounded outwards), opaque brush, no
+  pen, **`Qt.WindingFill`** (non-zero, SVG's default: overlapping loops
+  and a pentagram's centre stay selected), with or without
+  antialiasing, then `Selection.setPixelData`. Points are pixel corners,
+  so a polygon on integer corners equals the rect exactly, with or
+  without antialiasing. `alpha_of`: a paint layer's own `pixelData`, any
+  other layer's `projectionPixelData`, over the layer's exact bounds
+  (past the canvas too); pixels with alpha ≥ `threshold` become 255, the
+  rest 0 (one `translate`). `invert`: computed here, not with
+  `Selection.invert` (which only inverts inside the selection's extent):
+  `255 - value` over the canvas; anything past the canvas is dropped; no
+  selection inverts to the whole canvas. `all`: the canvas. `none`:
+  `setSelection(None)`.
+- **Selections may extend past the canvas** (Krita keeps them, as the
+  document's selection too): `rect`, `polygon`, `alpha_of` and the
+  modifiers aren't clipped. `all` with `op: "intersect"` clips a selection
+  to the canvas.
+- **`op`** combines with a deep copy (`duplicate()`) of the current
+  selection by Krita's `add` / `subtract` / `intersect`: per pixel the
+  clamped sum, the clamped difference and the minimum (union, difference
+  and intersection for 0/255 selections). `add` with no selection is the
+  new one; `subtract` / `intersect` with none select nothing.
+- **Modifiers**, on the combined result, in the order grow, shrink,
+  feather: `grow(r, r)`, `shrink(r, r, False)` (not edge-locked: outside
+  the selection counts as unselected, so a selection at the canvas edge
+  shrinks away from it, as Krita's default), `feather(r)` (soft edges,
+  bounds widened by `r`).
+- **Apply.** `doc.setSelection(result)`: the user's selection changes, and
+  Krita adds (or keeps) the root-level `Selection Mask` node, which
+  `list_layers`, refs and lint skip (D4). A result that selects nothing is
+  set as `None` (an empty selection would keep the mask node), with the
+  warning `{code: "empty_selection"}`. Not mutating for the journal: no
+  journal entry, so **`krita_undo` doesn't undo a select**; default
+  timeout 30 s.
+- **Result.** `{doc, mode, op, bounds: rect|null, pixel_count, warnings}`:
+  `bounds` is the selection's `x/y/width/height` (what
+  `get_document_info.selection` reports; the tests check they agree),
+  `pixel_count` the pixels in it with a value > 0 (one `pixelData` over the
+  bounds, `count(0)`). `none` gives `bounds: null, pixel_count: 0`.
+
 ### `krita_selection_to_layer(doc?, source, name, parent?, above?, cut=true)`
 
 Copies, or with `cut` moves, the source layer's pixels inside the current
@@ -992,6 +1053,52 @@ same canvas position. Done in `pixels.py` with selection `pixelData`
 times layer alpha. `Selection.cut`/`paste` do work (spike Q9), but they
 go through the clipboard and would overwrite the user's.
 Returns the new layer and the cut rectangle.
+
+Settled in P5.5 (2026-11-25), `kritamcp/commands/selection.py`,
+`kritamcp/pixels.py` (`mask_alpha`):
+
+- **Params** (strict: an unknown key is `bad_request`, `details.unknown`).
+  `source` (a ref; `/` `bad_request`, unknown `not_found`), `name` (the
+  `create_layers` rules, `details.param`), `parent` / `above` (the
+  `duplicate_layer` placement rule: directly above the source by default),
+  `cut` (bool, default true), `dry_run`. The source must be a paint layer
+  (`conflict`, `details.type`), the document 8-bit RGBA (`conflict`).
+  No selection (or an empty one) is `conflict` "No selection"; the
+  selection's bounds ∩ the source's bounds empty, or no selected pixel in
+  it, is `conflict` "The selection doesn't overlap the layer" (an empty
+  layer has no bounds; Krita's bounds ignore alpha-0 pixels).
+- **Pixels**, over that intersection (`cut_rect`), read once. The copy's
+  alpha is `round(a * s / 255)`, the source's after a cut
+  `round(a * (255 - s) / 255)`, colours unchanged (non-premultiplied).
+  `pixels.mask_alpha` sends only the alpha bytes through `QPainter`
+  (`CompositionMode_DestinationIn` / `DestinationOut`, the selection as a
+  `Format_Alpha8` image) on a `Format_RGBA64_Premultiplied` working image
+  in 4 MP strips, then writes them back with slice assignment: **exact**
+  for all 65536 (alpha, s) pairs (an 8-bit working image is off by one on
+  24 of them), and the colour bytes never pass through a premultiplied
+  image. So s = 255 copies a pixel bit for bit and a cut leaves it
+  transparent; s = 0 leaves the source's bytes untouched. **Zeroing:**
+  where the copy's alpha is 0 all four bytes are 0 (the new layer carries
+  no colour under alpha 0, also where the source had some); where the
+  source is touched (s > 0) and its alpha ends at 0, all four bytes are 0
+  too (`alphastats.zero_pixels`). A feathered selection gives soft edges;
+  copy and cut alphas add up to the source's within 1.
+- **New layer.** A paint layer with default properties (normal, opacity
+  1, visible, no clipping), its pixels written at `cut_rect`. The
+  selection is left as it is. No `Selection.cut` / `copy` / `paste` (the
+  system clipboard).
+- **Journal.** One entry: `RemoveNode` of the new layer, plus, when `cut`
+  changed the source, a `RestorePixels` of `cut_rect` (P5.1 protocol: undo
+  restores the source exactly and removes the layer; redo re-inserts the
+  same layer, same id, and re-cuts). A failed step rolls back the earlier
+  one. Over the journal's caps: `{code: "not_undoable", nbytes}`. Default
+  timeout 300 s.
+- **Result.** `{doc, dry_run: false, source, cut_rect, cut, layer: <layer
+  object>, copied (pixels with alpha > 0 in the new layer), warnings}`;
+  warnings `duplicate_name` (as `duplicate_layer`), `nothing_copied` (no
+  visible source pixel under the selection: the layer is empty).
+  `dry_run`: `{doc, dry_run: true, source, cut_rect, cut, would_create:
+  {name, type, parent, above}, warnings}`, nothing changes.
 
 ### `krita_transform_layer(doc?, id, translate?, scale?, rotate?, flip?, pivot?, resample="Bicubic")`
 

@@ -38,6 +38,8 @@ EXPECTED_REGISTRY = {
     "redo": (300, True),
     "render": (300, False),
     "save": (300, False),
+    "select": (30, False),
+    "selection_to_layer": (300, True),
     "set_brush": (30, False),
     "set_active_layer": (30, False),
     "set_color": (30, False),

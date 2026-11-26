@@ -292,6 +292,11 @@ Settled in P5.1 (2026-11-25), `kritamcp/batch.py`, `commands/history.py`:
   if needed) first; a document with no view is `conflict` (always so
   headless). Without `doc`, the active document's view. The result
   carries the "only partly covers agent edits" warning.
+- *(P5.4, 2026-11-25)* **Selections are not in the journal.**
+  `krita_select` changes only the document's selection, which the journal
+  doesn't track: `krita_undo` doesn't undo it (select again, or
+  `mode="none"`), and undoing a `selection_to_layer` leaves the selection
+  as it is.
 
 ## D7. Allowed roots come from config
 

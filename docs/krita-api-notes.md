@@ -521,6 +521,55 @@ are fast enough that per-pixel Python loops are never justified.
     it too. No padding is needed.
   - Fast: 6000×6000 with sparse content, grow(4, 4) 183 ms;
     4000×4000 half full, set + grow + read 65 ms.
+- **The document's selection is live, and shared** [verified 2026-11-25,
+  P5.4, headless, `tests/krita/test_selection.py`]: `Document.selection()`
+  returns the global selection itself, not a copy, and the `Selection`
+  passed to `setSelection` stays shared with the document. Changing
+  either (`select`, `invert`, `grow`, …) changes the document's selection
+  without going through `setSelection`. `Selection.duplicate()` is a deep
+  copy. So: read the current selection, or `duplicate()` it before
+  changing it, and never touch a selection after setting it.
+- `setSelection(sel)` adds a root-level `selectionmask` node named
+  `Selection Mask`; `setSelection(None)` removes it. Setting an *empty*
+  `Selection` keeps the node, and `selection()` then returns a selection
+  with 0×0 bounds (not `None`) [verified, P5.4].
+- **Selections may lie past the canvas**: `select(-3, -2, 8, 6, 255)` set
+  on the document reads back as x -3, y -2, 8×6 [verified, P5.4]. Its
+  `x()/y()/width()/height()` are the exact bounds of the nonzero values
+  (after `select`, `setPixelData`, the combinations, `grow`, `shrink`,
+  `feather`) [verified, P5.4].
+- `select(x, y, w, h, value)` writes `value` into the rectangle and keeps
+  what was selected before (it adds; it doesn't replace) [verified, P5.4].
+  `selectAll(node, v)` selects the node's bounds (the root: the canvas).
+- **Combinations, per pixel** [verified, P5.4]: `a.add(b)` is
+  `min(a + b, 255)` (100 + 200 → 255, 100 + 100 → 200), `a.subtract(b)`
+  `max(a - b, 0)`, `a.intersect(b)` `min(a, b)`. For 0/255 selections:
+  union, difference, intersection. An empty or disjoint result has 0×0
+  bounds.
+- `invert()` on a standalone `Selection` inverts only inside its own
+  extent (a 3×3 selection inverts to nothing); on the document's
+  selection it inverts the bounding rectangle of the canvas and the
+  selection, past-canvas parts included [verified, P5.4].
+  `commands/selection.py` computes `255 - v` over the canvas instead.
+- `shrink(r, r, False)` erodes from every edge, the canvas edge included
+  (a 6×6 selection at (0, 0) shrinks by 2 to 2×2 at (2, 2)); with
+  `edgeLock=True` a standalone selection didn't shrink at all. `feather(2)`
+  on a 6×6 square widens the bounds by 2 on each side; a row through it
+  reads 39, 95, 160, 216, 255, 255, 216, … [verified, P5.4].
+- **Masking alpha with `QPainter`** [verified 2026-11-25, P5.5]:
+  `CompositionMode_DestinationIn` / `DestinationOut` with a
+  `Format_Alpha8` mask over a `Format_RGBA64_Premultiplied` image holding
+  only alpha gives `round(a * s / 255)` / `round(a * (255 - s) / 255)`
+  exactly for all 65536 pairs; on a `Format_Alpha8` or
+  `Format_ARGB32_Premultiplied` destination 24 pairs are 1 low (e.g. a =
+  229, s = 152: 136, not 137). `pixels.mask_alpha` uses the 16-bit one.
+- A paint layer's `bounds()` ignores pixels with alpha 0, colour or not:
+  a layer holding only colour under alpha 0 has no extent [verified,
+  P5.5].
+- `QImage(w, h, Format_Alpha8)` rows are padded to 4 bytes
+  (`bytesPerLine()` 12 for w = 10); `QPainter` paints on it (antialiased
+  edges get partial alpha). `QImage(data, w, h, w, Format_Alpha8)` wraps
+  unpadded bytes [verified, P5.4].
 
 ## Undo
 

@@ -318,11 +318,12 @@ tools.
 - [x] **P5.2 `set_active_layer`, `duplicate_layer`, `close_document`.**
   `close_document` done early in P1.7.
 - [x] **P5.3 `layer_stats`, `trim_layers`.** These reuse the P4.1 stats code.
-- [ ] **P5.4 `select`.** rect / polygon (rasterized with `QPainter`) /
+- [x] **P5.4 `select`.** rect / polygon (rasterized with `QPainter`) /
   alpha_of / invert / none / all, combined with replace / add / subtract /
   intersect, plus grow / shrink / feather.
-- [ ] **P5.5 `selection_to_layer`.** Our own masked copy, unless Q9 shows
-  `Selection.cut` / `paste` do the right thing.
+- [x] **P5.5 `selection_to_layer`.** Our own masked copy, unless Q9 shows
+  `Selection.cut` / `paste` do the right thing (they go through the system
+  clipboard, so never).
 - [ ] **P5.6 `transform_layer`.** Translate, and an exact flip with
   `QImage.mirrored`. Scale and rotate use `scaleNode` / `rotateNode` if Q6
   shows usable pivots, otherwise `QTransform` on the pixels.
